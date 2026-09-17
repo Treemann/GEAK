@@ -203,10 +203,46 @@ hides bugs or fails healthy kernels); and the gate checks the **sign distributio
 only its magnitude — a small systematic bias passes every magnitude check and still destroys
 convergence over thousands of steps.
 
-**L1 — trajectory level.** Fixed seed, fixed data order, identical init; baseline and candidate each
-run N steps (default 100). Compare `loss[i]`, `grad_norm[i]` (more sensitive than loss — numerical
-problems surface here first), and optimizer-state norms. The probe reads all three at the torch
-level, so L1 works the same on a stack that logs them per step (Primus) and one that does not.
+**L1 — trajectory level. REDESIGNED after measurement (2026-09-17); the original sketch was the
+wrong instrument.** The plan said "fixed seed, fixed data order, compare loss[i] and grad_norm[i]
+over ~100 steps". Measured on two runs at identical config and identical data (the useful-token
+sequences match step for step, so data order IS deterministic):
+
+| step | loss delta | grad_norm delta |
+|---|---|---|
+| 1 | **0.0 — bit-identical** | **0.87%** |
+| 5 | 0.76% | 22.7% |
+| 12 | 4.40% | 40.2% |
+| 21 | **2.04 absolute** (on a loss of ~3) | — |
+
+Training is a chaotic system: identical runs diverge, and the divergence grows fast. Two consequences:
+
+1. **A scalar aggregate over a long window is useless.** Calibrating `max |dloss|` across 25 steps
+   produced a limit of **6.1 on a loss of 3** — a gate that passes any bug. The band must therefore be
+   a **function of step index**, comparing the candidate's drift at step i against how far a baseline
+   pair had drifted *by that same step*.
+2. **Step 1 is special and precious.** It is a pure forward on identical weights, so its loss is
+   bit-reproducible — one zero-noise probe of the forward path. `grad_norm` at step 1 is **not**
+   reproducible (0.87%: backward atomics / reduction order), which is exactly why backward
+   nondeterminism has to be calibrated rather than assumed away.
+
+So L1 runs three independent detectors (`scripts/trajectory_gate.py`):
+- **step-1 forward probe** — zero natural noise, the sharpest single check available;
+- **per-step envelope** — `|cand - ref|` at step i vs `safety x` the baseline pair's disagreement at
+  step i, failing on a *pattern* of exceedances rather than one isolated chaotic step;
+- **early-window sign balance** — a one-sided delta is a systematic bias even when every magnitude
+  check passes (same doctrine as the L0 sign rule).
+
+Validated against a synthetic candidate carrying a +0.3% systematic loss bias — the signature of a
+kernel that is within tolerance on every op and still walks the run off course. All three detectors
+fire (step-1 0.30% vs 0.05% limit; envelope exceeded on 5 steps at up to 6.0x; sign balance 1.0/8),
+while the real baseline pair passes.
+
+**Known gap, not yet closed:** the step-1 floor (0.05% relative) is a *policy guess*, not a
+calibration — our baseline pair runs identical kernels, so its measured step-1 delta is exactly 0 and
+provides no floor. A legitimate kernel swap perturbs rounding and will move step-1 loss by some
+amount; until that is calibrated (by pairing two known-equivalent kernel backends), the floor risks
+false rejects. Calibrating it needs a baseline pair that differs in kernels but is known-correct.
 
 **The band is measured, never assumed.** Training is natively nondeterministic (reduction order,
 backward atomics, RCCL algorithm selection), so Setup runs the baseline **twice** and derives the
