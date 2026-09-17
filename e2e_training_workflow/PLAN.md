@@ -605,6 +605,27 @@ the op's backward computes input gradients, so the record contained grad_output 
 (the file was byte-identical to the previous capture). Every hook now re-saves atomically and the
 last writer wins.
 
+### End-to-end handoff check (the pieces interlock, not just work)
+`scripts/tests/test_pipeline_integration.js` runs the gate against REAL `bench_summary.json`
+artifacts. Unit tests prove each piece works alone; this one proves a field renamed on one side and
+not the other cannot pass silently.
+
+The sharpest assertion: feed the gate **two real runs at identical config**. The honest answer is
+`no_win`, and that is what it returns — `-0.004%` inside a `0.3%` band. A gate that manufactured a
+win out of run-to-run variation would be worse than no gate.
+
+It has already earned its keep twice:
+* it **refused** a run whose summary stage had been destroyed by the mid-execution script edit —
+  missing `status` / `occupancy_verdict` means "not a measurement", exactly as intended;
+* it **refused** two older runs that predate `config_digest`: without a digest, comparability cannot
+  be *proven*, so the pair is `incomparable` rather than assumed-fine.
+
+### A capture run is not a measurement either
+Measured: a capture run reports **4043.9** useful tok/s/GPU against ~4755 on the same config — a 15%
+dent, because the frozen record (tens of MB) is written from inside a backward hook. `profiled_run`
+already forced `status: unusable`; `captured_run` now does the same. Both perturb the thing they
+observe, and a number taken under either must never reach a gate.
+
 ### New risk: the box is shared
 ~20 unrelated containers are up on this node (idle at the time of measurement, but not ours). The
 inference layer gets isolation from "same-session sequential A/B"; training needs an explicit

@@ -95,6 +95,15 @@ python3 "$GEAK_SCRIPTS/gpu_occupancy.py" after > "$OUT_DIR/occupancy_after.json"
 python3 "$GEAK_SCRIPTS/gpu_occupancy.py" compare "$OUT_DIR/occupancy_before.json" \
         "$OUT_DIR/occupancy_after.json" "" > "$OUT_DIR/occupancy_verdict.json" 2>/dev/null
 
+# A capture run writes the frozen record (tens of MB) from inside a backward hook, which costs real
+# time: measured 4043.9 vs ~4755 useful tok/s/GPU on the same config, a 15% dent. So a capture run is
+# no more a measurement leg than a profiled one is.
+if printf '%s' "${EXTRA_ENV:-}" | grep -q GEAK_CAPTURE_TARGET; then
+  echo ">>> NOTE: shape/oracle capture was active; this run's throughput is NOT a valid measurement." \
+    | tee -a "$OUT_DIR/train.log"
+  echo '{"captured_run": true}' > "$OUT_DIR/captured.json"
+fi
+
 # A profiled window perturbs the steps it covers, so the profile run is NOT a measurement run:
 # keep them separate rather than reporting a throughput taken under the profiler.
 if [ -n "$PROFILE_STEPS" ]; then
@@ -114,6 +123,7 @@ s = summarize(probe_dir)
 s["job_returncode"] = rc
 s["hang_detected"] = os.path.exists(os.path.join(out_dir, "hang.json"))
 s["profiled_run"] = os.path.exists(os.path.join(out_dir, "profiled.json"))
+s["captured_run"] = os.path.exists(os.path.join(out_dir, "captured.json"))
 for name in ("occupancy_verdict", "capabilities"):
     p = os.path.join(out_dir, name + ".json")
     if os.path.exists(p):
@@ -125,7 +135,8 @@ for name in ("occupancy_verdict", "capabilities"):
 s["stack_reported"] = {"tflop_s_per_gpu_median": float(stack_tput) if stack_tput else None,
                        "note": "cross-check only; the gate uses useful_tok_s_per_gpu from the probe"}
 # A profiled run can never be a gate leg: the window it traced is not the workload's real timing.
-ok = (rc == 0 and not s["hang_detected"] and not s["profiled_run"] and "error" not in s
+ok = (rc == 0 and not s["hang_detected"] and not s["profiled_run"] and not s["captured_run"]
+      and "error" not in s
       and s.get("occupancy_verdict", {}).get("verdict") != "contaminated")
 s["status"] = "ok" if ok else "unusable"
 json.dump(s, open(os.path.join(out_dir, "bench_summary.json"), "w"), indent=2)
