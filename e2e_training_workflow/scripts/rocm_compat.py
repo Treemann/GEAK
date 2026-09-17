@@ -70,6 +70,22 @@ if _os.environ.get("GEAK_PROBE_DIR"):
 
     _probe.install_megatron()
 
+    # Shape/oracle capture rides the same install point; no-op unless GEAK_CAPTURE_* is set.
+    try:
+        import capture_train_shapes as _cap
+
+        if _cap.ENABLED:
+            _cap.install()
+            _orig_step_end = _probe._Probe.step_end
+
+            def _step_end(self, *a, **kw):
+                _cap.note_step(self.step)
+                return _orig_step_end(self, *a, **kw)
+
+            _probe._Probe.step_end = _step_end
+    except Exception as _e:  # capture is optional; never break a measurement run
+        print(f"[geak-capture] not installed: {_e!r}", flush=True)
+
 if len(sys.argv) < 2:
     raise SystemExit("usage: rocm_compat_launch.py <script.py> [args...]")
 target = sys.argv[1]

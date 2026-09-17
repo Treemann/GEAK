@@ -175,6 +175,28 @@ const leg = (o = {}) => Object.assign({
     ok(/function proposeMemoryConversion/.test(src) && /function kbIdentity/.test(src),
       'seam hooks 5-6 present: memory converter + config-hashed KB identity');
 
+    // ---- pipeline invariants (structural; the loop itself needs the agent runtime) ----
+    ok(/refLeg = integ\.cand;/.test(src),
+      'an accepted candidate becomes the REFERENCE for the next gate (deltas compound on the ' +
+      'carried stack, not on the bare baseline)');
+    ok(/An accepted change moves which kernels dominate/.test(src) &&
+       /profileAndRoute\(curConfig, `after_/.test(src),
+      're-profile after every accept: the bottleneck moves, so the queue must be rebuilt');
+    ok(/engagement\.forward === false \|\| integ\.engagement\.backward === false/.test(src),
+      'engagement must be proven for forward AND backward separately, or the result is refused');
+    ok(/has_backward === false/.test(src),
+      'a task with no backward is refused: a forward-only task can call a slower kernel a win');
+    ok(/ConfigSweep is not implemented yet/.test(src) && /fast-mode result under a/.test(src),
+      'deep mode REFUSES rather than silently running the fast pipeline under a deep label');
+    ok(/noImprove >= 2/.test(src), 'two consecutive non-wins stop the kernel track');
+    ok(/gatesUsed < MAX_GATES/.test(src) && /tasksUsed < BUDGET/.test(src) && /outOfTime\(\)/.test(src),
+      'the loop is bounded by gates, tasks AND wall clock');
+    ok(/Setup produced no baseline/.test(src),
+      'a missing baseline aborts: deltas against nothing are worse than no result');
+    ok(/runFloor = Math\.max\(ACROSS_JOB_FLOOR_PCT/.test(src),
+      "the run's MEASURED band replaces the default when it is wider (a noisy box must not inherit " +
+      'a flattering band)');
+
     console.log(failures ? `\n${failures} FAILURE(S)` : '\nall checks passed');
     process.exit(failures ? 1 : 0);
   })();

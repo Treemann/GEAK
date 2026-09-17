@@ -25,10 +25,13 @@ const log0 = (m) => log(`[training] ${m}`);
 // (see requireRole) rather than returning a plausible-looking empty result — a training run that
 // silently skips its gate would report a fabricated speedup.
 // ===========================================================================
-const IMPLEMENTED_ROLES = new Set([]);   // grows as roles/<role>.md lands
+const IMPLEMENTED_ROLES = new Set([
+  'training_director', 'system_architect', 'profiler',
+  'kernel_extractor', 'convergence_auditor', 'integrator',
+]);
 
 function requireRole(role) {
-  if (!IMPLEMENTED_ROLES.has(role)) {
+  if (!IMPLEMENTED_ROLES.has(role)) {  // guards against a phase being wired before its prompt exists
     throw new Error(
       `roles/${role}.md is not written yet. This workflow refuses to run a phase whose agent is ` +
       `missing: skipping it would produce a result that looks complete and is not. ` +
@@ -297,24 +300,210 @@ log0(`mode=${wfReturn.mode} stack=${STACK} workload=${WORKLOAD} nproc=${NPROC} `
 log0(`phases: ${['setup', 'profile', 'strategize', want('config') ? 'config' : null, 'kernel', 'final']
   .filter(Boolean).join(' -> ')}`);
 
-phase('Setup');
-// The Director pins the config IR, measures the TRUE baseline, and REPEATS it — the band is measured,
-// never assumed (training is natively nondeterministic: reduction order, backward atomics, RCCL
-// algorithm selection). Two baseline legs also give this run its own across_job floor.
-const setup = await safeAgentStub('training_director', 'setup', benchInputs(curConfig, 'baseline'),
-  'Pin the config IR, run the TRUE baseline TWICE through bench_train.sh, and report both legs.');
+// ---------------------------------------------------------------------------
+// Schemas — every agent returns structured JSON; judgement is the agent's, control flow is here.
+// ---------------------------------------------------------------------------
+const obj = (props, req) => ({ type: 'object', properties: props, required: req || [], additionalProperties: true });
+const arrObj = { type: 'array', items: { type: 'object', additionalProperties: true } };
+const SETUP_SCHEMA = obj({ baseline_legs: arrObj, across_job_band_pct: { type: 'number' },
+  trajectory_band_path: { type: 'string' }, config_digest: { type: 'string' },
+  warmup_steps: { type: 'number' }, pad_fraction_pct: { type: 'number' } }, ['baseline_legs']);
+const PROFILE_SCHEMA = obj({ buckets: { type: 'object' }, top_n: arrObj,
+  config_diagnosis: { type: 'object' }, rank_skew_pct: { type: 'number' } }, ['top_n']);
+const STRATEGY_SCHEMA = obj({ head_candidates: arrObj, stop: { type: 'boolean' },
+  reasoning: { type: 'string' } }, ['head_candidates']);
+const EXTRACT_SCHEMA = obj({ task_dir: { type: 'string' }, op: { type: 'string' },
+  has_backward: { type: 'boolean' }, engagement: { type: 'object' } }, ['task_dir']);
+const INTEGRATE_SCHEMA = obj({ ref: { type: 'object' }, cand: { type: 'object' },
+  engagement: { type: 'object' }, overlay_path: { type: 'string' } }, ['ref', 'cand']);
+const AUDIT_SCHEMA = obj({ l0: { type: 'object' }, l1: { type: 'object' },
+  l2_recommended: { type: 'boolean' }, risk_class: { type: 'string' } }, ['l0', 'l1']);
+const FINALIZE_SCHEMA = obj({ overlay: { type: 'string' }, patch: { type: 'string' },
+  launch: { type: 'string' }, engagement_recheck: { type: 'object' } }, []);
+const VALIDATE_SCHEMA = obj({ validation_status: { type: 'string' },
+  baseline_useful_tok_s: { type: 'number' }, final_useful_tok_s: { type: 'number' },
+  delta_pct: { type: 'number' } }, ['validation_status']);
 
-wfReturn.status = 'skeleton_only';
-wfReturn.note =
-  'Deterministic orchestration (modes, barrier, gate arithmetic, noise band, stop rule, ConfigSweep ' +
-  'seam) is implemented and unit-tested. Agent phases require roles/*.md, which are not written yet; ' +
-  'they fail loudly instead of returning empty results.';
+const T0 = Date.now ? Date.now() : 0;
+const outOfTime = () => (Date.now ? (Date.now() - T0) > TIME_BUDGET_MS * 0.6 : false);
+
+// ---------------------------------------------------------------------------
+// Setup — the TRUE baseline, measured twice so this run's bands are its own.
+// ---------------------------------------------------------------------------
+phase('Setup');
+const setup = await safeAgentStub('training_director', 'setup',
+  { ...benchInputs(curConfig, 'baseline'), REPEAT: 2 },
+  'Pin the config IR, measure the TRUE baseline TWICE, and derive both bands from those two legs.');
+if (!setup || !(setup.baseline_legs || []).length) {
+  throw new Error('Setup produced no baseline. Every later number is a ratio against it, so there ' +
+    'is nothing to continue with — a run that proceeds here reports deltas against nothing.');
+}
+const baselineLegs = setup.baseline_legs;
+const baseline = baselineLegs[0];
+curConfig = { digest: setup.config_digest || (baseline && baseline.config_digest) || null,
+              descriptor: WORKLOAD };
+// The measured floor REPLACES the default when it is wider; a box noisier than the default must not
+// inherit a band that flatters it.
+const measuredFloor = Number(setup.across_job_band_pct) || 0;
+const runFloor = Math.max(ACROSS_JOB_FLOOR_PCT, measuredFloor * BAND_SAFETY / 2);
+log0(`baseline: ${baseline && baseline.useful_tok_s_per_gpu} useful tok/s/GPU; ` +
+     `measured across-job ${measuredFloor}% -> run floor ${runFloor.toFixed(3)}%`);
+wfReturn.baseline = baseline;
+wfReturn.bands = { across_job_measured_pct: measuredFloor, floor_pct: runFloor,
+                   trajectory_band_path: setup.trajectory_band_path || null };
+
+// ---------------------------------------------------------------------------
+// Profile + Strategize
+// ---------------------------------------------------------------------------
+async function profileAndRoute(config, round) {
+  phase('Profile');
+  const prof = await reprofile(config, round);
+  if (!prof) return { profile: null, strategy: null };
+  const diag = prof.config_diagnosis || {};
+  if (diag.verdict === 'config_first') {
+    // fast mode cannot treat this. Saying it plainly is what makes a later rejection attributable
+    // to the configuration rather than blamed on the kernel.
+    log0(`[diagnosis] config_first — kernel work is unlikely to show up end to end here:`);
+    (diag.blocking || []).forEach((b) => log0(`  BLOCKING ${b.finding} -> ${b.knob}`));
+    if (!DEEP_MODE) log0('  fast mode has no ConfigSweep; proceeding, but expect rejections.');
+  }
+  phase('Strategize');
+  const strat = await restrategize(config, prof);
+  return { profile: prof, strategy: strat };
+}
+let { profile, strategy } = await profileAndRoute(curConfig, 'baseline');
+wfReturn.config_diagnosis = (profile && profile.config_diagnosis) || null;
+let headQueue = ((strategy && strategy.head_candidates) || []).slice();
+log0(`heads queued: ${headQueue.length}${strategy && strategy.stop ? ' (architect says stop)' : ''}`);
+
+// ---------------------------------------------------------------------------
+// ConfigSweep — deep only. Refuses rather than silently skipping.
+// ---------------------------------------------------------------------------
+if (want('config')) {
+  phase('ConfigSweep');
+  throw new Error('ConfigSweep is not implemented yet (deep mode). The six seam hooks exist in fast ' +
+    'mode, but the sweep itself does not: running deep now would report a fast-mode result under a ' +
+    'deep label. Use fast_mode, or implement ConfigSweep.');
+}
+
+// ---------------------------------------------------------------------------
+// KernelTrack — the fast-mode optimization loop.
+// Lanes may use the whole GPU pool; a gate DRAINS them, because a training A/B needs every GPU.
+// ---------------------------------------------------------------------------
+phase('KernelTrack');
+let curOverlay = null;
+let refLeg = baseline;          // the carried accepted stack, not the bare baseline
+let noImprove = 0;
+
+while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !outOfTime()) {
+  const stop = stopRule(headQueue, runFloor);
+  if (stop.stop) { log0(`stop rule: best remaining ${stop.best_expected_gain_pct}% <= band ${stop.band_pct}%`); break; }
+  const h = headQueue.shift();
+  tasksUsed += 1;
+  log0(`[head ${tasksUsed}/${BUDGET}] ${h.short_name || h.kernel} ` +
+       `cp_share=${h.critical_path_share_pct}% expected=${expectedGainPct(h).toFixed(2)}%`);
+
+  // ---- lane: extract + optimize (no training job is running, so lanes own the pool) ----
+  const optimized = await barrier.lane(async () => {
+    const ext = await safeAgentStub('kernel_extractor', 'extract',
+      { ...benchInputs(curConfig, `extract_${h.short_name}`), HEAD: h, PROFILE: profile },
+      'Capture real shapes AND grad_output; build an immutable fwd+bwd oracle.');
+    if (!ext || !ext.task_dir) { log0('  extraction produced no task dir — skipping head'); return null; }
+    if (ext.has_backward === false) {
+      log0('  WARNING: task has no backward. A forward-only task can report a win for a kernel that ' +
+           'is slower overall; treating as unusable.');
+      return null;
+    }
+    // The UNCHANGED kernel layer, called exactly as a hand-written kernel task would be.
+    const r = await workflow({ scriptPath: KERNEL_WF_SCRIPT }, {
+      kernel_path: ext.task_dir, workflow_dir: (A.kernel_workflow_dir || `${WORKFLOW_DIR}/../kernel_workflow`),
+      budget: parseInt(A.kernel_budget != null ? A.kernel_budget : 3, 10),
+      gpu_ids: GPU_IDS.join(','),
+    });
+    return { ext, kernel: r };
+  });
+  if (!optimized || !optimized.kernel) { noImprove += 1; continue; }
+
+  // ---- gate: exclusive whole-box A/B ----
+  const integ = await barrier.gate(async () => {
+    gatesUsed += 1;
+    return safeAgentStub('integrator', 'integrate',
+      { ...benchInputs(curConfig, `gate_${h.short_name}`), HEAD: h, TASK: optimized.ext,
+        KERNEL_RESULT: optimized.kernel, CARRIED_OVERLAY: curOverlay, REF_EXPECTED: refLeg },
+      'Overlay reversibly, prove engagement for forward AND backward, take a paired same-session A/B.');
+  });
+  if (!integ || !integ.ref || !integ.cand) { noImprove += 1; continue; }
+  if (integ.engagement && (integ.engagement.forward === false || integ.engagement.backward === false)) {
+    log0('  engagement NOT proven on both paths — refusing the result (an overlay bound to only one ' +
+         'half is the exact failure L1 exists to catch, and it is cheaper to catch here)');
+    noImprove += 1; continue;
+  }
+
+  const audit = await safeAgentStub('convergence_auditor', 'gate',
+    { TASK: optimized.ext, REF_PROBE: integ.ref.probe_dir, CAND_PROBE: integ.cand.probe_dir,
+      BAND: wfReturn.bands.trajectory_band_path },
+    'Run L0 (out/dgrad/wgrad vs fp32, magnitude AND sign) and L1 (step-indexed envelope).');
+
+  const v = gateVerdict({ ref: integ.ref, cand: integ.cand,
+                          l0: audit && audit.l0, l1: audit && audit.l1,
+                          mode: DEEP_MODE ? 'deep' : 'fast' });
+  log0(`  gate: ${v.klass} — ${v.reason}`);
+  const record = { head: h.short_name || h.kernel, verdict: v, audit: audit || null,
+                   overlay: integ.overlay_path || null, task_dir: optimized.ext.task_dir };
+
+  if (v.accepted) {
+    curOverlay = integ.overlay_path || curOverlay;
+    refLeg = integ.cand;                     // later candidates are gated ON TOP of this
+    wfReturn.accepted.push(record);
+    noImprove = 0;
+    // An accepted change moves which kernels dominate — re-profile, exactly as a config win would.
+    const r = await profileAndRoute(curConfig, `after_${h.short_name}`);
+    if (r.profile) profile = r.profile;
+    if (r.strategy && r.strategy.head_candidates) headQueue = r.strategy.head_candidates.slice();
+  } else {
+    if (v.klass === 'banked_memory') {
+      bankedMemory.push({ head: record.head, pct: v.banked_memory_pct });
+      wfReturn.banked_memory.push({ head: record.head, pct: v.banked_memory_pct });
+    }
+    wfReturn.rejected = wfReturn.rejected || [];
+    wfReturn.rejected.push(record);
+    noImprove += 1;
+  }
+  if (noImprove >= 2) { log0('two consecutive non-wins — stopping the kernel track'); break; }
+}
+wfReturn.memory_conversion = proposeMemoryConversion(bankedMemory);
+
+// ---------------------------------------------------------------------------
+// Finalize / Report / Validate
+// ---------------------------------------------------------------------------
+phase('Finalize');
+const fin = await safeAgentStub('integrator', 'finalize',
+  { ...benchInputs(curConfig, 'finalize'), ACCEPTED: wfReturn.accepted, OVERLAY: curOverlay },
+  'Assemble the bundle and RE-CHECK engagement on the assembled artifact.');
+wfReturn.final = fin || null;
+
+phase('Report');
+wfReturn.report = await safeAgentStub('system_architect', 'report',
+  { BASELINE: baseline, ACCEPTED: wfReturn.accepted, REJECTED: wfReturn.rejected || [],
+    BANKED: wfReturn.banked_memory, DIAGNOSIS: wfReturn.config_diagnosis, BANDS: wfReturn.bands },
+  'Write architect_report.md. Say explicitly which numbers are ours and which are the stack\'s.');
+
+phase('Validate');
+const val = await safeAgentStub('training_director', 'validate',
+  { ...benchInputs(curConfig, 'validate'), BASELINE: baseline, FINAL: fin, OVERLAY: curOverlay,
+    BAND: wfReturn.bands.trajectory_band_path },
+  'Re-measure the accepted stack against the TRUE baseline yourself and arbitrate.');
+wfReturn.validation = val || null;
+
 wfReturn.gates_used = gatesUsed;
 wfReturn.tasks_used = tasksUsed;
 wfReturn.kb_identity = kbIdentity(curConfig);
-wfReturn.setup = setup;
+wfReturn.status = val && val.validation_status === 'confirmed' ? 'ok'
+  : (wfReturn.accepted.length ? 'unconfirmed' : 'no_gain');
+log0(`done: status=${wfReturn.status} accepted=${wfReturn.accepted.length} ` +
+     `gates=${gatesUsed}/${MAX_GATES} tasks=${tasksUsed}/${BUDGET}`);
 
-export const _test = { noiseBandPct, legUsable, comparable, gateVerdict, expectedGainPct, stopRule, makeBarrier,
-                       proposeMemoryConversion, kbIdentity, want, FAST_MODE, DEEP_MODE };
+export const _test = { noiseBandPct, legUsable, comparable, gateVerdict, expectedGainPct, stopRule,
+                       makeBarrier, proposeMemoryConversion, kbIdentity, want, FAST_MODE, DEEP_MODE };
 
 return wfReturn;

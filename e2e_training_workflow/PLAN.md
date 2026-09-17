@@ -506,6 +506,39 @@ carries ~2.5x safety at both scales. L1 trajectory band calibrated on the same p
 **bit-identical at 7B/8GPU too**, and step-1 `grad_norm` noise is 0.165% (tighter than 0.5B's 0.874%
 — more DP ranks average more of the backward nondeterminism away).
 
+### Extraction results, and one constraint that changes the task contract
+`scripts/capture_train_shapes.py` captures a real op's fwd+bwd I/O on a live run. Validated against
+the profile's own head family, TE's `_LayerNormLinear`:
+
+```
+tensor args : [4096,1,896] bf16 (hidden), [896] (ln weight), [1152,896] (weight), [1152] (bias)
+grad_output : [4096,1,1152] bf16      <- captured from the LIVE backward, not synthesised
+opaque args : WeightGradStore, ProcessGroup, torch.dtype, TELayerNormColumnParallelLinear
+```
+(1152 = 14x64 + 2x2x64, i.e. the GQA QKV projection with 2 kv groups — the shapes check out.)
+
+**Training ops take RUNTIME HANDLES, so a task dir can never be a pure replay.** Process groups,
+weight-grad stores, the owning module: not picklable, not reconstructable offline. Three consequences
+now baked into the tool:
+* non-tensor, non-primitive arguments are recorded as `__opaque__` with their type and module, and
+  `meta.json` says plainly that they must be RECONSTRUCTED rather than replayed;
+* the fp32 reference therefore cannot come from replaying the fused op — `build_oracle` requires a
+  **pure-PyTorch reference implementation**, which is what makes the oracle independent (and is the
+  same shape as the inference layer's kernel tasks: frozen I/O + an independent reference);
+* the acceptance rule avoids arbitrary tolerances entirely: **the candidate must be no further from
+  the fp32 reference than the ORIGINAL implementation is**, plus the sign rule. Nothing to argue
+  about, and no penalty for rounding the baseline also does.
+
+Three bugs found by running it, all now fixed and all worth remembering:
+1. `torch:matmul` armed on both ranks and **never fired** — TE never routes through it. Training ops
+   are `torch.autograd.Function` subclasses invoked via `.apply`, so the resolver detects that and
+   wraps `apply` instead of the class.
+2. Both ranks wrote the same path and produced a **truncated 689-byte file**. Capture is now one
+   rank by default (`GEAK_CAPTURE_RANKS`), per-rank path, written to `.partial` then `os.replace`d.
+3. An unguarded `torch.save` inside a backward hook **killed an entire 8-rank job** on the
+   ProcessGroup pickle error. The hook is now exception-safe: a capture failure must never take down
+   a training run, the same doctrine the probe already follows.
+
 ### New risk: the box is shared
 ~20 unrelated containers are up on this node (idle at the time of measurement, but not ours). The
 inference layer gets isolation from "same-session sequential A/B"; training needs an explicit
