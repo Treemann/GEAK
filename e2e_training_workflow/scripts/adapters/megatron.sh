@@ -11,7 +11,9 @@
 adapter_capabilities() {
   cat <<'CAP'
 {
-  "step_ranged_profiler": true,
+  "step_ranged_profiler": false,
+  "_step_ranged_profiler_note": "upstream Megatron ships NO profiler arguments; the --profile family in Primus recipes is Primus's own. Profiling is probe-driven instead (GEAK_PROFILE_STEPS), which works on any stack.",
+  "probe_driven_profiler": true,
   "reports_tokens_per_s": false,
   "reports_grad_norm_per_step": true,
   "reports_peak_memory": true,
@@ -29,6 +31,8 @@ adapter_launch() {
   env $EXTRA_ENV \
     PYTHONPATH="$MLM_DIR${PYTHONPATH:+:$PYTHONPATH}" \
     GEAK_PROBE_DIR="$PROBE_DIR" \
+    ${PROFILE_STEPS:+GEAK_PROFILE_STEPS="$PROFILE_STEPS"} \
+    ${PROFILE_STEPS:+GEAK_PROFILE_RANKS="${PROFILE_RANKS:-0}"} \
     torchrun --nproc_per_node="$NPROC" --nnodes=1 \
       --master_addr=127.0.0.1 --master_port="${MASTER_PORT:-29511}" \
       "$GEAK_SCRIPTS/rocm_compat.py" "$MLM_DIR/pretrain_gpt.py" \

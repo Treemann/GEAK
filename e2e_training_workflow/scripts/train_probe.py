@@ -20,7 +20,13 @@ USEFUL TOKENS. `loss_mask.sum()` when the stack provides one (Megatron masks pad
 AND prompts by -100, so `labels != -100` alone would miss padding — the larger term). Falls back to
 `(labels != -100).sum()`, the convention shared by HF Trainer / TRL / ms-swift.
 
+PROFILING LIVES HERE TOO, for the same reason. Upstream Megatron ships NO profiler arguments at all
+(the `--profile` family in Primus recipes is Primus's own addition), and other stacks each expose a
+different one or none. A probe-driven window works on every stack the probe can bind to, and costs
+the adapter nothing.
+
 Enable with GEAK_PROBE_DIR=<dir>. Absent -> import is a no-op and the run is unaffected.
+Optional: GEAK_PROFILE_STEPS="start:end" (1-based, inclusive) and GEAK_PROFILE_RANKS="0,4".
 """
 from __future__ import annotations
 
@@ -44,6 +50,9 @@ class _Probe:
         self.hb_path = os.path.join(out_dir, f"heartbeat_rank{self.rank}.json")
         self.fh = open(self.path, "a", buffering=1)
         self.step = 0
+        self.prof = None
+        self.prof_range = _profile_range()
+        self.prof_ranks = _profile_ranks()
         # Batch facts land here from the batch hook, are consumed by the step hook. A step spans
         # several micro-batches (grad accumulation), so they accumulate and reset per step.
         self.pending = {"useful_tokens": 0, "total_tokens": 0, "micro_batches": 0}
@@ -77,8 +86,43 @@ class _Probe:
         except Exception as e:  # measurement must never break the run
             self.pending.setdefault("errors", []).append(repr(e))
 
+    # ---- profiler window ---------------------------------------------------------------
+    # A step-ranged window, driven from the step boundary the probe already owns. record_shapes is ON
+    # because shape attribution is what the Kernel Extractor consumes; with_stack is OFF because
+    # python-function events dominate the trace size and buy nothing for kernel attribution.
+    def _maybe_profile_start(self):
+        if self.prof is not None or not self.prof_range:
+            return
+        if self.rank not in self.prof_ranks or (self.step + 1) != self.prof_range[0]:
+            return
+        try:
+            from torch.profiler import ProfilerActivity, profile
+            self.prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                                record_shapes=True, with_stack=False, with_modules=False)
+            self.prof.__enter__()
+            print(f"[geak-probe] profiler ON rank{self.rank} steps {self.prof_range[0]}-{self.prof_range[1]}", flush=True)
+        except Exception as e:
+            self.prof = None
+            self._emit({"record": "profile_error", "error": repr(e)})
+
+    def _maybe_profile_stop(self):
+        if self.prof is None or self.step < self.prof_range[1]:
+            return
+        try:
+            self.prof.__exit__(None, None, None)
+            out = os.path.join(os.path.dirname(self.path), f"trace_rank{self.rank}.json")
+            self.prof.export_chrome_trace(out)
+            self._emit({"record": "profile", "trace": out,
+                        "steps": list(self.prof_range), "rank": self.rank})
+            print(f"[geak-probe] trace written: {out}", flush=True)
+        except Exception as e:
+            self._emit({"record": "profile_error", "error": repr(e)})
+        finally:
+            self.prof = None
+
     # ---- step hooks -------------------------------------------------------------------
     def step_begin(self):
+        self._maybe_profile_start()
         self._t0 = time.perf_counter()
 
     def step_end(self, loss=None, grad_norm=None, skipped=None):
@@ -113,6 +157,28 @@ class _Probe:
             pass
         self.pending = {"useful_tokens": 0, "total_tokens": 0, "micro_batches": 0}
         self._t0 = None
+        self._maybe_profile_stop()
+
+
+def _profile_range():
+    spec = os.environ.get("GEAK_PROFILE_STEPS", "")
+    if ":" not in spec:
+        return None
+    try:
+        a, b = spec.split(":", 1)
+        return (int(a), int(b))
+    except Exception:
+        return None
+
+
+def _profile_ranks():
+    spec = os.environ.get("GEAK_PROFILE_RANKS", "0")
+    out = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if part.isdigit():
+            out.add(int(part))
+    return out or {0}
 
 
 def _argv_hash():

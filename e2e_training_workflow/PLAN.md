@@ -454,6 +454,58 @@ report it.
 **Rank skew is ~0.002-0.013%**, so the straggler bucket is empty at this scale — worth re-checking at
 8 GPUs and with TP>1, where it is the input to the critical-path model.
 
+### Profiler + decomposition results (measured on a real trace)
+Probe-driven window (`--profile-steps 12:13`), 0.5B/2GPU, 84 MB trace per rank.
+**Upstream Megatron ships no profiler arguments at all** (`grep -c profile arguments.py` -> 0; the
+`--profile` family in Primus recipes is Primus's own), so the window is driven from the probe's step
+boundary — stack-neutral, and it costs the adapter nothing. The capability manifest was corrected:
+`step_ranged_profiler: false`, `probe_driven_profiler: true`.
+
+Step decomposition of the profiled window:
+
+| bucket | value |
+|---|---|
+| compute | 82.82% |
+| exposed comm | 3.01% (**comm overlap 0.0%**) |
+| idle | 14.17% |
+
+Top of the critical-path ranking, with shapes linked through the trace's cpu_op correlation:
+
+| `critical_path_share_pct` | kernel | op / shapes |
+|---|---|---|
+| **21.52%** | CK tile attention | **`FusedAttnFuncBackward [[4096, 14, 64]]`** |
+| 6.84% | hipBLASLt GEMM | `aten::mm [[4096, 151680], [151680, 896]]` (vocab projection) |
+| 6.82% | hipBLASLt GEMM | `_LayerNormLinear [[4096,1,896], [896], [9728,896]]` |
+| 5.18% | hipBLASLt GEMM | `_Linear [[896,4864], [4096,1,4864]]` |
+| 4.66% | hipBLASLt GEMM | `_LayerNormLinearBackward [[4096,1,9728]]` |
+| 3.01% | `ncclDevKernel_Generic` | — |
+
+Two things worth keeping:
+* **The top head is a BACKWARD kernel.** That is the concrete justification for "the extracted task's
+  objective is fwd+bwd combined": a forward-only task would not even see the biggest candidate.
+* **Communication overlap is 0%** on this arg set (`overlap_grad_reduce` / `overlap_param_gather` are
+  not enabled). At DP2 comm is only 3% so nothing blocks, but this is exactly the kind of thing the
+  read-only diagnosis exists to surface before the kernel budget is spent — and it will matter at
+  DP8. All 25 Top-N entries carried `op` + `input_dims`, which is what the Kernel Extractor consumes.
+
+The diagnosis returned **`config_first`**, blocking on `71.6% padding -> data.packing`, with a note
+on `14.2% idle -> data.num_workers`. That is the correct call for `fast` mode: it cannot fix either,
+and saying so is what makes a later rejected kernel win attributable to the configuration.
+
+### 7B calibration pair (the v1 baseline workload)
+| metric | calibA | calibB | delta |
+|---|---|---|---|
+| `useful_tok_s_per_gpu` | 849.0 | 850.0 | **0.118%** |
+| `step_median_ms` | 11653.48 | 11650.42 | 0.026% |
+| `warmup_steps` | 10 | 11 | — |
+| `rank_skew_pct` (8 ranks) | 0.001 | 0.001 | — |
+| `peak_reserved_mb` | 80578 | 80578 | 0.000% |
+
+`across_job` at 7B/8GPU is **0.118%**, matching the 0.128% measured at 0.5B/2GPU — so the 0.3% floor
+carries ~2.5x safety at both scales. L1 trajectory band calibrated on the same pair: step-1 loss is
+**bit-identical at 7B/8GPU too**, and step-1 `grad_norm` noise is 0.165% (tighter than 0.5B's 0.874%
+— more DP ranks average more of the backward nondeterminism away).
+
 ### New risk: the box is shared
 ~20 unrelated containers are up on this node (idle at the time of measurement, but not ours). The
 inference layer gets isolation from "same-session sequential A/B"; training needs an explicit

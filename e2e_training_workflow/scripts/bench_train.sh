@@ -22,6 +22,9 @@ STACK=megatron; NPROC=8; ITERS=30; TAG=""
 WORKLOAD=""; OUT_DIR=""; DATA_PATH="${DATA_PATH:-/work/data/sft_ultrachat20k.jsonl}"
 MLM_DIR="${MLM_DIR:-/workspace/Primus/third_party/Megatron-LM}"
 EXTRA_TRAIN_ARGS=""; EXTRA_ENV=""; MBS_OVR=""; GBS_OVR=""; SEQ_OVR=""
+# Probe-driven profiler window (upstream Megatron has no profiler args at all; see the adapter's
+# capability manifest). Empty => no trace, and the run is byte-identical to an unprofiled one.
+PROFILE_STEPS=""; PROFILE_RANKS="0"
 HANG_TIMEOUT="${HANG_TIMEOUT:-900}"     # no step progress for this long => hung collective
 
 while [ $# -gt 0 ]; do
@@ -38,6 +41,8 @@ while [ $# -gt 0 ]; do
     --tag) TAG="$2"; shift 2 ;;
     --extra-train-args) EXTRA_TRAIN_ARGS="$2"; shift 2 ;;
     --extra-env) EXTRA_ENV="$2"; shift 2 ;;
+    --profile-steps) PROFILE_STEPS="$2"; shift 2 ;;
+    --profile-ranks) PROFILE_RANKS="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -49,7 +54,7 @@ OUT_DIR="${OUT_DIR:-/work/runs/bench_${WORKLOAD_NAME}${TAG:+_$TAG}_$(date +%m%d_
 PROBE_DIR="$OUT_DIR/probe"
 mkdir -p "$PROBE_DIR"
 export MLM_DIR MODEL_CKPT TOKENIZER_DIR DATA_PATH OUT_DIR PROBE_DIR NPROC ITERS MBS GBS SEQ \
-       ARCH_ARGS ROPE_BASE EXTRA_TRAIN_ARGS EXTRA_ENV GEAK_SCRIPTS
+       ARCH_ARGS ROPE_BASE EXTRA_TRAIN_ARGS EXTRA_ENV GEAK_SCRIPTS PROFILE_STEPS PROFILE_RANKS
 
 # shellcheck disable=SC1090
 source "$GEAK_SCRIPTS/adapters/${STACK}.sh"
@@ -90,6 +95,14 @@ python3 "$GEAK_SCRIPTS/gpu_occupancy.py" after > "$OUT_DIR/occupancy_after.json"
 python3 "$GEAK_SCRIPTS/gpu_occupancy.py" compare "$OUT_DIR/occupancy_before.json" \
         "$OUT_DIR/occupancy_after.json" "" > "$OUT_DIR/occupancy_verdict.json" 2>/dev/null
 
+# A profiled window perturbs the steps it covers, so the profile run is NOT a measurement run:
+# keep them separate rather than reporting a throughput taken under the profiler.
+if [ -n "$PROFILE_STEPS" ]; then
+  echo ">>> NOTE: profiler window ${PROFILE_STEPS} was active; this run's throughput is NOT a valid measurement." \
+    | tee -a "$OUT_DIR/train.log"
+  echo '{"profiled_run": true}' > "$OUT_DIR/profiled.json"
+fi
+
 STACK_TPUT="$(adapter_metrics 2>/dev/null)"
 python3 - "$PROBE_DIR" "$OUT_DIR" "$JOB_RC" "${STACK_TPUT:-}" <<'PY'
 import json, os, sys
@@ -100,6 +113,7 @@ probe_dir, out_dir, rc, stack_tput = sys.argv[1], sys.argv[2], int(sys.argv[3]),
 s = summarize(probe_dir)
 s["job_returncode"] = rc
 s["hang_detected"] = os.path.exists(os.path.join(out_dir, "hang.json"))
+s["profiled_run"] = os.path.exists(os.path.join(out_dir, "profiled.json"))
 for name in ("occupancy_verdict", "capabilities"):
     p = os.path.join(out_dir, name + ".json")
     if os.path.exists(p):
@@ -110,7 +124,8 @@ for name in ("occupancy_verdict", "capabilities"):
 # The stack's own number, kept beside ours and never substituted for it.
 s["stack_reported"] = {"tflop_s_per_gpu_median": float(stack_tput) if stack_tput else None,
                        "note": "cross-check only; the gate uses useful_tok_s_per_gpu from the probe"}
-ok = (rc == 0 and not s["hang_detected"] and "error" not in s
+# A profiled run can never be a gate leg: the window it traced is not the workload's real timing.
+ok = (rc == 0 and not s["hang_detected"] and not s["profiled_run"] and "error" not in s
       and s.get("occupancy_verdict", {}).get("verdict") != "contaminated")
 s["status"] = "ok" if ok else "unusable"
 json.dump(s, open(os.path.join(out_dir, "bench_summary.json"), "w"), indent=2)
