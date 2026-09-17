@@ -86,6 +86,15 @@ if _os.environ.get("GEAK_PROBE_DIR"):
     except Exception as _e:  # capture is optional; never break a measurement run
         print(f"[geak-capture] not installed: {_e!r}", flush=True)
 
+    # Reversible rebind + engagement proof. No-op unless GEAK_OVERLAY points at a manifest.
+    try:
+        import overlay_train as _ovl
+
+        if _ovl.ENABLED:
+            _ovl.install()
+    except Exception as _e:
+        print(f"[geak-overlay] not installed: {_e!r}", flush=True)
+
 if len(sys.argv) < 2:
     raise SystemExit("usage: rocm_compat_launch.py <script.py> [args...]")
 target = sys.argv[1]

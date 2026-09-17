@@ -539,6 +539,34 @@ Three bugs found by running it, all now fixed and all worth remembering:
    ProcessGroup pickle error. The hook is now exception-safe: a capture failure must never take down
    a training run, the same doctrine the probe already follows.
 
+### Overlay + engagement proof (validated by identity rebind)
+`scripts/overlay_train.py` rebinds a training op through the same PYTHONPATH entry point as the
+probe — nothing under site-packages or the Megatron checkout is modified, and removing the env var
+removes the change. On a single node `torchrun` inherits the parent environment, so one overlay
+reaches every rank; that assumption does **not** survive a move to multi-node.
+
+**Engagement is proven per half, and the halves are counted separately.** An overlay that binds the
+forward and leaves the backward on the original path still produces a plausible throughput number and
+a plausible loss curve — the exact failure L1 exists to catch, and far cheaper to catch here. A
+single counter cannot distinguish "both halves ran" from "the forward ran twice", so the proof uses a
+tiny `autograd.Function` that increments on forward and on backward independently.
+
+Validated with an **identity rebind** — same kernels, counters only. Separating "did the rebind
+engage?" from "is the new kernel correct?" means a failure has one meaning instead of two:
+
+```
+forward: true, backward: true   rank0 96 fwd / 64 bwd, rank1 96 / 64
+throughput 4765.1 vs 4759.9 unmodified  ->  0.109%, inside the 0.128% across-job band
+```
+
+Both halves engage on every rank, and the mechanism itself costs nothing measurable.
+
+One bug worth remembering: the resolver must test the RESOLVED TARGET for `autograd.Function`, not
+its owner. Getting it backwards replaces the class with a plain function, and the stack's next
+`_LayerNormLinear.apply(...)` dies with `'function' object has no attribute 'apply'`. Also: a failed
+overlay install must SAY SO — falling through silently would leave the run measuring the original
+implementation while the report claims a candidate was tested.
+
 ### New risk: the box is shared
 ~20 unrelated containers are up on this node (idle at the time of measurement, but not ours). The
 inference layer gets isolation from "same-session sequential A/B"; training needs an explicit

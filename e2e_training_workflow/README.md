@@ -49,6 +49,7 @@ scripts/probe_summarize.py    policy: warmup detection, steady window, dispersio
 scripts/parse_train_profile.py  step decomposition + Top-N + the read-only config diagnosis
 scripts/trajectory_gate.py    L1: calibrate a step-indexed envelope, then judge against it
 scripts/capture_train_shapes.py  fwd+bwd capture -> immutable L0 oracle
+scripts/overlay_train.py      reversible rebind + per-half engagement proof
 scripts/gpu_occupancy.py      isolation guard for a shared node
 scripts/rocm_compat.py        ROCm/upstream patches + probe/capture install point
 workloads/*.env               pinned workload descriptors (config IR, descriptor role)
@@ -79,7 +80,8 @@ python3 scripts/tests/test_parse_train_profile.py
 ```
 
 ## Status
-Measurement, profiling, both gates, and the deterministic orchestration are implemented and
-validated on real runs. The agent phases are wired to the role prompts but have not been executed
+Measurement, profiling, extraction, the overlay, both gates, and the deterministic orchestration are
+implemented and validated on real runs — including an identity-rebind overlay that proves forward and
+backward engagement separately at 0.109% throughput cost (inside the measured band). The agent phases are wired to the role prompts but have not been executed
 end to end: that needs the Workflow/agent runtime, not `node`. `PLAN.md` records what is measured,
 what is assumed, and the open gaps — including the one in L1's step-1 floor.
