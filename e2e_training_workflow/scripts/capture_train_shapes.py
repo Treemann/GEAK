@@ -115,6 +115,42 @@ def install():
             return orig(*a, **kw)
         _state["captured"] = True
         rec = {"target": _TARGET, "step": _STEP, "args": _snap(a), "kwargs": _snap(kw)}
+
+        # Capture the ORIGINAL implementation's input gradients too. Without them there is nothing to
+        # measure "the error the baseline already carries" against on the backward side, and the L0
+        # rule ("no further from fp32 than the original") would only be enforceable on the forward --
+        # on a workload whose top head IS a backward kernel.
+        rec["input_grads"] = {}
+
+        def _save(why):
+            # Re-savable: the output's grad hook fires BEFORE the op's backward computes input
+            # gradients, so saving only there captures grad_output and nothing else. (That cost one
+            # run: the file was byte-identical to the previous capture and L0 could only be run on
+            # the forward -- on a workload whose top head is a BACKWARD kernel.) Every hook saves;
+            # the last one to fire wins, and each write is atomic.
+            try:
+                path = os.path.join(_DIR, f"reference_io_rank{_RANK}.pt")
+                tmp = path + ".partial"
+                torch.save(rec, tmp)
+                os.replace(tmp, path)
+                _write_meta(rec)
+                print(f"[geak-capture] wrote {path} ({why}; grads={sorted(rec['input_grads'])})",
+                      flush=True)
+            except Exception as e:
+                print(f"[geak-capture] capture FAILED (run continues): {e!r}", flush=True)
+        for _i, _t in enumerate(_flat(a)):
+            if torch.is_tensor(_t) and _t.requires_grad:
+                def _mk(idx):
+                    def _g(grad):
+                        try:
+                            rec["input_grads"][str(idx)] = _snap(grad)
+                            _save(f"input_grad[{idx}]")
+                        except Exception:
+                            pass
+                        return grad
+                    return _g
+                _t.register_hook(_mk(_i))
+
         out = orig(*a, **kw)
         # grad_output is captured from the LIVE run: a synthetic one of the right shape would have
         # the wrong scale, and backward kernels are scale-sensitive.

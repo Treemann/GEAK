@@ -567,6 +567,44 @@ its owner. Getting it backwards replaces the class with a plain function, and th
 overlay install must SAY SO — falling through silently would leave the run measuring the original
 implementation while the report claims a candidate was tested.
 
+### L0 on real captured data — and a backward-comparability gap
+`scripts/l0_gate.py` judges a candidate against **the error the original already carries**, never
+against a hand-picked tolerance. Measured on the captured TE `_LayerNormLinear`, comparing the
+original fused op to an independent fp32 RMSNorm+Linear reference on the frozen inputs:
+
+| quantity | max_abs | rel_mean_abs | sign_balance | nonzero_frac |
+|---|---|---|---|---|
+| `out` | 0.765 | **0.196%** | **0.489** | 1.00 |
+| `dgrad` | 6.56 | 1.47 | 0.501 | 0.226 |
+| `dln_weight` | 1.93 | 1.14 | 0.481 | 1.00 |
+| `wgrad` | 8.81 | 1.23 | 0.500 | 1.00 |
+
+**The forward result is sound and usable**: 0.196% relative error with `sign_balance` 0.489, i.e.
+unbiased rounding, exactly the profile a healthy bf16 implementation should have. A candidate is then
+acceptable iff its `max_abs` stays within 1.25x of 0.765 and its sign balance stays near 0.5.
+
+**The backward numbers are NOT yet a valid comparison**, and saying so is the point. `rel_mean_abs`
+above 1.0 means the two sides are not measuring the same quantity. The likely causes are structural,
+not numerical:
+* with `gradient_accumulation_fusion`, TE writes weight gradients straight into `main_grad` and the
+  returned gradient is not this call's isolated contribution;
+* `dgrad`'s `nonzero_frac` of 0.226 says the captured tensor is sparse in a way a single-call
+  reference is not — consistent with a reduction or a partially-populated buffer.
+Encouragingly, **all three sign balances sit at 0.48-0.50**, so whatever the scale mismatch is, it is
+not a systematic bias.
+
+Resolution path (not yet done): capture the op's isolated gradient contribution rather than the
+tensor's accumulated `.grad` — either by hooking the `autograd.Function`'s backward return directly,
+or by disabling grad-accumulation fusion for the capture run only and verifying the two agree. Until
+that is settled, **L0 is enforceable on the forward and advisory on the backward**, which must be
+stated in any report that uses it. It also means the sign test currently carries more weight on the
+backward than the magnitude test does.
+
+One capture bug this found: saving inside the grad_output hook is too early — that hook fires BEFORE
+the op's backward computes input gradients, so the record contained grad_output and no grads at all
+(the file was byte-identical to the previous capture). Every hook now re-saves atomically and the
+last writer wins.
+
 ### New risk: the box is shared
 ~20 unrelated containers are up on this node (idle at the time of measurement, but not ours). The
 inference layer gets isolation from "same-session sequential A/B"; training needs an explicit

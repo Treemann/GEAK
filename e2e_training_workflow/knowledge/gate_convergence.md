@@ -4,12 +4,25 @@ Inference gates on byte-identical output. Training has no output, and its failur
 nastier: a wrong backward, a systematically biased kernel, or an overlay that engaged on only SOME
 ranks looks healthy for tens of steps and destroys convergence thousands of steps later.
 
-## L0 — op level
-The extracted task's oracle covers `out`, **`dgrad` and `wgrad`** against an fp32 reference.
-- Tolerances are per-op and tied to accumulation depth/precision. One global `rtol` either hides bugs
-  or fails healthy kernels.
-- Check the **sign distribution** of the error, not only its magnitude. A small systematic bias
-  passes every magnitude check and still destroys convergence.
+## L0 — op level (`scripts/l0_gate.py`)
+The oracle covers `out`, **`dgrad` and `wgrad`** against an INDEPENDENT fp32 reference (not a replay
+of the fused op — the captured call carries runtime handles that cannot be rebuilt offline).
+
+**No hand-picked tolerance.** "Is rtol=1e-2 ok?" has no defensible answer. Instead the capture
+records the error the ORIGINAL implementation already carries against the fp32 reference, and a
+candidate is acceptable iff it is **no further from the reference than the original is** (x1.25).
+Nothing to argue about, and no penalty for rounding the baseline also does.
+
+**Check the sign distribution, not only the magnitude.** A small systematic bias passes every
+magnitude check and still destroys convergence. Measured baseline profile on TE `_LayerNormLinear`:
+`out` rel 0.196%, sign_balance 0.489 — unbiased, as a healthy bf16 op should be.
+
+**Backward is currently ADVISORY, not enforceable.** Measured `rel_mean_abs` > 1.0 on `dgrad` /
+`wgrad` means the captured tensors and a single-call reference are not the same quantity — most
+likely `gradient_accumulation_fusion` writing into `main_grad`, and/or a reduction. The sign balances
+(0.48-0.50) show no systematic bias, so this is a comparability problem, not a correctness one. Until
+the isolated gradient contribution is captured, weight the sign test over the magnitude test on the
+backward, and say in the report which half of L0 was enforceable.
 
 ## L1 — trajectory level (`scripts/trajectory_gate.py`)
 **Training is chaotic. This is measured, not theoretical.** Two runs at identical config on identical
