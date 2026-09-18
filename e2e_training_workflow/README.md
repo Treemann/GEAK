@@ -85,3 +85,64 @@ implemented and validated on real runs — including an identity-rebind overlay 
 backward engagement separately at 0.109% throughput cost (inside the measured band). The agent phases are wired to the role prompts but have not been executed
 end to end: that needs the Workflow/agent runtime, not `node`. `PLAN.md` records what is measured,
 what is assumed, and the open gaps — including the one in L1's step-1 floor.
+
+## Launching a full `fast` run from Claude Code
+
+The deterministic half runs anywhere; the training stack only exists inside the image, and
+`scripts/bench_train.sh` bridges that automatically (it re-executes itself in the container and
+translates paths both ways), so Claude Code can be started on the host.
+
+**1. Prerequisites** (all already true on the reference box)
+```bash
+docker images | grep rocm/primus              # the image
+ls ~/models/qwen2_5_math_7b_torch_dist        # a Megatron torch_dist checkpoint
+ls ~/geak_train/data/sft_ultrachat20k.jsonl   # the frozen dataset
+rocm-smi --showpids                           # "No KFD PIDs" = the box is quiet
+```
+
+**2. Smoke the measurement path first.** One clean leg before spending a run:
+```bash
+bash e2e_training_workflow/scripts/bench_train.sh \
+  --workload e2e_training_workflow/workloads/qwen2_5_0_5b.env --nproc 2 --iters 8
+# expect status: ok, occupancy_verdict: clean
+```
+
+**3. Start Claude Code with permissions auto-approved** (the workflow spawns many agents and runs
+benchmarks):
+```bash
+IS_SANDBOX=1 claude --dangerously-skip-permissions
+```
+
+**4. Invoke the Workflow.** `workflow_dir` must be this folder — a JS workflow cannot read its own
+path.
+```
+Workflow({
+  scriptPath: "<REPO>/e2e_training_workflow/training_workflow.js",
+  args: {
+    workflow_dir: "<REPO>/e2e_training_workflow",   // REQUIRED
+    workload:     "<REPO>/e2e_training_workflow/workloads/qwen2_5_math_7b.env",  // REQUIRED, no default
+    nproc: 8, gpu_ids: "0,1,2,3,4,5,6,7",
+    iters: 30,             // steady-state steps per leg (warmup is detected, not assumed)
+    budget: 2,             // kernel tasks for a first run
+    max_gates: 4,          // ONE A/B = two job launches and it blocks every lane
+    kernel_budget: 3,      // passed down to each recursive kernel_workflow run
+    time_budget_ms: 18000000
+  }
+})
+```
+Start with `workloads/qwen2_5_0_5b.env`, `nproc: 2`, `budget: 1` to shake the orchestration out
+cheaply — a 0.5B leg is ~1 s/step against ~11.6 s at 7B.
+
+**What it will do, and where it will stop**
+* Setup measures the TRUE baseline **twice** and derives this run's bands from those two legs.
+* Profile emits the step decomposition plus a **read-only** config diagnosis. On this workload it
+  returns `config_first` (70.6% padding), and `fast` mode cannot fix that — it says so and proceeds.
+* The kernel loop runs lanes on the GPU pool, then **drains them** for each gate: a training A/B
+  needs every GPU.
+* `deep_mode: true` **refuses to run** — ConfigSweep is not implemented, and reporting a fast-mode
+  result under a deep label would be worse than failing.
+* A leg contaminated by a foreign GPU process is re-measured (bounded); exhausting the retries stops
+  the run rather than quietly spending the remaining gates on a busy node.
+
+**Reading the result:** `wfReturn.validation` is the Director's own re-measurement and is the
+official number. Per-candidate deltas are measured against different references and do NOT sum to it.
