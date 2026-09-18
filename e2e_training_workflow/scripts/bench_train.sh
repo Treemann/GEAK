@@ -18,6 +18,41 @@ set -uo pipefail
 GEAK_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GEAK_ROOT="$(dirname "$GEAK_SCRIPTS")"
 
+# ---- host / container transparency -------------------------------------------------------------
+# The orchestrator runs wherever Claude Code runs; the training stack only exists inside the image.
+# Rather than making every role know which side it is on (and getting it wrong once), this script
+# detects that it is outside the container and re-executes itself inside, with the same arguments.
+# The same command line therefore works from both sides, which is the only version of this that
+# survives contact with an agent reading a prompt.
+if [ ! -d "${MLM_DIR:-/workspace/Primus/third_party/Megatron-LM}" ] && [ -z "${GEAK_IN_CONTAINER:-}" ]; then
+  IMAGE="${GEAK_IMAGE:-rocm/primus:v26.4}"
+  MODELS="${GEAK_MODELS_DIR:-/home/treemann/models}"
+  WORK="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
+  REPO="$(cd "$GEAK_ROOT/.." && pwd)"
+  # Translate host paths to their mount points, so a caller may pass either and be right. Without
+  # this the re-exec succeeds and then dies on a path that exists only outside -- exactly the
+  # confusing failure this mechanism exists to prevent.
+  _ARGS=()
+  for _a in "$@"; do
+    _a="${_a//$REPO//repo}"
+    _a="${_a//$WORK//work}"
+    _a="${_a//$MODELS//models}"
+    _ARGS+=("$_a")
+  done
+  echo ">>> not inside the training image; re-executing in $IMAGE"
+  exec docker run --rm --network host \
+    --device=/dev/kfd --device=/dev/dri --group-add video \
+    --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
+    --ipc=host --shm-size 32G \
+    -v "$MODELS":/models:ro -v "$WORK":/work -v "$REPO":/repo \
+    -e GEAK_IN_CONTAINER=1 \
+    -e HIP_VISIBLE_DEVICES="${HIP_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}" \
+    ${ATTENTION_BACKEND:+-e ATTENTION_BACKEND="$ATTENTION_BACKEND"} \
+    ${RETRY_CONTAMINATED:+-e RETRY_CONTAMINATED="$RETRY_CONTAINATED"} \
+    --entrypoint bash "$IMAGE" \
+    /repo/e2e_training_workflow/scripts/bench_train.sh "${_ARGS[@]}"
+fi
+
 STACK=megatron; NPROC=8; ITERS=30; TAG=""
 WORKLOAD=""; OUT_DIR=""; DATA_PATH="${DATA_PATH:-/work/data/sft_ultrachat20k.jsonl}"
 MLM_DIR="${MLM_DIR:-/workspace/Primus/third_party/Megatron-LM}"
