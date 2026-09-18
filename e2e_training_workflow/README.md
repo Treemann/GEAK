@@ -102,10 +102,14 @@ rocm-smi --showpids                           # "No KFD PIDs" = the box is quiet
 
 **2. Smoke the measurement path first.** One clean leg before spending a run:
 ```bash
-bash e2e_training_workflow/scripts/bench_train.sh \
-  --workload e2e_training_workflow/workloads/qwen2_5_0_5b.env --nproc 2 --iters 8
+cd <REPO>/e2e_training_workflow
+bash scripts/bench_train.sh --workload workloads/qwen2_5_0_5b.env --nproc 2 --iters 8
 # expect status: ok, occupancy_verdict: clean
 ```
+Relative paths are fine: the script resolves them before it re-enters the container (the container
+starts in `/`, so an unresolved relative path would be looked up there and not found — changing the
+caller's directory does not help, because the lookup happens on the other side). A path that resolves
+outside every mount is rejected with the mounts listed, rather than failing obscurely inside.
 
 **3. Start Claude Code with permissions auto-approved** (the workflow spawns many agents and runs
 benchmarks):

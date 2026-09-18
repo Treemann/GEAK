@@ -32,8 +32,21 @@ if [ ! -d "${MLM_DIR:-/workspace/Primus/third_party/Megatron-LM}" ] && [ -z "${G
   # Translate host paths to their mount points, so a caller may pass either and be right. Without
   # this the re-exec succeeds and then dies on a path that exists only outside -- exactly the
   # confusing failure this mechanism exists to prevent.
+  # Resolve RELATIVE paths first: the container starts in / , so a path that was valid in the
+  # caller's shell resolves to nothing inside. (Observed: `--workload workloads/x.env` run from the
+  # workflow directory re-executed fine and then died on a missing file.) Anything that names an
+  # existing file or directory becomes absolute before the mount translation.
   _ARGS=()
   for _a in "$@"; do
+    if [ -e "$_a" ]; then _a="$(cd "$(dirname "$_a")" && pwd)/$(basename "$_a")"; fi
+    case "$_a" in
+      "$REPO"*|"$WORK"*|"$MODELS"*) ;;
+      /*) if [ -e "$_a" ]; then
+            echo "!!! $_a is outside every mount ($REPO, $WORK, $MODELS) and will NOT exist inside" \
+                 "the container. Move it under one of them, or set GEAK_WORK_DIR/GEAK_MODELS_DIR." >&2
+            exit 2
+          fi ;;
+    esac
     _a="${_a//$REPO//repo}"
     _a="${_a//$WORK//work}"
     _a="${_a//$MODELS//models}"
@@ -88,8 +101,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$WORKLOAD" ] || { echo "--workload is required (no default: benching the wrong target silently is worse than failing)" >&2; exit 2; }
+[ -r "$WORKLOAD" ] || { echo "workload descriptor not readable: $WORKLOAD" >&2; exit 2; }
 # shellcheck disable=SC1090
 source "$WORKLOAD"
+: "${WORKLOAD_NAME:?the workload descriptor must define WORKLOAD_NAME (see workloads/*.env)}"
 [ -n "$MBS_OVR" ] && MBS="$MBS_OVR"; [ -n "$GBS_OVR" ] && GBS="$GBS_OVR"; [ -n "$SEQ_OVR" ] && SEQ="$SEQ_OVR"
 OUT_DIR="${OUT_DIR:-/work/runs/bench_${WORKLOAD_NAME}${TAG:+_$TAG}_$(date +%m%d_%H%M%S)}"
 PROBE_DIR="$OUT_DIR/probe"
