@@ -957,6 +957,63 @@ dent, because the frozen record (tens of MB) is written from inside a backward h
 already forced `status: unusable`; `captured_run` now does the same. Both perturb the thing they
 observe, and a number taken under either must never reach a gate.
 
+### The 7B profile: the ranking at the real scale is NOT the ranking at the toy scale
+Every earlier hotspot result was 0.5B / 2 GPUs. The v1 baseline is 7B / 8 GPUs, and profiling it
+changes the answer — which is the whole reason the plan insisted on profiling at the real scale.
+
+| bucket | 0.5B / 2 GPU | **7B / 8 GPU** |
+|---|---|---|
+| compute | 82.8% | **96.08%** |
+| exposed comm | 3.01% | **1.57%** (overlap still 0%) |
+| idle | 14.17% | **2.35%** |
+
+The step is overwhelmingly compute-bound at the real scale: bigger kernels amortise the host-side
+overhead that dominated the toy run (idle 14% -> 2.4%), and DP8 gradient traffic is small against an
+11.6 s step even with zero overlap. Rank 0 vs rank 4 agree to 0.4 points, so the straggler bucket is
+still empty.
+
+| rank | 0.5B head | **7B head** |
+|---|---|---|
+| 1 | attention backward, 21.5% | **GEMM `_Linear [[3584,3584],[4096,1,3584]]`, 19.0%** |
+| 2 | vocab GEMM, 6.8% | **GEMM `aten::mm [[4096,151680],[151680,3584]]`, 18.6%** (vocab projection backward) |
+| 3 | GEMM, 6.8% | attention backward `FusedAttnFuncBackward [[4096,28,128]]`, 14.7% |
+| 4 | GEMM, 5.2% | `_LayerNormLinearBackward [[4096,1,37888]]`, 12.7% (SwiGLU: 2x18944) |
+
+**The head op changes class between scales** — attention at 0.5B, GEMM at 7B — so a budget routed
+from the toy profile would have gone to the wrong kernel. Note also that three of the top four are
+BACKWARD kernels, which is the same conclusion the 0.5B run reached and the reason the extracted task
+is fwd+bwd or nothing.
+
+The diagnosis still returns `config_first`, now on a single item: **70.6% padding -> data.packing**.
+The idle finding is gone at this scale (2.35% is below the 5% threshold).
+
+### The first real head task, extracted at 7B
+Captured TE's `_Linear` — the actual top head at the real scale — on the 8-GPU baseline, and built a
+task dir from it. The isolated re-run works unchanged at 7B/8GPU, and the weight gradient again
+arrives through the `main_grad` buffer with the right shape (`main_grad[3584, 3584]`).
+
+Baseline error of the ORIGINAL against an fp32 reference, at the head's real shapes:
+
+| output | max_abs | rel_mean_abs | sign_balance | scale_bias |
+|---|---|---|---|---|
+| `out` | 1.56e-02 | 0.141% | 0.500 | -4.1e-06 |
+| `wgrad` | 1.50e-04 | 0.141% | 0.500 | +3.2e-07 |
+| `dgrad` | 3.05e-05 | 6.2e-07 | 0.512 | -2.8e-06 |
+
+Unbiased on every output, which is what the acceptance thresholds are then derived from. The task's
+own unittest measures **11.90 ms fwd+bwd combined** for this head.
+
+**Argument order is per-op and must be read, not assumed.** TE's `_Linear.apply` takes the WEIGHT
+first; `_LayerNormLinear.apply` takes the input first. The generated unittest originally hardcoded
+the latter and silently unpacked the former wrong, so `meta.json` now carries a `layout` and the
+template binds arguments by name.
+
+**Discrimination re-verified at 7B shapes**, and it moved: a `x1.002` systematic scale is caught on
+`wgrad` and `dgrad` (`scale_bias` +2.01e-03 / +2.00e-03, recovering the injected 0.2% exactly) while
+`out` passes on magnitude. At 0.5B the same class of bug was caught on `out` instead. **Different
+outputs are the sensitive one at different scales**, which is a concrete argument for gating on all
+of them rather than on the forward alone.
+
 ### New risk: the box is shared
 ~20 unrelated containers are up on this node (idle at the time of measurement, but not ours). The
 inference layer gets isolation from "same-session sequential A/B"; training needs an explicit

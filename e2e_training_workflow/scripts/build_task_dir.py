@@ -69,20 +69,22 @@ def _base_error(rec, golden, labels, reference):
     sys.path.insert(0, HERE)
     from l0_gate import REFERENCES, error_stats
 
+    from l0_gate import LAYOUTS
+
+    layout = LAYOUTS[reference]
     args_t = _tensors(rec["args"])
-    x, ln_w, w, b = (args_t + [None] * 4)[:4]
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-
-    def _ld(n, grad=False):
-        t = n["data"].to(dev)
-        return t.requires_grad_(True) if grad else t
-
-    xg, lg, wg = _ld(x, True), _ld(ln_w, True), _ld(w, True)
-    bt = _ld(b) if b is not None else None
-    out = REFERENCES[reference](xg, lg, wg, bt)
-    go = _ld(rec["grad_output"])
-    grads = torch.autograd.grad(out, [xg, lg, wg], grad_outputs=go.float(), allow_unused=True)
-    ref_by_label = {"out": out, "dgrad": grads[0], "dln_weight": grads[1], "wgrad": grads[2]}
+    named = {}
+    for name, node in zip(layout["args"], args_t):
+        t = node["data"].to(dev)
+        named[name] = t.requires_grad_(True) if name != "bias" else t
+    call_args = [named.get(n) for n in layout["args"]]
+    out = REFERENCES[reference](*call_args)
+    go = rec["grad_output"]["data"].to(dev)
+    wrt = [named[n] for n in layout["grad_of"] if named.get(n) is not None]
+    grads = torch.autograd.grad(out, wrt, grad_outputs=go.float(), allow_unused=True)
+    ref_by_label = {"out": out}
+    ref_by_label.update(dict(zip(layout["grad_labels"], grads)))
     stats = {}
     for label, g in zip(labels, golden):
         r = ref_by_label.get(label)
@@ -107,12 +109,16 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None):
         raise SystemExit("capture has no grad_output; a fwd+bwd task cannot be built without it")
 
     # Order the golden the same way the unittest returns it.
+    from l0_gate import LAYOUTS
+
+    layout = LAYOUTS[reference]
     grads = iso.get("grads") or {}
     by_shape = {tuple(v["shape"]): v for v in grads.values() if _is_t(v)}
-    x, ln_w, w, b = (args_t + [None] * 4)[:4]
+    named_nodes = dict(zip(layout["args"], args_t))
     golden = [iso["out"]]
     labels = ["out"]
-    for label, node in (("dgrad", x), ("dln_weight", ln_w), ("wgrad", w)):
+    for label, role in zip(layout["grad_labels"], layout["grad_of"]):
+        node = named_nodes.get(role)
         g = by_shape.get(tuple(node["shape"])) if node else None
         if g is not None:
             golden.append(g)
@@ -122,7 +128,7 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None):
         "records": [{
             "args": [_harness_tensor(t) for t in args_t] + [_harness_tensor(go)],
             "output": [_harness_tensor(g) for g in golden],
-            "sig": f"{'x'.join(str(d) for d in x['shape'])}|fwd+bwd",
+            "sig": f"{'x'.join(str(d) for d in args_t[0]['shape'])}|fwd+bwd",
             "regime": "training",
         }],
     }
@@ -151,10 +157,14 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None):
                                    "prove engagement for forward AND backward separately"},
         "signature": {"inputs": [{"name": n, "shape": t["shape"], "dtype": t["dtype"],
                                   "requires_grad": t["requires_grad"]}
-                                 for n, t in zip(["x", "ln_weight", "weight", "bias"], args_t)],
+                                 for n, t in zip(layout["args"], args_t)],
                       "grad_output": {"shape": go["shape"], "dtype": go["dtype"]},
                       "outputs": labels},
         "reference_implementation": f"baseline_src/reference_impl.py:{reference}",
+        # The generated unittest reads this instead of hardcoding one op's argument order. TE's
+        # _Linear takes the WEIGHT first and _LayerNormLinear takes the input first; a template that
+        # assumes either one silently unpacks the other wrong.
+        "layout": layout,
         "opaque_context": rec.get("opaque_args") or [],
         "opaque_note": ("runtime handles from the live call. They are CONTEXT, not inputs: the task is "
                         "the pure-tensor operation, and a candidate is not expected to reproduce them."),
@@ -211,23 +221,44 @@ import torch
 META = json.load(open(os.path.join(HERE, "meta.json")))
 
 
-def _reference(x, ln_w, w, b, eps=1e-6):
+LAYOUT = META["layout"]
+
+
+def _rmsnorm_linear(x, ln_w, w, b=None, eps=1e-6):
     xf = x.float()
     rms = torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + eps)
     return torch.nn.functional.linear(xf * rms * ln_w.float(), w.float(),
                                       b.float() if b is not None else None)
 
 
+def _linear(w, x, b=None):
+    return torch.nn.functional.linear(x.float(), w.float(), b.float() if b is not None else None)
+
+
+_REFS = {"rmsnorm_linear": _rmsnorm_linear, "linear": _linear}
+_reference = _REFS["__REFERENCE__"]
+
+
 def make_call(entry):
-    """Wrap fwd+bwd into ONE callable, so latency covers both and correctness covers all outputs."""
+    """Wrap fwd+bwd into ONE callable: latency covers both, correctness covers every output.
+
+    Arguments are bound BY NAME from meta's layout. Positional unpacking would be wrong for one of
+    the two ops shipped here -- TE's _Linear takes the weight first, _LayerNormLinear the input.
+    """
+    names = LAYOUT["args"]
+
     def call(args):
-        x, ln_w, w, b, go = args
-        x = x.detach().clone().requires_grad_(True)
-        ln_w = ln_w.detach().clone().requires_grad_(True)
-        w = w.detach().clone().requires_grad_(True)
-        out = entry(x, ln_w, w, b)
+        tensors, go = list(args[:-1]), args[-1]
+        named = {}
+        for name, t in zip(names, tensors):
+            c = t.detach().clone()
+            if name != "bias":
+                c.requires_grad_(True)
+            named[name] = c
+        out = entry(*[named.get(n) for n in names])
         tgt = out[0] if isinstance(out, (list, tuple)) else out
-        grads = torch.autograd.grad(tgt, [x, ln_w, w], grad_outputs=go, allow_unused=True)
+        wrt = [named[n] for n in LAYOUT["grad_of"] if named.get(n) is not None]
+        grads = torch.autograd.grad(tgt, wrt, grad_outputs=go, allow_unused=True)
         return (tgt,) + tuple(g for g in grads if g is not None)
     return call
 
@@ -251,14 +282,10 @@ def main():
         print(f"  [structural] {c.get('case','')}: max_rel_err={c.get('max_rel_err')}")
 
     got = call(cases[0]["args"])
-    x, ln_w, w, b, go = cases[0]["args"]
-    xg = x.detach().clone().requires_grad_(True)
-    lg = ln_w.detach().clone().requires_grad_(True)
-    wg = w.detach().clone().requires_grad_(True)
-    ref_out = _reference(xg, lg, wg, b)
-    ref_grads = torch.autograd.grad(ref_out, [xg, lg, wg], grad_outputs=go.float(), allow_unused=True)
-    ref_by_label = {"out": ref_out, "dgrad": ref_grads[0], "dln_weight": ref_grads[1],
-                    "wgrad": ref_grads[2]}
+    ref_call = make_call(_reference)
+    ref_outs = ref_call(cases[0]["args"])
+    ref_by_label = {"out": ref_outs[0]}
+    ref_by_label.update(dict(zip(LAYOUT["grad_labels"], ref_outs[1:])))
 
     base, acc = META.get("base_error", {}), META.get("acceptance", {})
     margin, sign_tol = acc.get("margin", 1.25), acc.get("sign_tol", 0.15)

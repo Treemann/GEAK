@@ -93,7 +93,25 @@ def rmsnorm_linear_reference(x, ln_w, w, b, eps=1e-6):
     return out
 
 
-REFERENCES = {"rmsnorm_linear": rmsnorm_linear_reference}
+def linear_reference(w, x, b=None):
+    """Independent reference for TE's _Linear. NOTE the argument order: `_Linear.apply` takes the
+    WEIGHT first, unlike `_LayerNormLinear`. Reading the order off the capture instead of assuming it
+    is the difference between an oracle and a plausible-looking pile of wrong numbers."""
+    return torch.nn.functional.linear(x.float(), w.float(), b.float() if b is not None else None)
+
+
+REFERENCES = {"rmsnorm_linear": rmsnorm_linear_reference, "linear": linear_reference}
+
+# Which captured tensor plays which role, per reference. The names are the ORDER the reference's
+# signature expects, and they are also the labels the oracle's outputs carry.
+LAYOUTS = {
+    "rmsnorm_linear": {"args": ["x", "ln_weight", "weight", "bias"],
+                       "grad_labels": ["dgrad", "dln_weight", "wgrad"],
+                       "grad_of": ["x", "ln_weight", "weight"]},
+    "linear": {"args": ["weight", "x", "bias"],
+               "grad_labels": ["wgrad", "dgrad"],
+               "grad_of": ["weight", "x"]},
+}
 
 
 def run(record_path, reference="rmsnorm_linear", arg_index=(0, 1, 2, 3)):
