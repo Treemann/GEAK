@@ -132,7 +132,18 @@ EARLY_STEPS = 8
 # numerics" versus "packing isolation is not preserved by the flash path". The test that separates
 # them is a packed-vs-unpacked run of each backend; until then treat it as an upper bound on
 # legitimate kernel-swap noise, and read a step-1 failure just above it as "investigate", not "bug".
-STEP1_FLOOR_PCT = {"overlay": 0.05, "kernel_swap": 0.35}
+# MEASURED, from an L0-VERIFIED equivalent pair (TE's fused _LayerNormLinear vs a pure-PyTorch
+# reimplementation of the same mathematics, swapped in through the overlay):
+#     same kernels, two runs  -> step-1 loss delta 0.000000%   (bit-identical)
+#     verified kernel swap    -> step-1 loss delta 1.748837%
+# That is 35x the original 0.05% guess. Three cheaper candidates were tried first and all three were
+# rejected BY MEASUREMENT: NVTE_USE_HIPBLASLT on/off and gradient_accumulation_fusion on/off are
+# numerically identical (the knobs do not change the kernels at all), and --transformer-impl local
+# cannot run packed sequences. The lesson is in calibrate_swap's `pair_usable` verdict: a pair whose
+# `between` spread is not larger than its `within` spread calibrates nothing.
+# NOTE the reference implementation computes internally in fp32, so 1.75% is an UPPER bound for a
+# same-precision (bf16->bf16) swap. Tighten it when such a pair is available.
+STEP1_FLOOR_PCT = {"overlay": 0.05, "kernel_swap": 2.0}
 STEP1_REL_FLOOR_PCT = STEP1_FLOOR_PCT["overlay"]
 
 
@@ -186,7 +197,7 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay"):
     # Compare WORKLOAD IDENTITY only. A candidate is supposed to change the implementation; requiring
     # the whole config to match refuses every backend swap as "incomparable" without ever looking at
     # the trajectory -- which is the evidence that actually decides whether the swap is safe.
-    IMPL = {"attention-backend"}
+    IMPL = {"attention-backend", "GEAK_OVERLAY"}
     ident = lambda c: {k: v for k, v in (c or {}).items()
                        if k not in IMPL and not k.startswith("NVTE_")}
     if ident(rs.get("config")) != ident(cs.get("config")):
@@ -255,10 +266,97 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay"):
     return res
 
 
+def calibrate_swap(a_runs, b_runs, safety=3.0):
+    """Calibrate a KERNEL-SWAP band from a 2x2: two configs, two repeats each.
+
+    A 1x1 comparison cannot tell the swap's contribution from the machine's noise. With repeats, the
+    two are separable:
+
+        within  = disagreement between two runs of the SAME config   -> the noise floor
+        between = disagreement across configs                        -> noise + the swap
+
+    The band that a kernel-swap candidate should be judged against is `between`; `within` is the
+    control that says whether `between` means anything. If within ~= between, the "swap" changed
+    nothing measurable and the pair is useless for calibration. If within is ~0 (which is what a
+    healthy stack gives at step 1 -- bit-identical) then `between` IS the swap.
+    """
+    A = [_series(d) for d in a_runs]
+    B = [_series(d) for d in b_runs]
+    n = min(len(s["loss"]) for s in A + B)
+
+    def spread(group, i, key):
+        vals = [g[key][i] for g in group if g[key][i] is not None]
+        return (max(vals) - min(vals)) if len(vals) >= 2 else None
+
+    def cross(i, key):
+        av = [g[key][i] for g in A if g[key][i] is not None]
+        bv = [g[key][i] for g in B if g[key][i] is not None]
+        if not av or not bv:
+            return None
+        return max(abs(x - y) for x in av for y in bv)
+
+    env_within, env_between = {"loss": [], "grad_norm": []}, {"loss": [], "grad_norm": []}
+    for key in ("loss", "grad_norm"):
+        for i in range(n):
+            w = max([x for x in (spread(A, i, key), spread(B, i, key)) if x is not None] or [0.0])
+            env_within[key].append(round(w, 8))
+            c = cross(i, key)
+            env_between[key].append(None if c is None else round(c, 8))
+
+    def rel1(group_a, group_b, key):
+        av = [g[key][0] for g in group_a if g[key][0] is not None]
+        bv = [g[key][0] for g in group_b if g[key][0] is not None]
+        if not av or not bv or not av[0]:
+            return None
+        return round(100 * max(abs(x - y) for x in av for y in bv) / abs(av[0]), 6)
+
+    # VERDICT ON THE PAIR ITSELF. Without this the reader has to notice that `between` and `within`
+    # are the same size and conclude the swap did nothing -- and the first pair tried
+    # (NVTE_USE_HIPBLASLT on/off) was exactly that case: step-1 loss BIT-IDENTICAL across configs,
+    # envelopes indistinguishable, throughput within noise. A band built from it would have looked
+    # like "kernel swaps are free", which is the opposite of the truth.
+    def _usable(between, within):
+        pairs = [(b_, w_) for b_, w_ in zip(between, within)
+                 if b_ is not None and w_ is not None and (b_ > 0 or w_ > 0)]
+        if not pairs:
+            return 0.0
+        return sum(1 for b_, w_ in pairs if b_ > w_ * 1.5) / len(pairs)
+
+    frac = _usable(env_between["loss"], env_within["loss"])
+    step1_between = rel1(A, B, "loss") or 0.0
+    step1_within = max(x for x in [rel1(A, A, "loss"), rel1(B, B, "loss"), 0.0] if x is not None)
+    usable = bool(step1_between > max(step1_within, 1e-9) or frac >= 0.5)
+
+    return {
+        "safety": safety, "steps": n, "kind": "kernel_swap",
+        "runs": {"a": list(a_runs), "b": list(b_runs)},
+        "pair_usable": usable,
+        "pair_verdict": (
+            "usable: the two configs differ beyond their own run-to-run spread"
+            if usable else
+            "UNUSABLE for calibration: `between` is not larger than `within`, i.e. the two configs "
+            "produced the same numerics. Whatever knob was toggled did not change the kernels, so a "
+            "band built from this pair would understate real kernel-swap noise."),
+        "steps_where_between_exceeds_within_frac": round(frac, 3),
+        "step1_loss_rel_pct": rel1(A, B, "loss"),
+        "step1_loss_rel_pct_within": max(
+            x for x in [rel1(A, A, "loss"), rel1(B, B, "loss"), 0.0] if x is not None),
+        "step1_grad_norm_rel_pct": rel1(A, B, "grad_norm"),
+        "step1_grad_norm_rel_pct_within": max(
+            x for x in [rel1(A, A, "grad_norm"), rel1(B, B, "grad_norm"), 0.0] if x is not None),
+        "envelope": env_between,
+        "envelope_within": env_within,
+        "note": ("`envelope` is the band a kernel-swap candidate is judged against; "
+                 "`envelope_within` is the control. If they are the same size, the swap changed "
+                 "nothing measurable and this pair cannot calibrate anything."),
+    }
+
+
 def _usage():
     print(__doc__.strip().splitlines()[0])
     print("usage:\n  trajectory_gate.py calibrate <baseline_probe> <baseline_probe> [more...] [-o band.json]"
-          "\n  trajectory_gate.py compare <ref_probe> <cand_probe> --band <band.json>")
+          "\n  trajectory_gate.py compare <ref> <cand> --band <band.json> [--kind overlay|kernel_swap]"
+          "\n  trajectory_gate.py calibrate_swap <A1> <A2> -- <B1> <B2> [-o band.json]")
     return 2
 
 
@@ -266,7 +364,17 @@ if __name__ == "__main__":
     if len(sys.argv) < 4:
         sys.exit(_usage())
     cmd = sys.argv[1]
-    if cmd == "calibrate":
+    if cmd == "calibrate_swap":
+        # calibrate_swap A1 A2 -- B1 B2 [-o band.json]
+        rest = [x for x in sys.argv[2:] if not x.startswith("-")]
+        if "-o" in sys.argv:
+            rest = [d for d in rest if d != sys.argv[sys.argv.index("-o") + 1]]
+        split = rest.index("--") if "--" in rest else len(rest) // 2
+        band = calibrate_swap(rest[:split], rest[split + 1:] if "--" in rest else rest[split:])
+        if "-o" in sys.argv:
+            json.dump(band, open(sys.argv[sys.argv.index("-o") + 1], "w"), indent=2)
+        print(json.dumps(band, indent=2))
+    elif cmd == "calibrate":
         dirs = [a for a in sys.argv[2:] if not a.startswith("-")]
         if "-o" in sys.argv:
             dirs = [d for d in dirs if d != sys.argv[sys.argv.index("-o") + 1]]

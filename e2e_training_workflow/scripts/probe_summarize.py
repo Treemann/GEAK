@@ -117,7 +117,7 @@ def summarize(dirpath, tol=0.02):
     # IMPLEMENTATION (how it is computed) is exactly what a candidate changes -- requiring it to match
     # would refuse every config-level candidate as "incomparable", which is what happened the first
     # time an attention-backend pair was compared.
-    IMPL_KEYS = ("attention-backend",)
+    IMPL_KEYS = ("attention-backend", "GEAK_OVERLAY")
     impl = {k: v for k, v in cfg.items() if k in IMPL_KEYS or k.startswith("NVTE_")}
     identity = {k: v for k, v in cfg.items() if k not in impl}
     cfg_digest = hashlib.sha256(

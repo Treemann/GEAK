@@ -203,6 +203,11 @@ def _config_snapshot():
     for e in ("NVTE_FLASH_ATTN", "NVTE_FUSED_ATTN", "NVTE_USE_HIPBLASLT"):
         if e in os.environ:
             out[e] = os.environ[e]
+    # An overlay changes which kernel runs, so it belongs in the IMPLEMENTATION half of the snapshot.
+    # Without it two legs differing only by an overlay look byte-identical in the record, and the
+    # report cannot say what was actually swapped.
+    if os.environ.get("GEAK_OVERLAY"):
+        out["GEAK_OVERLAY"] = os.path.basename(os.environ["GEAK_OVERLAY"])
     return out
 
 

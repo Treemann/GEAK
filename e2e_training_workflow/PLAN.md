@@ -617,6 +617,54 @@ asserts when the CLI backend disagrees with the image's `NVTE_*` env — so the 
 back `unusable`. That knob is a CONFIG choice, not an adapter fact; it is now overridable and belongs
 to the config IR once ConfigSweep exists.
 
+### The kernel-swap band: CLOSED, by constructing the pair instead of finding one
+The open item was "L1's envelope is calibrated from a same-kernel pair, so it over-rejects any
+legitimate kernel swap; it needs a known-good swap pair." Three cheap candidates were tried, and all
+three were **rejected by measurement** — which is the useful half of the story:
+
+| candidate | result |
+|---|---|
+| `NVTE_USE_HIPBLASLT` 1 vs 0 | step-1 loss **bit-identical**; envelopes indistinguishable. TE never reads the var at runtime (no Python reference; C++/build-time only). Not a kernel swap. |
+| `gradient_accumulation_fusion` on/off | step-1 loss **bit-identical**. It changes *where* the weight gradient accumulates (`main_grad` vs the returned grad), not the arithmetic. Not a kernel swap. |
+| `--transformer-impl local` vs TE | Refuses to run: `Packed sequence is not supported by DotProductAttention`. The packed (thd) SFT path exists only inside TE. |
+
+Two of those would have looked like "kernel swaps are numerically free" if read naively. They do not,
+because the 2x2 design separates the swap's contribution from the machine's noise, and
+`calibrate_swap` now emits a `pair_usable` verdict rather than leaving that to the reader:
+*"UNUSABLE: `between` is not larger than `within`, i.e. the two configs produced the same numerics."*
+
+**What worked: construct the pair and prove it with L0.** TE's fused `_LayerNormLinear` vs a
+pure-PyTorch reimplementation of the same mathematics, swapped in through the overlay. Its
+equivalence is not assumed — L0 had already measured this exact implementation against the original
+on frozen inputs (out 0.196%, grads 2.7-3.9%, sign balances ~0.5, no scale bias). It runs at 2349 vs
+4800 tok/s/GPU, which is irrelevant: the pair is for numerics, not speed.
+
+| | within-config | BETWEEN configs |
+|---|---|---|
+| step-1 loss | **0.000000%** | **1.748837%** |
+| step-1 grad_norm | 0.584% | 8.862% |
+| loss envelope | — | 5-25x the within envelope, on 2/3 of steps |
+
+So the kernel-swap step-1 floor is **~1.75%** — **35x the original 0.05% guess**, and 5x the figure
+the (unverified) attention pair suggested. Set to 2.0% with margin. Caveat kept in the code: the
+reference computes internally in fp32, so 1.75% is an UPPER bound for a same-precision bf16->bf16
+swap.
+
+**Re-judging the attention pair against a REAL band separates the two cases cleanly:**
+
+| pair | step-1 | envelope | verdict |
+|---|---|---|---|
+| fused vs flash attention | 0.29% (limit 5.25%) — fine | exceeded on 6 steps, up to **13.5x** | **FAIL** |
+| L0-verified equivalent swap | — | within band | **PASS** |
+
+The attention backends diverge *faster than a verified-equivalent swap does*, which is evidence for
+the packing-isolation suspicion rather than ordinary rounding. (Caveat: the control leg overlaps the
+band's own calibration set; a fully held-out control needs a third leg per side.)
+
+**Side fix:** an overlay changes which kernel runs, so `GEAK_OVERLAY` now appears in the
+IMPLEMENTATION half of the config snapshot. Without it two legs differing only by an overlay look
+byte-identical in the record and the report cannot say what was swapped.
+
 ### Overlay + engagement proof (validated by identity rebind)
 `scripts/overlay_train.py` rebinds a training op through the same PYTHONPATH entry point as the
 probe — nothing under site-packages or the Megatron checkout is modified, and removing the env var
@@ -773,6 +821,54 @@ treat 0.35% as an upper bound on legitimate kernel-swap noise, and read a margin
 asserts when the CLI backend disagrees with the image's `NVTE_*` env — so the first flash leg came
 back `unusable`. That knob is a CONFIG choice, not an adapter fact; it is now overridable and belongs
 to the config IR once ConfigSweep exists.
+
+### The kernel-swap band: CLOSED, by constructing the pair instead of finding one
+The open item was "L1's envelope is calibrated from a same-kernel pair, so it over-rejects any
+legitimate kernel swap; it needs a known-good swap pair." Three cheap candidates were tried, and all
+three were **rejected by measurement** — which is the useful half of the story:
+
+| candidate | result |
+|---|---|
+| `NVTE_USE_HIPBLASLT` 1 vs 0 | step-1 loss **bit-identical**; envelopes indistinguishable. TE never reads the var at runtime (no Python reference; C++/build-time only). Not a kernel swap. |
+| `gradient_accumulation_fusion` on/off | step-1 loss **bit-identical**. It changes *where* the weight gradient accumulates (`main_grad` vs the returned grad), not the arithmetic. Not a kernel swap. |
+| `--transformer-impl local` vs TE | Refuses to run: `Packed sequence is not supported by DotProductAttention`. The packed (thd) SFT path exists only inside TE. |
+
+Two of those would have looked like "kernel swaps are numerically free" if read naively. They do not,
+because the 2x2 design separates the swap's contribution from the machine's noise, and
+`calibrate_swap` now emits a `pair_usable` verdict rather than leaving that to the reader:
+*"UNUSABLE: `between` is not larger than `within`, i.e. the two configs produced the same numerics."*
+
+**What worked: construct the pair and prove it with L0.** TE's fused `_LayerNormLinear` vs a
+pure-PyTorch reimplementation of the same mathematics, swapped in through the overlay. Its
+equivalence is not assumed — L0 had already measured this exact implementation against the original
+on frozen inputs (out 0.196%, grads 2.7-3.9%, sign balances ~0.5, no scale bias). It runs at 2349 vs
+4800 tok/s/GPU, which is irrelevant: the pair is for numerics, not speed.
+
+| | within-config | BETWEEN configs |
+|---|---|---|
+| step-1 loss | **0.000000%** | **1.748837%** |
+| step-1 grad_norm | 0.584% | 8.862% |
+| loss envelope | — | 5-25x the within envelope, on 2/3 of steps |
+
+So the kernel-swap step-1 floor is **~1.75%** — **35x the original 0.05% guess**, and 5x the figure
+the (unverified) attention pair suggested. Set to 2.0% with margin. Caveat kept in the code: the
+reference computes internally in fp32, so 1.75% is an UPPER bound for a same-precision bf16->bf16
+swap.
+
+**Re-judging the attention pair against a REAL band separates the two cases cleanly:**
+
+| pair | step-1 | envelope | verdict |
+|---|---|---|---|
+| fused vs flash attention | 0.29% (limit 5.25%) — fine | exceeded on 6 steps, up to **13.5x** | **FAIL** |
+| L0-verified equivalent swap | — | within band | **PASS** |
+
+The attention backends diverge *faster than a verified-equivalent swap does*, which is evidence for
+the packing-isolation suspicion rather than ordinary rounding. (Caveat: the control leg overlaps the
+band's own calibration set; a fully held-out control needs a third leg per side.)
+
+**Side fix:** an overlay changes which kernel runs, so `GEAK_OVERLAY` now appears in the
+IMPLEMENTATION half of the config snapshot. Without it two legs differing only by an overlay look
+byte-identical in the record and the report cannot say what was swapped.
 
 ### Overlay + engagement proof (validated by identity rebind)
 `scripts/overlay_train.py` rebinds a training op through the same PYTHONPATH entry point as the
