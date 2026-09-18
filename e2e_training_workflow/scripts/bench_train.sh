@@ -45,7 +45,7 @@ if [ ! -d "${MLM_DIR:-/workspace/Primus/third_party/Megatron-LM}" ] && [ -z "${G
     --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
     --ipc=host --shm-size 32G \
     -v "$MODELS":/models:ro -v "$WORK":/work -v "$REPO":/repo \
-    -e GEAK_IN_CONTAINER=1 \
+    -e GEAK_IN_CONTAINER=1 -e GEAK_HOST_WORK="$WORK" \
     -e HIP_VISIBLE_DEVICES="${HIP_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}" \
     ${ATTENTION_BACKEND:+-e ATTENTION_BACKEND="$ATTENTION_BACKEND"} \
     ${RETRY_CONTAMINATED:+-e RETRY_CONTAMINATED="$RETRY_CONTAINATED"} \
@@ -219,3 +219,8 @@ print(json.dumps({k: s.get(k) for k in (
     "warmup_steps_max", "rank_skew_pct", "peak_reserved_mb")}, indent=2))
 PY
 echo ">>> summary: $OUT_DIR/bench_summary.json"
+# The orchestrator may be reading from OUTSIDE the container, where /work is mounted elsewhere.
+# Printing only the inside path sends an agent looking for a file that is not there.
+if [ -n "${GEAK_HOST_WORK:-}" ]; then
+  echo ">>> summary (host path): ${OUT_DIR/\/work/$GEAK_HOST_WORK}/bench_summary.json"
+fi
