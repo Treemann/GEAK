@@ -111,8 +111,18 @@ def summarize(dirpath, tol=0.02):
     cfg = dict(headers[0].get("config", {}))
     cfg["world_size"] = str(len(ranks))
     argv_hashes = sorted({h.get("argv_hash") for h in headers})
+
+    # Two different things live in this snapshot and conflating them breaks the gate in both
+    # directions. WORKLOAD IDENTITY (what is being trained) must match or a ratio is fiction.
+    # IMPLEMENTATION (how it is computed) is exactly what a candidate changes -- requiring it to match
+    # would refuse every config-level candidate as "incomparable", which is what happened the first
+    # time an attention-backend pair was compared.
+    IMPL_KEYS = ("attention-backend",)
+    impl = {k: v for k, v in cfg.items() if k in IMPL_KEYS or k.startswith("NVTE_")}
+    identity = {k: v for k, v in cfg.items() if k not in impl}
     cfg_digest = hashlib.sha256(
-        json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:16]
+        json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]
+    impl_digest = hashlib.sha256(json.dumps(impl, sort_keys=True).encode()).hexdigest()[:16]
 
     meds = [v["median_ms"] for v in per_rank.values()]
     slowest = max(per_rank.items(), key=lambda kv: kv[1]["median_ms"])[0]
@@ -131,7 +141,10 @@ def summarize(dirpath, tol=0.02):
         "peak_reserved_mb": max(v["peak_reserved_mb"] for v in per_rank.values()),
         "warmup_steps_max": max(v["warmup_steps"] for v in per_rank.values()),
         "config": cfg,
-        "config_digest": cfg_digest,
+        "workload_identity": identity,
+        "implementation": impl,
+        "config_digest": cfg_digest,      # identity only: what is being trained
+        "impl_digest": impl_digest,       # how it is computed: a candidate is EXPECTED to differ here
         # Ranks running different argv would silently mix two configurations inside ONE leg.
         "ranks_agree_on_argv": len(argv_hashes) == 1,
         "worst_spread_pct": max(v["spread_pct"] for v in per_rank.values()),

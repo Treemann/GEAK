@@ -577,6 +577,46 @@ The lesson generalises beyond this op: a correctness gate built only on magnitud
 will wave through exactly the failure mode L1 exists to catch, and it will look rigorous while doing
 it.
 
+### Calibrating the L1 step-1 floor: what the attempt actually found
+The plan called the 0.05% step-1 floor a policy guess and named the fix: a pair of known-equivalent
+kernel backends. The image supplies one — TE's fused/CK attention vs flash (`NVTE_FUSED_ATTN` /
+`NVTE_FLASH_ATTN`). Running it produced three results, only one of which was the one expected.
+
+**1. The floor was wrong by 6x.** Step-1 loss differs by **0.2917%** between the two backends, against
+a guessed floor of 0.05%. The floor is now two-tier and the caller must say which situation it is in:
+
+| `candidate_kind` | meaning | step-1 floor |
+|---|---|---|
+| `overlay` | should not change numerics at all (rebind, schedule, exact fusion) | 0.05% |
+| `kernel_swap` | a different implementation of the same mathematics | 0.35% (measured) |
+
+**2. L1 works — validated against a real semantics-level difference.** With the backend swap, the
+loss envelope is exceeded on **all 12 steps** at up to **500x** the limit and `grad_norm` on 6 steps
+at up to 70x. Whatever the two backends are doing, it is not the same thing, and L1 says so with the
+evidence attached (`implementation_delta` names the three keys that changed).
+
+**3. The configuration snapshot was conflating two different things**, and it blocked the comparison
+entirely on the first attempt ("legs ran different configs"). A snapshot holds both **workload
+identity** (batch, sequence, mapping, data — must match, or a ratio is fiction) and **implementation**
+(attention backend, `NVTE_*` — exactly what a candidate changes). Requiring the whole snapshot to
+match refuses every config-level candidate without ever looking at the trajectory, which is the
+evidence that decides the question. They are now separate: `config_digest` covers identity only,
+`impl_digest` covers implementation, and L1 reports the implementation delta rather than refusing.
+
+**Still open, and it matters:** the per-step ENVELOPE has the same problem one level down. It is
+calibrated from a same-kernel baseline pair, so it is far too tight for a legitimate kernel swap —
+under `kernel_swap` the step-1 check now passes while the envelope still rejects. Closing it needs a
+band calibrated from a **known-good kernel-swap pair**, which this attention pair may not be: the
+0.2917% has not been separated into "pure numerics" versus "the flash path does not preserve packing
+isolation". The test that separates them is a packed-vs-unpacked run of each backend. Until then,
+treat 0.35% as an upper bound on legitimate kernel-swap noise, and read a marginal step-1 failure as
+"investigate", not "bug".
+
+**Side finding, already fixed:** the adapter hardcoded `--attention-backend fused`, and Megatron
+asserts when the CLI backend disagrees with the image's `NVTE_*` env — so the first flash leg came
+back `unusable`. That knob is a CONFIG choice, not an adapter fact; it is now overridable and belongs
+to the config IR once ConfigSweep exists.
+
 ### Overlay + engagement proof (validated by identity rebind)
 `scripts/overlay_train.py` rebinds a training op through the same PYTHONPATH entry point as the
 probe — nothing under site-packages or the Megatron checkout is modified, and removing the env var
@@ -693,6 +733,46 @@ value's. The discriminating statistic is the error-vs-value correlation,
 The lesson generalises beyond this op: a correctness gate built only on magnitudes and sign balance
 will wave through exactly the failure mode L1 exists to catch, and it will look rigorous while doing
 it.
+
+### Calibrating the L1 step-1 floor: what the attempt actually found
+The plan called the 0.05% step-1 floor a policy guess and named the fix: a pair of known-equivalent
+kernel backends. The image supplies one — TE's fused/CK attention vs flash (`NVTE_FUSED_ATTN` /
+`NVTE_FLASH_ATTN`). Running it produced three results, only one of which was the one expected.
+
+**1. The floor was wrong by 6x.** Step-1 loss differs by **0.2917%** between the two backends, against
+a guessed floor of 0.05%. The floor is now two-tier and the caller must say which situation it is in:
+
+| `candidate_kind` | meaning | step-1 floor |
+|---|---|---|
+| `overlay` | should not change numerics at all (rebind, schedule, exact fusion) | 0.05% |
+| `kernel_swap` | a different implementation of the same mathematics | 0.35% (measured) |
+
+**2. L1 works — validated against a real semantics-level difference.** With the backend swap, the
+loss envelope is exceeded on **all 12 steps** at up to **500x** the limit and `grad_norm` on 6 steps
+at up to 70x. Whatever the two backends are doing, it is not the same thing, and L1 says so with the
+evidence attached (`implementation_delta` names the three keys that changed).
+
+**3. The configuration snapshot was conflating two different things**, and it blocked the comparison
+entirely on the first attempt ("legs ran different configs"). A snapshot holds both **workload
+identity** (batch, sequence, mapping, data — must match, or a ratio is fiction) and **implementation**
+(attention backend, `NVTE_*` — exactly what a candidate changes). Requiring the whole snapshot to
+match refuses every config-level candidate without ever looking at the trajectory, which is the
+evidence that decides the question. They are now separate: `config_digest` covers identity only,
+`impl_digest` covers implementation, and L1 reports the implementation delta rather than refusing.
+
+**Still open, and it matters:** the per-step ENVELOPE has the same problem one level down. It is
+calibrated from a same-kernel baseline pair, so it is far too tight for a legitimate kernel swap —
+under `kernel_swap` the step-1 check now passes while the envelope still rejects. Closing it needs a
+band calibrated from a **known-good kernel-swap pair**, which this attention pair may not be: the
+0.2917% has not been separated into "pure numerics" versus "the flash path does not preserve packing
+isolation". The test that separates them is a packed-vs-unpacked run of each backend. Until then,
+treat 0.35% as an upper bound on legitimate kernel-swap noise, and read a marginal step-1 failure as
+"investigate", not "bug".
+
+**Side finding, already fixed:** the adapter hardcoded `--attention-backend fused`, and Megatron
+asserts when the CLI backend disagrees with the image's `NVTE_*` env — so the first flash leg came
+back `unusable`. That knob is a CONFIG choice, not an adapter fact; it is now overridable and belongs
+to the config IR once ConfigSweep exists.
 
 ### Overlay + engagement proof (validated by identity rebind)
 `scripts/overlay_train.py` rebinds a training op through the same PYTHONPATH entry point as the

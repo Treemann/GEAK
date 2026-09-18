@@ -113,9 +113,27 @@ def compare_series(ref, cand):
 
 # The early window is where natural divergence is still small enough for a bug to stand out.
 EARLY_STEPS = 8
-# Floor for the step-1 forward probe. A kernel change legitimately perturbs rounding, so this is not
-# zero; it is small because at step 1 there is no accumulated drift to hide behind.
-STEP1_REL_FLOOR_PCT = 0.05
+
+# THE BAND MUST MATCH WHAT THE CANDIDATE IS. Measured, and it is not a small effect:
+#
+#   same kernels, two runs      step-1 loss delta = 0.0      (bit-identical, 0.5B and 7B alike)
+#   two attention backends      step-1 loss delta = 0.2917%  (TE fused/CK vs flash)
+#
+# A band calibrated from a SAME-KERNEL baseline pair therefore rejects ANY kernel swap out of hand --
+# which would make L1 useless for the one job it exists to do. Two presets, and the caller must say
+# which situation it is in:
+#
+#   "overlay"     the candidate should not change numerics at all (a rebind, a schedule change, a
+#                 fusion that is exactly equivalent). Floor stays tight.
+#   "kernel_swap" the candidate is a different implementation of the same mathematics, so rounding
+#                 legitimately differs. Floor comes from a measured equivalent-intent pair.
+#
+# CAVEAT, not yet resolved: the 0.2917% figure is ONE pair, and it is not yet separated into "pure
+# numerics" versus "packing isolation is not preserved by the flash path". The test that separates
+# them is a packed-vs-unpacked run of each backend; until then treat it as an upper bound on
+# legitimate kernel-swap noise, and read a step-1 failure just above it as "investigate", not "bug".
+STEP1_FLOOR_PCT = {"overlay": 0.05, "kernel_swap": 0.35}
+STEP1_REL_FLOOR_PCT = STEP1_FLOOR_PCT["overlay"]
 
 
 def _early(stats_series, n=EARLY_STEPS):
@@ -160,14 +178,24 @@ def calibrate(dirs, safety=3.0):
     }
 
 
-def verdict(ref_dir, cand_dir, band):
+def verdict(ref_dir, cand_dir, band, candidate_kind="overlay"):
     """The L1 verdict, in the shape training_workflow.js's gateVerdict() consumes: {pass, reason}."""
     rs, cs = _series(ref_dir), _series(cand_dir)
     res = {"pass": None, "reason": "", "checks": {}}
 
-    if rs.get("config") != cs.get("config"):
-        return {"pass": False, "reason": "legs ran different configs; step-aligned trajectories are "
-                                         "not comparable", "checks": {}}
+    # Compare WORKLOAD IDENTITY only. A candidate is supposed to change the implementation; requiring
+    # the whole config to match refuses every backend swap as "incomparable" without ever looking at
+    # the trajectory -- which is the evidence that actually decides whether the swap is safe.
+    IMPL = {"attention-backend"}
+    ident = lambda c: {k: v for k, v in (c or {}).items()
+                       if k not in IMPL and not k.startswith("NVTE_")}
+    if ident(rs.get("config")) != ident(cs.get("config")):
+        return {"pass": False, "reason": "legs trained a different WORKLOAD (batch/seq/mapping/data "
+                                         "differ); step-aligned trajectories are not comparable",
+                "checks": {}}
+    impl_delta = {k: (v, (cs.get("config") or {}).get(k))
+                  for k, v in (rs.get("config") or {}).items()
+                  if (k in IMPL or k.startswith("NVTE_")) and (cs.get("config") or {}).get(k) != v}
     n = min(len(rs["loss"]), len(cs["loss"]))
     if n < 3:
         return {"pass": False, "reason": "fewer than 3 comparable steps", "checks": {}}
@@ -179,8 +207,10 @@ def verdict(ref_dir, cand_dir, band):
     # ---- check 1: the step-1 forward probe (zero natural noise) -------------------------------
     if rs["loss"] and cs["loss"] and rs["loss"][0]:
         rel = 100 * abs(cs["loss"][0] - rs["loss"][0]) / abs(rs["loss"][0])
-        lim = max(STEP1_REL_FLOOR_PCT, (band.get("step1_loss_rel_pct") or 0) * safety)
-        res["checks"]["step1_loss_rel_pct"] = {"value": round(rel, 6), "limit": round(lim, 6)}
+        floor = STEP1_FLOOR_PCT.get(candidate_kind, STEP1_REL_FLOOR_PCT)
+        lim = max(floor, (band.get("step1_loss_rel_pct") or 0) * safety)
+        res["checks"]["step1_loss_rel_pct"] = {"value": round(rel, 6), "limit": round(lim, 6),
+                                               "candidate_kind": candidate_kind}
         if rel > lim:
             failures.append(f"step-1 loss differs by {rel:.4f}% (limit {lim:.4f}%): the forward path "
                             f"changed before any optimizer update could explain it")
@@ -219,6 +249,7 @@ def verdict(ref_dir, cand_dir, band):
                 failures.append(f"{key} moved the SAME direction on all {len(d)} early steps: a "
                                 f"systematic bias, not noise (every magnitude check can still pass)")
 
+    res["implementation_delta"] = impl_delta
     res["pass"] = not failures
     res["reason"] = "; ".join(failures) if failures else "within the calibrated per-step envelope"
     return res
@@ -248,6 +279,7 @@ if __name__ == "__main__":
     elif cmd == "compare":
         bandpath = sys.argv[sys.argv.index("--band") + 1] if "--band" in sys.argv else None
         band = json.load(open(bandpath)) if bandpath else {"limits": {}}
-        print(json.dumps(verdict(sys.argv[2], sys.argv[3], band), indent=2))
+        kind = sys.argv[sys.argv.index("--kind") + 1] if "--kind" in sys.argv else "overlay"
+        print(json.dumps(verdict(sys.argv[2], sys.argv[3], band, kind), indent=2))
     else:
         sys.exit(_usage())

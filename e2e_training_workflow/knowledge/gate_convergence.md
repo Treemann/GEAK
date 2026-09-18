@@ -70,10 +70,26 @@ pair passes.
 baseline runs at identical config. Re-calibrate per workload: divergence rates differ with model
 size and parallel mapping.
 
-**Known gap.** The step-1 floor (0.05% relative) is a policy guess, not a calibration: a baseline
-pair runs identical kernels, so its step-1 delta is exactly 0 and provides no floor. A legitimate
-kernel swap perturbs rounding; calibrating this needs a pair of known-equivalent kernel backends.
-Until then, treat a step-1 failure on a kernel swap as "investigate", not as proof of a bug.
+**The band must match what the candidate IS.** Measured: same kernels give a step-1 delta of exactly
+0 (bit-identical at 0.5B and 7B alike); two attention backends give **0.2917%**. So a band calibrated
+from a same-kernel pair rejects any kernel swap out of hand. Pass `candidate_kind`:
+
+| kind | meaning | step-1 floor |
+|---|---|---|
+| `overlay` | should not change numerics at all | 0.05% |
+| `kernel_swap` | different implementation, same mathematics | 0.35% (measured, one pair) |
+
+**Still open:** the per-step ENVELOPE has the same problem and is not yet solved — calibrated from a
+same-kernel pair, it over-rejects a legitimate kernel swap (under `kernel_swap` the step-1 check
+passes while the envelope still fails). It needs a band from a KNOWN-GOOD kernel-swap pair. The
+0.2917% pair does not qualify yet: it has not been separated into "pure numerics" versus "the flash
+path does not preserve packing isolation" (the separating test is packed-vs-unpacked per backend).
+
+**Workload identity vs implementation.** L1 compares only the workload-identity keys (batch,
+sequence, mapping, data). The implementation keys (`attention-backend`, `NVTE_*`) are what a candidate
+changes, and requiring them to match refuses every config-level candidate without looking at the
+trajectory. `config_digest` covers identity; `impl_digest` covers implementation; the verdict reports
+`implementation_delta`.
 
 ## L2 — soak
 Opt-in, plus auto-triggered for high-risk classes: anything touching backward, the optimizer, a

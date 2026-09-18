@@ -4,6 +4,11 @@
 #   NPROC ITERS MBS GBS SEQ ARCH_ARGS ROPE_BASE EXTRA_TRAIN_ARGS EXTRA_ENV GEAK_SCRIPTS
 # Sets JOB_PID. Everything Megatron-specific lives here; the dispatcher stays stack-neutral.
 #
+# ATTENTION_BACKEND is overridable because it is a CONFIG choice, not an adapter fact: the image
+# ships NVTE_FUSED_ATTN=1 / NVTE_FLASH_ATTN=0, and Megatron asserts if the CLI backend disagrees with
+# that env. Hardcoding `fused` here made an entire measurement leg unusable the first time a
+# different backend was needed. It belongs to the config IR once ConfigSweep exists.
+#
 # ROCm/upstream compatibility is NOT optional here (see scripts/rocm_compat.py): upstream Megatron
 # cannot initialize on ROCm, and its --sft THD path mis-shapes cu_seqlens. Both are applied by the
 # launcher shim, which is also where the measurement probe is installed.
@@ -40,7 +45,7 @@ adapter_launch() {
       --seq-length "$SEQ" --max-position-embeddings "$SEQ" \
       --normalization RMSNorm --swiglu --position-embedding-type rope --rotary-base "$ROPE_BASE" \
       --disable-bias-linear --add-qkv-bias \
-      --transformer-impl transformer_engine --attention-backend fused \
+      --transformer-impl transformer_engine --attention-backend "${ATTENTION_BACKEND:-fused}" \
       --tokenizer-type SFTTokenizer --tokenizer-model "$TOKENIZER_DIR" \
       --load "$MODEL_CKPT" --finetune --ckpt-format torch_dist --no-load-optim --no-load-rng \
       --sft --sft-tokenizer-prompt-format "${PROMPT_FORMAT:-default}" \
