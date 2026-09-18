@@ -49,12 +49,20 @@ def error_stats(actual, reference):
     denom = r.abs().mean().clamp_min(1e-12)
     pos = (d > 0).sum().item()
     nz = (d != 0).sum().item()
+    rr = (r * r).sum()
     return {
         "max_abs": d.abs().max().item(),
         "mean_abs": d.abs().mean().item(),
         "rel_mean_abs": (d.abs().mean() / denom).item(),
-        # 0.5 for unbiased rounding noise; near 0 or 1 means a systematic bias.
+        # 0.5 for unbiased rounding noise; near 0 or 1 means an ADDITIVE systematic bias.
         "sign_balance": (pos / nz) if nz else 0.5,
+        # The sign test alone is NOT enough, and a negative test proved it: a candidate scaled by
+        # 1.005 produces d = 0.005*r, whose sign simply follows r -- so sign_balance stays at ~0.5
+        # and the magnitude check passes too (the original's own bf16 error is LARGER than the bias).
+        # A MULTIPLICATIVE bias only shows up in the correlation between the error and the value:
+        # <d,r>/<r,r> is exactly the implied scale offset (0.005 for the case above, ~0 for rounding).
+        "scale_bias": ((d * r).sum() / rr).item() if float(rr) > 0 else 0.0,
+        "offset_bias": (d.mean() / denom).item(),
         "nonzero_frac": nz / d.numel(),
     }
 

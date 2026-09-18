@@ -539,6 +539,44 @@ Three bugs found by running it, all now fixed and all worth remembering:
    ProcessGroup pickle error. The hook is now exception-safe: a capture failure must never take down
    a training run, the same doctrine the probe already follows.
 
+### The seam to the kernel layer is closed (`scripts/build_task_dir.py`)
+`kernel_workflow` expects an op task dir holding `meta.json` + an immutable `unittest.py` + a frozen
+baseline + optionally `reference_io.pt`. Our capture produced none of that shape, so the recursive
+call was handing the kernel layer something it could not read. That gap is now closed and validated.
+
+**The idea that makes a training op fit an inference-shaped harness:** wrap forward AND backward into
+ONE callable returning `(out, dgrad, dln_weight, wgrad)`. The kernel layer's harness compares
+multi-tensor returns component-wise and times whatever closure it is given, so a single wrapper buys
+L0 on every quantity *and* a fwd+bwd-combined latency measurement — with **no change to the kernel
+layer**, which is the point.
+
+**What the task IS:** the pure-tensor mathematical operation, with the golden taken from the isolated
+re-run of the original. It is explicitly *not* a replay of the captured call — the runtime handles
+make that impossible — and `meta.json` records them as context so a candidate is not expected to
+reproduce them.
+
+**A per-element rtol is the wrong gate here, measured:** the untouched original scores
+`max_rel_err = 11.7` against its own fp32 reference, because `dgrad` is ~77% zeros (padding carries
+no gradient) and per-element relative error explodes on tiny values. The harness check is therefore
+reported as structural information (shapes, NaN, output independence) and the real gate is the
+base-error rule, whose thresholds are baked into `meta.json` at build time.
+
+**A negative test found a real hole in that rule.** A candidate with a `x1.005` systematic scale
+passed BOTH the magnitude check (the original's own bf16 error, 0.764, is *larger* than the bias)
+AND the sign test (`sign_balance` 0.528). The reason is structural: `sign_balance` detects an
+ADDITIVE bias, while a multiplicative one produces `err = 0.005 x ref`, whose sign simply follows the
+value's. The discriminating statistic is the error-vs-value correlation,
+`scale_bias = <err,ref>/<ref,ref>`, which *is* the implied scale offset. After adding it:
+
+| candidate | verdict | scale_bias on `out` |
+|---|---|---|
+| `x1.005` systematic scale | **FAIL (SCALE-BIAS)** | `+5.00e-03` — the injected bias, recovered exactly |
+| unbiased `1e-3` noise | **PASS** | `-1.13e-09` |
+
+The lesson generalises beyond this op: a correctness gate built only on magnitudes and sign balance
+will wave through exactly the failure mode L1 exists to catch, and it will look rigorous while doing
+it.
+
 ### Overlay + engagement proof (validated by identity rebind)
 `scripts/overlay_train.py` rebinds a training op through the same PYTHONPATH entry point as the
 probe — nothing under site-packages or the Megatron checkout is modified, and removing the env var
@@ -617,6 +655,44 @@ match**, so every later edit keyed on the text it should have produced also no-o
 happily reported success (it only proved the script ran, not that it changed anything). Edits to
 these files now assert the pattern matched before writing. The same class of mistake as editing a
 script while it executes: the feedback said "fine" while the artifact said otherwise.
+
+### The seam to the kernel layer is closed (`scripts/build_task_dir.py`)
+`kernel_workflow` expects an op task dir holding `meta.json` + an immutable `unittest.py` + a frozen
+baseline + optionally `reference_io.pt`. Our capture produced none of that shape, so the recursive
+call was handing the kernel layer something it could not read. That gap is now closed and validated.
+
+**The idea that makes a training op fit an inference-shaped harness:** wrap forward AND backward into
+ONE callable returning `(out, dgrad, dln_weight, wgrad)`. The kernel layer's harness compares
+multi-tensor returns component-wise and times whatever closure it is given, so a single wrapper buys
+L0 on every quantity *and* a fwd+bwd-combined latency measurement — with **no change to the kernel
+layer**, which is the point.
+
+**What the task IS:** the pure-tensor mathematical operation, with the golden taken from the isolated
+re-run of the original. It is explicitly *not* a replay of the captured call — the runtime handles
+make that impossible — and `meta.json` records them as context so a candidate is not expected to
+reproduce them.
+
+**A per-element rtol is the wrong gate here, measured:** the untouched original scores
+`max_rel_err = 11.7` against its own fp32 reference, because `dgrad` is ~77% zeros (padding carries
+no gradient) and per-element relative error explodes on tiny values. The harness check is therefore
+reported as structural information (shapes, NaN, output independence) and the real gate is the
+base-error rule, whose thresholds are baked into `meta.json` at build time.
+
+**A negative test found a real hole in that rule.** A candidate with a `x1.005` systematic scale
+passed BOTH the magnitude check (the original's own bf16 error, 0.764, is *larger* than the bias)
+AND the sign test (`sign_balance` 0.528). The reason is structural: `sign_balance` detects an
+ADDITIVE bias, while a multiplicative one produces `err = 0.005 x ref`, whose sign simply follows the
+value's. The discriminating statistic is the error-vs-value correlation,
+`scale_bias = <err,ref>/<ref,ref>`, which *is* the implied scale offset. After adding it:
+
+| candidate | verdict | scale_bias on `out` |
+|---|---|---|
+| `x1.005` systematic scale | **FAIL (SCALE-BIAS)** | `+5.00e-03` — the injected bias, recovered exactly |
+| unbiased `1e-3` noise | **PASS** | `-1.13e-09` |
+
+The lesson generalises beyond this op: a correctness gate built only on magnitudes and sign balance
+will wave through exactly the failure mode L1 exists to catch, and it will look rigorous while doing
+it.
 
 ### Overlay + engagement proof (validated by identity rebind)
 `scripts/overlay_train.py` rebinds a training op through the same PYTHONPATH entry point as the
