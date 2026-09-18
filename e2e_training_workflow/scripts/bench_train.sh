@@ -26,6 +26,11 @@ EXTRA_TRAIN_ARGS=""; EXTRA_ENV=""; MBS_OVR=""; GBS_OVR=""; SEQ_OVR=""
 # capability manifest). Empty => no trace, and the run is byte-identical to an unprofiled one.
 PROFILE_STEPS=""; PROFILE_RANKS="0"
 HANG_TIMEOUT="${HANG_TIMEOUT:-900}"     # no step progress for this long => hung collective
+# Contamination policy (locked: re-measure). A leg that shared the box with a foreign GPU process is
+# not a measurement, so it is RE-RUN rather than reported. Retries are bounded: past this, the node
+# is busy in a way the workflow cannot fix, and burning gate budget on it is worse than stopping and
+# saying so. Every attempt is recorded, because a leg that needed three tries is itself a finding.
+RETRY_CONTAMINATED="${RETRY_CONTAMINATED:-2}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -41,6 +46,7 @@ while [ $# -gt 0 ]; do
     --tag) TAG="$2"; shift 2 ;;
     --extra-train-args) EXTRA_TRAIN_ARGS="$2"; shift 2 ;;
     --extra-env) EXTRA_ENV="$2"; shift 2 ;;
+    --retry-contaminated) RETRY_CONTAMINATED="$2"; shift 2 ;;
     --profile-steps) PROFILE_STEPS="$2"; shift 2 ;;
     --profile-ranks) PROFILE_RANKS="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -63,10 +69,13 @@ adapter_capabilities > "$OUT_DIR/capabilities.json"
 echo ">>> bench_train: stack=$STACK workload=$WORKLOAD_NAME nproc=$NPROC iters=$ITERS mbs=$MBS gbs=$GBS seq=$SEQ"
 echo ">>> out=$OUT_DIR"
 
-python3 "$GEAK_SCRIPTS/gpu_occupancy.py" before > "$OUT_DIR/occupancy_before.json" 2>/dev/null
+# ---- one attempt: occupancy sample -> job -> occupancy sample -> verdict -------------------
+run_attempt() {
+  local n="$1"
+  python3 "$GEAK_SCRIPTS/gpu_occupancy.py" before > "$OUT_DIR/occupancy_before.json" 2>/dev/null
 
-adapter_launch
-echo ">>> job pid $JOB_PID"
+  adapter_launch
+  echo ">>> attempt $n: job pid $JOB_PID"
 
 # ---- hang watchdog -------------------------------------------------------------------------
 # A hung collective leaves every rank ALIVE while nobody advances, so process liveness reports
@@ -87,13 +96,37 @@ echo ">>> job pid $JOB_PID"
   done ) &
 WATCHDOG=$!
 
-wait "$JOB_PID"; JOB_RC=$?
-kill "$WATCHDOG" 2>/dev/null
-adapter_teardown "$JOB_PID" >/dev/null 2>&1
+  wait "$JOB_PID"; JOB_RC=$?
+  # run_attempt is consumed through a pipe, so it executes in a SUBSHELL and any variable it sets is
+  # lost to the parent. The exit code has to travel through the filesystem, not through a variable.
+  echo "$JOB_RC" > "$OUT_DIR/.job_rc"
+  kill "$WATCHDOG" 2>/dev/null
+  adapter_teardown "$JOB_PID" >/dev/null 2>&1
 
-python3 "$GEAK_SCRIPTS/gpu_occupancy.py" after > "$OUT_DIR/occupancy_after.json" 2>/dev/null
-python3 "$GEAK_SCRIPTS/gpu_occupancy.py" compare "$OUT_DIR/occupancy_before.json" \
-        "$OUT_DIR/occupancy_after.json" "" > "$OUT_DIR/occupancy_verdict.json" 2>/dev/null
+  python3 "$GEAK_SCRIPTS/gpu_occupancy.py" after > "$OUT_DIR/occupancy_after.json" 2>/dev/null
+  python3 "$GEAK_SCRIPTS/gpu_occupancy.py" compare "$OUT_DIR/occupancy_before.json" \
+          "$OUT_DIR/occupancy_after.json" "" > "$OUT_DIR/occupancy_verdict.json" 2>/dev/null
+  python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('verdict','unknown'))" \
+          "$OUT_DIR/occupancy_verdict.json" 2>/dev/null || echo unknown
+}
+
+ATTEMPTS=0
+while :; do
+  ATTEMPTS=$((ATTEMPTS + 1))
+  VERDICT="$(run_attempt "$ATTEMPTS" | tail -1)"
+  JOB_RC="$(cat "$OUT_DIR/.job_rc" 2>/dev/null || echo 1)"
+  [ "$VERDICT" = "contaminated" ] || break
+  if [ "$ATTEMPTS" -gt "$RETRY_CONTAMINATED" ]; then
+    echo "!!! leg contaminated on all $ATTEMPTS attempts — NOT reporting a number. Another process " \
+         "held a GPU each time; this node is busy in a way the workflow cannot fix." | tee -a "$OUT_DIR/train.log"
+    echo "{\"contamination_exhausted\": true, \"attempts\": $ATTEMPTS}" > "$OUT_DIR/blocked.json"
+    break
+  fi
+  echo ">>> leg contaminated (a foreign process held a GPU); re-measuring (attempt $((ATTEMPTS + 1)))" \
+    | tee -a "$OUT_DIR/train.log"
+  mv "$OUT_DIR/probe" "$OUT_DIR/probe.contaminated.$ATTEMPTS" 2>/dev/null || true
+  mkdir -p "$PROBE_DIR"
+done
 
 # A capture run writes the frozen record (tens of MB) from inside a backward hook, which costs real
 # time: measured 4043.9 vs ~4755 useful tok/s/GPU on the same config, a 15% dent. So a capture run is
@@ -113,17 +146,22 @@ if [ -n "$PROFILE_STEPS" ]; then
 fi
 
 STACK_TPUT="$(adapter_metrics 2>/dev/null)"
-python3 - "$PROBE_DIR" "$OUT_DIR" "$JOB_RC" "${STACK_TPUT:-}" <<'PY'
+python3 - "$PROBE_DIR" "$OUT_DIR" "$JOB_RC" "${STACK_TPUT:-}" "$ATTEMPTS" <<'PY'
 import json, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(os.environ["GEAK_SCRIPTS"] + "/x")))
 from probe_summarize import summarize
 
 probe_dir, out_dir, rc, stack_tput = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+attempts = int(sys.argv[5]) if len(sys.argv) > 5 else 1
 s = summarize(probe_dir)
 s["job_returncode"] = rc
 s["hang_detected"] = os.path.exists(os.path.join(out_dir, "hang.json"))
 s["profiled_run"] = os.path.exists(os.path.join(out_dir, "profiled.json"))
 s["captured_run"] = os.path.exists(os.path.join(out_dir, "captured.json"))
+# A leg that needed retries is itself a finding: it says the node was not quiet.
+s["attempts"] = attempts
+s["contamination_retries"] = attempts - 1
+s["contamination_exhausted"] = os.path.exists(os.path.join(out_dir, "blocked.json"))
 for name in ("occupancy_verdict", "capabilities"):
     p = os.path.join(out_dir, name + ".json")
     if os.path.exists(p):
@@ -136,7 +174,7 @@ s["stack_reported"] = {"tflop_s_per_gpu_median": float(stack_tput) if stack_tput
                        "note": "cross-check only; the gate uses useful_tok_s_per_gpu from the probe"}
 # A profiled run can never be a gate leg: the window it traced is not the workload's real timing.
 ok = (rc == 0 and not s["hang_detected"] and not s["profiled_run"] and not s["captured_run"]
-      and "error" not in s
+      and not s["contamination_exhausted"] and "error" not in s
       and s.get("occupancy_verdict", {}).get("verdict") != "contaminated")
 s["status"] = "ok" if ok else "unusable"
 json.dump(s, open(os.path.join(out_dir, "bench_summary.json"), "w"), indent=2)

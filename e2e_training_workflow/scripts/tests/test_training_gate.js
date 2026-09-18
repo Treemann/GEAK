@@ -77,6 +77,16 @@ const leg = (o = {}) => Object.assign({
   ok(!legUsable(leg({ occupancy_verdict: { verdict: 'unknown' } })).ok,
     'unprovable isolation is treated as unusable, not as clean');
   ok(!legUsable(leg({ hang_detected: true })).ok, 'a hung leg is unusable');
+  const blocked = legUsable(leg({ status: 'unusable', contamination_exhausted: true, attempts: 3 }));
+  ok(!blocked.ok && blocked.fatal === true,
+    'a leg contaminated on every retry is FATAL, not merely unusable (the node is busy; more gates ' +
+    'cannot fix it)');
+  ok(/all 3 attempts/.test(blocked.why), 'the fatal reason names how many attempts were made');
+  ok(legUsable(leg({ status: 'unusable' })).fatal !== true,
+    'an ordinary unusable leg stays NON-fatal — only exhausted contamination stops the run');
+  // Order guard: a blocked leg also has status != ok, so the generic check must not shadow it.
+  ok(/ORDER MATTERS/.test(extract('legUsable')),
+    'the contamination check runs BEFORE the generic status check (it would otherwise be shadowed)');
   ok(!legUsable(leg({ status: 'unusable' })).ok, 'status!=ok is unusable');
   ok(!legUsable(leg({ useful_tok_s_per_gpu: 0 })).ok, 'no useful-token throughput is unusable');
 }
@@ -113,6 +123,9 @@ const leg = (o = {}) => Object.assign({
     'a +110% delta measured at a DIFFERENT config digest is refused as incomparable, not accepted');
   ok(v({ cand: leg({ useful_tok_s_per_gpu: 4800, ranks_agree_on_argv: false }) }).klass === 'incomparable',
     'ranks running different argv inside one leg make it incomparable');
+  const fatal = v({ ref: leg({ status: 'unusable', contamination_exhausted: true, attempts: 3 }) });
+  ok(fatal.klass === 'blocked' && fatal.fatal === true,
+    'exhausted contamination surfaces as klass=blocked + fatal, so the loop can stop the run');
   ok(v({ ref: leg({ occupancy_verdict: { verdict: 'contaminated' } }),
          cand: leg({ useful_tok_s_per_gpu: 9999 }) }).klass === 'unusable_ref',
     'a huge delta against a contaminated reference is refused, not celebrated');
@@ -189,6 +202,8 @@ const leg = (o = {}) => Object.assign({
     ok(/ConfigSweep is not implemented yet/.test(src) && /fast-mode result under a/.test(src),
       'deep mode REFUSES rather than silently running the fast pipeline under a deep label');
     ok(/noImprove >= 2/.test(src), 'two consecutive non-wins stop the kernel track');
+    ok(/if \(v\.fatal\)/.test(src) && /STOPPING: the box is not quiet enough/.test(src),
+      'a fatal verdict STOPS the run rather than spending the rest of the gate budget on a busy node');
     ok(/gatesUsed < MAX_GATES/.test(src) && /tasksUsed < BUDGET/.test(src) && /outOfTime\(\)/.test(src),
       'the loop is bounded by gates, tasks AND wall clock');
     ok(/Setup produced no baseline/.test(src),

@@ -46,6 +46,21 @@ a convenient constant.
 containers; a neighbour taking a GPU mid-leg drags one side down and the delta becomes fiction.
 `unknown` occupancy counts as unusable, not as clean — unprovable isolation is not isolation.
 
+**Contamination policy (locked): RE-MEASURE, bounded.** A contaminated leg is re-run, up to
+`--retry-contaminated` times (default 2, so 3 attempts). Rationale: re-measuring costs one leg;
+killing a neighbour's job could cost days of someone else's work, and the workflow cannot tell which
+it is. Nothing is ever killed automatically.
+
+Every attempt is recorded (`attempts`, `contamination_retries`) because a leg that needed three tries
+is itself a finding about the node.
+
+**Exhausting the retries is NOT a "no win".** It means the node was busy every time, which no amount
+of further gating can fix, so it is fatal: `contamination_exhausted` -> `status: unusable` ->
+`gateVerdict` returns `klass: blocked, fatal: true` -> the run STOPS and says so. Treating it as an
+ordinary non-win would quietly spend the rest of the gate budget on measurements that cannot mean
+anything. (Order matters in `legUsable`: a blocked leg also has `status != "ok"`, so the
+contamination check must run FIRST or the generic one shadows it.)
+
 ## 6. Two legs must have the same `config_digest`
 The digest is computed from what the **probe observed inside the ranks**, not from what the caller
 intended. `ranks_agree_on_argv` additionally catches two configurations mixed inside ONE leg. A ratio

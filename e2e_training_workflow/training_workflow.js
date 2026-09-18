@@ -98,6 +98,13 @@ function noiseBandPct(ref, cand) {
 
 /** Is a leg usable at all? A leg that is unusable must never become a reference. */
 function legUsable(leg) {
+  // ORDER MATTERS. A blocked leg also has status != "ok", so the generic check must not run first:
+  // it would report "leg status != ok" and the run would treat a busy node as an ordinary non-win,
+  // quietly spending the rest of the gate budget on measurements that cannot mean anything.
+  if (leg && leg.contamination_exhausted) {
+    return { ok: false, fatal: true,
+             why: `contaminated on all ${leg.attempts || '?'} attempts — the node is not quiet` };
+  }
   if (!leg || leg.status !== 'ok') return { ok: false, why: 'leg status != ok' };
   if (leg.hang_detected) return { ok: false, why: 'hang detected' };
   const occ = (leg.occupancy_verdict || {}).verdict;
@@ -127,8 +134,10 @@ function comparable(ref, cand) {
  *  no config knob to convert it with until ConfigSweep exists). L0/L1 can only ever REJECT. */
 function gateVerdict({ ref, cand, l0, l1, mode }) {
   const ru = legUsable(ref), cu = legUsable(cand);
-  if (!ru.ok) return { accepted: false, klass: 'unusable_ref', reason: `reference leg unusable: ${ru.why}` };
-  if (!cu.ok) return { accepted: false, klass: 'unusable_cand', reason: `candidate leg unusable: ${cu.why}` };
+  if (!ru.ok) return { accepted: false, klass: ru.fatal ? 'blocked' : 'unusable_ref',
+                       fatal: !!ru.fatal, reason: `reference leg unusable: ${ru.why}` };
+  if (!cu.ok) return { accepted: false, klass: cu.fatal ? 'blocked' : 'unusable_cand',
+                       fatal: !!cu.fatal, reason: `candidate leg unusable: ${cu.why}` };
   const cmp = comparable(ref, cand);
   if (!cmp.ok) return { accepted: false, klass: 'incomparable', reason: cmp.why };
   if (l0 && l0.pass === false) return { accepted: false, klass: 'numerics', reason: `L0 failed: ${l0.reason || 'op-level numerics'}` };
@@ -448,6 +457,13 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !outOf
                           l0: audit && audit.l0, l1: audit && audit.l1,
                           mode: DEEP_MODE ? 'deep' : 'fast' });
   log0(`  gate: ${v.klass} — ${v.reason}`);
+  if (v.fatal) {
+    // Retries are already exhausted inside bench_train.sh; continuing would spend the remaining
+    // gate budget measuring a busy node and report the results as if they meant something.
+    wfReturn.blocked = { reason: v.reason, head: h.short_name || h.kernel };
+    log0('  STOPPING: the box is not quiet enough to measure on. Re-run when it is.');
+    break;
+  }
   const record = { head: h.short_name || h.kernel, verdict: v, audit: audit || null,
                    overlay: integ.overlay_path || null, task_dir: optimized.ext.task_dir };
 
