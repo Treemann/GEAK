@@ -17,12 +17,23 @@ Nothing to argue about, and no penalty for rounding the baseline also does.
 magnitude check and still destroys convergence. Measured baseline profile on TE `_LayerNormLinear`:
 `out` rel 0.196%, sign_balance 0.489 — unbiased, as a healthy bf16 op should be.
 
-**Backward is currently ADVISORY, not enforceable.** Measured `rel_mean_abs` > 1.0 on `dgrad` /
-`wgrad` means the captured tensors and a single-call reference are not the same quantity — most
-likely `gradient_accumulation_fusion` writing into `main_grad`, and/or a reduction. The sign balances
-(0.48-0.50) show no systematic bias, so this is a comparability problem, not a correctness one. Until
-the isolated gradient contribution is captured, weight the sign test over the magnitude test on the
-backward, and say in the report which half of L0 was enforceable.
+**Backward is enforceable.** Measured baseline profile on TE `_LayerNormLinear`: `dgrad` 2.69%,
+`dln_weight` 3.85%, `wgrad` 3.85%, all with sign balance ~0.5.
+
+Getting a valid backward comparison requires one specific thing: **re-run the original op in
+isolation, in the live process, on the frozen inputs**. Every cheaper route fails, and fails
+plausibly:
+* `register_hook` on an input tensor returns the SUM over all consumers (the hidden state also feeds
+  the residual add), not this op's contribution;
+* intercepting the op's own `backward` cannot be paired to the captured forward — backward runs in
+  reverse and one `Function` class serves several call sites (TE's `_LayerNormLinear` is both the
+  QKV projection and the MLP's first layer). Mis-pairing shows up as `rel_mean_abs` near exactly
+  1.0, the signature of comparing uncorrelated tensors;
+* pairing those call sites by shape does not discriminate: they differ only in the weight, whose
+  gradient is absent under `gradient_accumulation_fusion`.
+
+Under grad-accum fusion, attach a zeroed `main_grad` buffer to the cloned weight: TE dereferences it
+unconditionally, and afterwards it holds exactly this op's weight-gradient contribution.
 
 ## L1 — trajectory level (`scripts/trajectory_gate.py`)
 **Training is chaotic. This is measured, not theoretical.** Two runs at identical config on identical

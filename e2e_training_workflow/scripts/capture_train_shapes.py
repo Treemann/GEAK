@@ -115,11 +115,14 @@ def install():
             return orig(*a, **kw)
         _state["captured"] = True
         rec = {"target": _TARGET, "step": _STEP, "args": _snap(a), "kwargs": _snap(kw)}
+        _state["rec"] = rec
 
-        # Capture the ORIGINAL implementation's input gradients too. Without them there is nothing to
-        # measure "the error the baseline already carries" against on the backward side, and the L0
-        # rule ("no further from fp32 than the original") would only be enforceable on the forward --
-        # on a workload whose top head IS a backward kernel.
+        # Input gradients come from the autograd.Function BOUNDARY (_wrap_backward), NOT from
+        # register_hook on the input tensors. A tensor hook fires with the SUM over every consumer of
+        # that tensor, and the hidden state feeding this op also feeds the residual add -- so a hook
+        # returns this op's gradient PLUS the residual path's. That is what made the first backward
+        # comparison nonsense (rel_mean_abs ~1.5 against a single-call reference), and it survived
+        # disabling gradient_accumulation_fusion, which is how the real cause was finally found.
         rec["input_grads"] = {}
 
         def _save(why):
@@ -138,19 +141,8 @@ def install():
                       flush=True)
             except Exception as e:
                 print(f"[geak-capture] capture FAILED (run continues): {e!r}", flush=True)
-        for _i, _t in enumerate(_flat(a)):
-            if torch.is_tensor(_t) and _t.requires_grad:
-                def _mk(idx):
-                    def _g(grad):
-                        try:
-                            rec["input_grads"][str(idx)] = _snap(grad)
-                            _save(f"input_grad[{idx}]")
-                        except Exception:
-                            pass
-                        return grad
-                    return _g
-                _t.register_hook(_mk(_i))
 
+        _state["save"] = _save
         out = orig(*a, **kw)
         # grad_output is captured from the LIVE run: a synthetic one of the right shape would have
         # the wrong scale, and backward kernels are scale-sensitive.
@@ -162,19 +154,26 @@ def install():
                 # down an 8-rank job mid-backward.
                 try:
                     rec["grad_output"] = _snap(g)
-                    path = os.path.join(_DIR, f"reference_io_rank{_RANK}.pt")
-                    tmp = path + ".partial"
-                    torch.save(rec, tmp)
-                    os.replace(tmp, path)          # atomic: a reader never sees a half-written file
-                    _write_meta(rec)
-                    print(f"[geak-capture] wrote {path} "
-                          f"(fwd inputs + grad_output for {_TARGET})", flush=True)
+                    _save("grad_output")
+                    # The isolated fwd+bwd of the ORIGINAL op, run HERE, synchronously, on the frozen
+                    # inputs in the live process. This is the only sound way to get "what the
+                    # original produces" for this op: intercepting the real backward cannot be paired
+                    # to the captured forward (backward runs in reverse and one Function class serves
+                    # several call sites that share every shape but the weight), and replaying
+                    # offline is impossible because of the runtime handles.
+                    if _isolated_rerun(orig, rec, a, kw, g.detach().clone()):
+                        rec["input_grads"] = rec["isolated"]["grads"]
+                        rec["_bwd_done"] = True
+                        _save("isolated re-run of the ORIGINAL op on the frozen inputs")
                 except Exception as e:
                     print(f"[geak-capture] capture FAILED (run continues): {e!r}", flush=True)
                 return g
             tgt.register_hook(_hook)
         rec["output"] = _snap(out)
         return out
+
+    if isinstance(owner, type) and issubclass(owner, torch.autograd.Function):
+        _wrap_backward(owner, rec_holder=lambda: _state.get("rec"), save=lambda why: _state["save"](why))
 
     if name == "apply" and isinstance(owner, type):
         # staticmethod on the class: bind it explicitly or python re-wraps it as a bound method.
@@ -184,6 +183,122 @@ def install():
     print(f"[geak-capture] armed on {_TARGET} (via {owner.__name__ if isinstance(owner, type) else owner.__name__}.{name}) "
           f"for step {_STEP}", flush=True)
     return True
+
+
+def _iter_tensors(node):
+    if isinstance(node, dict) and node.get("__t__"):
+        yield node
+    elif isinstance(node, list):
+        for v in node:
+            yield from _iter_tensors(v)
+    elif isinstance(node, dict):
+        for v in node.values():
+            yield from _iter_tensors(v)
+
+
+def _isolated_rerun(orig_call, rec, args, kwargs, grad_output):
+    """Re-run the ORIGINAL op alone, in the live process, on the frozen inputs.
+
+    This replaces every attempt to intercept the real backward, and it is the only approach that is
+    actually sound here:
+
+    * pairing by call order fails -- backward runs in REVERSE, so the first backward to fire belongs
+      to a different invocation than the forward just captured;
+    * pairing by shape fails too -- one Function class serves several call sites (TE's
+      _LayerNormLinear is both the attention QKV projection and the MLP's first layer) and they share
+      every shape except the weight, whose gradient is absent under gradient_accumulation_fusion. The
+      first version of this code silently paired layer A's forward with layer B's backward and
+      produced rel_mean_abs ~= 1.0, the signature of comparing uncorrelated tensors;
+    * replaying offline fails -- the call carries runtime handles that cannot be rebuilt.
+
+    Running it here sidesteps all three: same process, same handles, same inputs, one call.
+    """
+    try:
+        import copy as _copy
+
+        leaves, main_grads = [], []
+
+        def _clone(node):
+            if torch.is_tensor(node):
+                t = node.detach().clone()
+                if node.requires_grad:
+                    t.requires_grad_(True)
+                    leaves.append(t)
+                # Under gradient_accumulation_fusion the op writes weight gradients into a
+                # `main_grad` buffer that Megatron attaches to the parameter, and TE's backward
+                # dereferences it unconditionally (without this the re-run dies with
+                # "'Tensor' object has no attribute 'main_grad'"). Giving the clone its OWN zeroed
+                # buffer both satisfies that and hands us the isolated weight gradient: after the
+                # backward, the buffer holds exactly this op's contribution and nothing else --
+                # which is precisely the quantity the real backward never returns.
+                mg = getattr(node, "main_grad", None)
+                if mg is not None:
+                    t.main_grad = torch.zeros_like(mg)
+                    main_grads.append((tuple(t.shape), t))
+                return t
+            if isinstance(node, (list, tuple)):
+                return type(node)(_clone(v) for v in node)
+            return node
+
+        new_args = [_clone(v) for v in args]
+        new_kwargs = {k: _clone(v) for k, v in kwargs.items()}
+        with torch.enable_grad():
+            out = orig_call(*new_args, **new_kwargs)
+            tgt = out[0] if isinstance(out, (list, tuple)) and torch.is_tensor(out[0]) else out
+            grads = torch.autograd.grad(tgt, leaves, grad_outputs=grad_output,
+                                        allow_unused=True, retain_graph=False)
+        iso_grads = {str(i): _snap(g) for i, g in enumerate(grads) if torch.is_tensor(g)}
+        for shape, t in main_grads:
+            mg = getattr(t, "main_grad", None)
+            if mg is not None and mg.abs().sum() > 0:
+                iso_grads[f"main_grad{list(shape)}"] = _snap(mg)
+        rec["isolated"] = {
+            "out": _snap(tgt.detach()),
+            "grads": iso_grads,
+            "grad_shapes": [list(t.shape) for t in leaves],
+            "main_grad_shapes": [list(s_) for s_, _ in main_grads],
+        }
+        return True
+    except Exception as e:
+        rec["isolated_error"] = repr(e)
+        print(f"[geak-capture] isolated re-run failed: {e!r}", flush=True)
+        return False
+
+
+def _wrap_backward(fn_cls, rec_holder, save):
+    """Record what the op's OWN backward returns — its isolated gradient contribution.
+
+    This is the only place that number exists. Downstream, `x.grad` has already summed the residual
+    path in; upstream, grad_output is the input to the backward, not its output.
+    """
+    orig_bwd = fn_cls.backward
+
+    def wrapped_bwd(ctx, *grad_outputs):
+        grads = orig_bwd(ctx, *grad_outputs)
+        rec = rec_holder()
+        if rec is not None and not rec.get("_bwd_done"):
+            try:
+                gl = grads if isinstance(grads, tuple) else (grads,)
+                got = {tuple(g.shape) for g in gl if torch.is_tensor(g)}
+                # PAIRING GUARD. One Function class serves several call sites -- TE's
+                # _LayerNormLinear is both the attention QKV projection (896->1152) and the MLP's
+                # first layer (896->9728) -- and backward runs in REVERSE order, so the first
+                # backward to fire belongs to a DIFFERENT invocation than the forward we captured.
+                # Without this guard the record pairs layer A's forward with layer B's backward, and
+                # every downstream number is meaningless in a way that looks plausible
+                # (rel_mean_abs lands near 1.0, the signature of comparing uncorrelated tensors).
+                want = {tuple(n["shape"]) for n in _iter_tensors(rec["args"])}
+                if not (got & want):
+                    return grads
+                rec["input_grads"] = {str(i): _snap(g) for i, g in enumerate(gl)
+                                      if torch.is_tensor(g)}
+                rec["_bwd_done"] = True
+                save("function.backward (isolated, shape-paired to the captured forward)")
+            except Exception as e:
+                print(f"[geak-capture] backward capture failed (run continues): {e!r}", flush=True)
+        return grads
+
+    fn_cls.backward = staticmethod(wrapped_bwd)
 
 
 def _describe(node):

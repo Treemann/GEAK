@@ -103,8 +103,12 @@ def run(record_path, reference="rmsnorm_linear", arg_index=(0, 1, 2, 3)):
     tens = [_t(flat[i]) for i in arg_index if i < len(flat)]
     x, ln_w, w, b = (tens + [None] * 4)[:4]
 
+    iso = rec.get("isolated") or {}
     ref_out = REFERENCES[reference](x, ln_w, w, b)
-    captured_out = _t(rec.get("output")) if rec.get("output") is not None else None
+    # Prefer the ISOLATED re-run: same op, same frozen inputs, one call, no pairing ambiguity.
+    captured_out = _t(iso.get("out")) if iso.get("out") is not None else None
+    if captured_out is None:
+        captured_out = _t(rec.get("output")) if rec.get("output") is not None else None
     if captured_out is None:
         # output may be a tuple snapshot
         out_node = rec.get("output")
@@ -116,17 +120,34 @@ def run(record_path, reference="rmsnorm_linear", arg_index=(0, 1, 2, 3)):
     base = {"out": error_stats(captured_out, ref_out)}
     # Backward: compare the original's captured input grads against the reference's own grads.
     go = _t(rec.get("grad_output"))
-    if go is not None and rec.get("input_grads"):
+    src_grads = iso.get("grads") or rec.get("input_grads") or {}
+    if go is not None and src_grads:
+        # Match captured gradients to inputs BY SHAPE, not by index. The backward's return tuple is
+        # aligned with ALL of the forward's parameters (including the non-tensor ones), so its
+        # indices do not line up with the tensor list -- observed directly: the captured keys were
+        # ['0','1','3'], with no '2', because the weight gradient is absent from the returned tuple
+        # under gradient_accumulation_fusion (it goes straight into main_grad).
+        by_shape = {}
+        for k, node in src_grads.items():
+            if isinstance(node, dict) and node.get("__t__"):
+                by_shape.setdefault(tuple(node["shape"]), []).append((k, node))
         xg = x.clone().requires_grad_(True)
         lg = ln_w.clone().requires_grad_(True)
         wg = w.clone().requires_grad_(True)
         o = REFERENCES[reference](xg, lg, wg, b)
         grads = torch.autograd.grad(o, [xg, lg, wg], grad_outputs=go.float(), allow_unused=True)
-        names = {"0": "dgrad", "1": "dln_weight", "2": "wgrad"}
-        for k, g in zip(["0", "1", "2"], grads):
-            cap = rec["input_grads"].get(k)
-            if cap is not None and g is not None:
-                base[names[k]] = error_stats(_t(cap), g)
+        for label, tensor, g in (("dgrad", x, grads[0]), ("dln_weight", ln_w, grads[1]),
+                                 ("wgrad", w, grads[2])):
+            if g is None or tensor is None:
+                continue
+            match = by_shape.get(tuple(tensor.shape))
+            if not match:
+                base[label] = {"missing": True,
+                               "why": (f"the op's backward returned no gradient of shape "
+                                       f"{list(tensor.shape)}; under gradient_accumulation_fusion "
+                                       f"the weight gradient goes into main_grad instead")}
+                continue
+            base[label] = error_stats(_t(match[0][1]), g)
     return {"reference": reference, "base_error": base,
             "note": ("这 is the error the ORIGINAL carries; a candidate is judged against it, "
                      "not against a hand-picked tolerance").replace("这 is", "this is")}

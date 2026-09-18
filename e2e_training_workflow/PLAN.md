@@ -567,6 +567,85 @@ its owner. Getting it backwards replaces the class with a plain function, and th
 overlay install must SAY SO — falling through silently would leave the run measuring the original
 implementation while the report claims a candidate was tested.
 
+### L0 on real captured data — gap found, and CLOSED
+`scripts/l0_gate.py` judges a candidate against **the error the original already carries**, never
+against a hand-picked tolerance:
+
+    ref_fp32   an INDEPENDENT pure-PyTorch reference, in fp32, on the frozen inputs
+    base       what the ORIGINAL op produces on those same inputs
+    rule       a candidate is acceptable iff it is no further from ref_fp32 than `base` is (x1.25),
+               and its error distribution is not one-sided
+
+Measured on the captured TE `_LayerNormLinear`:
+
+| quantity | max_abs | rel_mean_abs | sign_balance |
+|---|---|---|---|
+| `out` | 0.764 | **0.196%** | 0.489 |
+| `dgrad` | 0.438 | **2.69%** | 0.500 |
+| `dln_weight` | 0.070 | **3.85%** | 0.474 |
+| `wgrad` | 0.373 | **3.85%** | 0.499 |
+
+A few percent on bf16 gradients accumulated over 4096 positions is exactly the right order, and every
+sign balance sits at ~0.5 (unbiased). **L0 is enforceable on forward AND backward.**
+
+#### Getting there took four wrong approaches, and each failure is a lesson
+The first backward numbers were `rel_mean_abs ~1.5` — nonsense, and nonsense that looked plausible.
+
+1. **Hypothesis: `gradient_accumulation_fusion`.** Refuted by experiment — a capture with
+   `--no-gradient-accumulation-fusion` produced the same ~1.5.
+2. **`register_hook` on the input tensors is the wrong instrument.** A tensor hook fires with the
+   SUM over every consumer, and the hidden state feeding this op also feeds the residual add. So the
+   captured "dgrad" was this op's gradient plus the residual path's.
+3. **Intercepting the op's own `backward` does not pair to the captured forward.** Backward runs in
+   REVERSE order, and one `Function` class serves several call sites — TE's `_LayerNormLinear` is
+   both the attention QKV projection (896->1152) and the MLP's first layer (896->9728). The record
+   was pairing layer A's forward with layer B's backward. The giveaway was `rel_mean_abs` landing at
+   **exactly 1.000**, which is what you get comparing uncorrelated tensors (`mean|a-b| == mean|b|`).
+4. **Pairing by shape is not sufficient either.** Those two call sites share every shape except the
+   weight — and the weight gradient is absent from the returned tuple under grad-accum fusion. The
+   shape guard passed on the shared shapes and kept the wrong pairing.
+
+**What works: re-run the ORIGINAL op in isolation, in the live process, on the frozen inputs.** Same
+handles, same inputs, one call, no pairing to get wrong. It also resolves the missing `wgrad`:
+attaching a zeroed `main_grad` buffer to the cloned weight both satisfies TE's unconditional
+dereference of it (`'Tensor' object has no attribute 'main_grad'`) and leaves exactly this op's
+weight-gradient contribution in that buffer — the quantity the real backward never returns.
+
+#### A process failure worth recording
+Four of those runs were wasted on a different problem: a string-replace edit that **silently did not
+match**, so every later edit keyed on the text it should have produced also no-op'd, while the tooling
+happily reported success (it only proved the script ran, not that it changed anything). Edits to
+these files now assert the pattern matched before writing. The same class of mistake as editing a
+script while it executes: the feedback said "fine" while the artifact said otherwise.
+
+### Overlay + engagement proof (validated by identity rebind)
+`scripts/overlay_train.py` rebinds a training op through the same PYTHONPATH entry point as the
+probe — nothing under site-packages or the Megatron checkout is modified, and removing the env var
+removes the change. On a single node `torchrun` inherits the parent environment, so one overlay
+reaches every rank; that assumption does **not** survive a move to multi-node.
+
+**Engagement is proven per half, and the halves are counted separately.** An overlay that binds the
+forward and leaves the backward on the original path still produces a plausible throughput number and
+a plausible loss curve — the exact failure L1 exists to catch, and far cheaper to catch here. A
+single counter cannot distinguish "both halves ran" from "the forward ran twice", so the proof uses a
+tiny `autograd.Function` that increments on forward and on backward independently.
+
+Validated with an **identity rebind** — same kernels, counters only. Separating "did the rebind
+engage?" from "is the new kernel correct?" means a failure has one meaning instead of two:
+
+```
+forward: true, backward: true   rank0 96 fwd / 64 bwd, rank1 96 / 64
+throughput 4765.1 vs 4759.9 unmodified  ->  0.109%, inside the 0.128% across-job band
+```
+
+Both halves engage on every rank, and the mechanism itself costs nothing measurable.
+
+One bug worth remembering: the resolver must test the RESOLVED TARGET for `autograd.Function`, not
+its owner. Getting it backwards replaces the class with a plain function, and the stack's next
+`_LayerNormLinear.apply(...)` dies with `'function' object has no attribute 'apply'`. Also: a failed
+overlay install must SAY SO — falling through silently would leave the run measuring the original
+implementation while the report claims a candidate was tested.
+
 ### L0 on real captured data — and a backward-comparability gap
 `scripts/l0_gate.py` judges a candidate against **the error the original already carries**, never
 against a hand-picked tolerance. Measured on the captured TE `_LayerNormLinear`, comparing the
