@@ -1,0 +1,140 @@
+#!/bin/bash
+# Pre-flight for a full Workflow run. Fails EARLY and says exactly what is missing.
+#
+# A 7B fast run is hours of exclusive box time. Every check here corresponds to something that has
+# actually gone wrong during bring-up, and each one costs seconds against the hours it protects.
+#
+#   bash scripts/preflight.sh                 # full check, including a real measurement leg
+#   bash scripts/preflight.sh --no-bench      # skip the measurement leg (~2 min faster)
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WF="$(dirname "$HERE")"
+REPO="$(dirname "$WF")"
+WORK="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
+MODELS="${GEAK_MODELS_DIR:-/home/treemann/models}"
+IMAGE="${GEAK_IMAGE:-rocm/primus:v26.4}"
+RUN_BENCH=1
+[ "${1:-}" = "--no-bench" ] && RUN_BENCH=0
+
+FAIL=0; WARN=0
+ok()   { printf '  \033[32mok\033[0m    %s\n' "$*"; }
+bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; FAIL=$((FAIL+1)); }
+warn() { printf '  \033[33mwarn\033[0m  %s\n' "$*"; WARN=$((WARN+1)); }
+sec()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
+
+sec "1. GPUs"
+if command -v rocm-smi >/dev/null 2>&1; then
+  N=$(rocm-smi --showid 2>/dev/null | grep -oE '^GPU\[[0-9]+\]' | sort -u | wc -l)
+  [ "$N" -ge 1 ] && ok "$N GPUs visible" || bad "no GPUs visible to rocm-smi"
+  # NOT `rocm-smi ... | grep -q`: with `set -o pipefail`, grep -q exits on the first match and the
+  # SIGPIPE kills rocm-smi (141), so the pipeline reports failure and a QUIET box reads as BUSY.
+  # This check said the opposite of the truth until it was captured to a variable first.
+  PIDS_OUT="$(rocm-smi --showpids 2>/dev/null)"
+  if printf '%s' "$PIDS_OUT" | grep -q "No KFD PIDs"; then
+    ok "no GPU processes — the box is quiet"
+  else
+    # Not fatal: the occupancy guard re-measures. But a busy box wastes the whole run.
+    warn "another process holds a GPU. A contaminated leg is re-measured (bounded) and then the run
+        STOPS, so consider waiting. rocm-smi --showpids to see who."
+  fi
+else
+  bad "rocm-smi not found"
+fi
+
+sec "2. Container image"
+docker image inspect "$IMAGE" >/dev/null 2>&1 && ok "$IMAGE present" || bad "$IMAGE missing (docker pull it)"
+
+sec "3. Workload descriptors and the data they name"
+for envf in "$WF"/workloads/*.env; do
+  # shellcheck disable=SC1090
+  ( set +u; source "$envf"
+    miss=""
+    for hostpath in "${MODELS}${MODEL_CKPT#/models}" "${MODELS}${TOKENIZER_DIR#/models}"; do
+      [ -d "$hostpath" ] || miss="$miss $hostpath"
+    done
+    if [ -z "$miss" ]; then
+      echo "  ok    $(basename "$envf"): ckpt + tokenizer present (GBS=$GBS MBS=$MBS SEQ=$SEQ)"
+    else
+      echo "  FAIL  $(basename "$envf"): missing$miss"; exit 1
+    fi ) || FAIL=$((FAIL+1))
+done
+DATA="$WORK/data/sft_ultrachat20k.jsonl"
+if [ -s "$DATA" ]; then
+  L=$(wc -l < "$DATA")
+  ok "dataset $L lines ($(du -h "$DATA" | cut -f1))"
+else
+  bad "dataset missing: $DATA (see RUNBOOK.md step 1)"
+fi
+
+sec "4. The workflow's own pieces"
+for f in training_workflow.js scripts/bench_train.sh scripts/adapters/megatron.sh \
+         scripts/train_probe.py scripts/probe_summarize.py scripts/compare_legs.py \
+         scripts/parse_train_profile.py scripts/trajectory_gate.py scripts/l0_gate.py \
+         scripts/capture_train_shapes.py scripts/build_task_dir.py scripts/overlay_train.py \
+         scripts/rocm_compat.py scripts/gpu_occupancy.py; do
+  [ -f "$WF/$f" ] || bad "missing $f"
+done
+[ "$FAIL" -eq 0 ] && ok "all scripts present"
+MISSING_ROLES=""
+for r in training_director system_architect profiler kernel_extractor convergence_auditor integrator; do
+  [ -f "$WF/roles/$r.md" ] || MISSING_ROLES="$MISSING_ROLES $r"
+done
+[ -z "$MISSING_ROLES" ] && ok "all 6 role prompts present" || bad "missing roles:$MISSING_ROLES"
+
+sec "5. The kernel layer (the recursive callee)"
+KWF="${GEAK_KERNEL_WF:-$REPO/kernel_workflow}"
+[ -f "$KWF/kernel_workflow.js" ] && ok "$KWF/kernel_workflow.js" || bad "kernel_workflow.js not found at $KWF"
+HARNESS="$REPO/e2e_workflow/scripts/harness_lib.py"
+[ -f "$HARNESS" ] && ok "harness_lib.py (task dirs need it)" || bad "harness_lib.py not found at $HARNESS"
+
+sec "6. Tests (no GPU)"
+NODE="$(command -v node || ls ~/.cursor-server/bin/linux-x64/*/node 2>/dev/null | head -1)"
+if [ -n "$NODE" ]; then
+  "$NODE" --check "$WF/training_workflow.js" >/dev/null 2>&1 \
+    && ok "training_workflow.js parses" || bad "training_workflow.js does not parse"
+  "$NODE" "$WF/scripts/tests/test_training_gate.js" >/dev/null 2>&1 \
+    && ok "gate/orchestration tests pass" || bad "gate tests FAIL — run them to see why"
+else
+  warn "no node found; JS tests skipped (this box has none on PATH, see RUNBOOK)"
+fi
+python3 "$WF/scripts/tests/test_parse_train_profile.py" >/dev/null 2>&1 \
+  && ok "profile-decomposition tests pass" || bad "profile tests FAIL"
+
+sec "7. Disk"
+AVAIL=$(df -BG --output=avail "$WORK" 2>/dev/null | tail -1 | tr -dc '0-9')
+if [ -n "$AVAIL" ]; then
+  [ "$AVAIL" -ge 50 ] && ok "${AVAIL}G free under $WORK" \
+    || warn "${AVAIL}G free under $WORK — a 7B trace is ~200MB per profiled rank"
+fi
+
+if [ "$RUN_BENCH" = 1 ]; then
+  sec "8. A real measurement leg (0.5B, ~2 min) — the check that matters most"
+  OUT=$(HIP_VISIBLE_DEVICES=0,1 bash "$WF/scripts/bench_train.sh" \
+          --workload "$WF/workloads/qwen2_5_0_5b.env" --nproc 2 --iters 20 --tag preflight 2>&1)
+  ST=$(printf '%s' "$OUT" | python3 -c "
+import json,sys,re
+t=sys.stdin.read(); i=t.find('{')
+try:
+    d=json.loads(t[i:t.rfind('}')+1])
+    print('%s|%s|%s|%s'%(d.get('status'),d.get('useful_tok_s_per_gpu'),
+                         d.get('worst_iqr_spread_pct'),d.get('warmup_steps_max')))
+except Exception: print('parse_error||')" 2>/dev/null)
+  IFS='|' read -r S TPUT IQR WARM <<< "$ST"
+  if [ "$S" = "ok" ]; then
+    ok "leg ok: ${TPUT} useful tok/s/GPU, IQR ${IQR}%, warmup ${WARM} steps"
+  else
+    bad "measurement leg returned status='$S' — fix this before spending a run"
+    printf '%s\n' "$OUT" | tail -5 | sed 's/^/        /'
+  fi
+else
+  sec "8. Measurement leg — SKIPPED (--no-bench)"
+fi
+
+sec "Verdict"
+if [ "$FAIL" -eq 0 ]; then
+  printf '  \033[32mGO\033[0m — %d warning(s). Launch with the Workflow tool; see RUN.md.\n' "$WARN"
+  exit 0
+fi
+printf '  \033[31mNO-GO\033[0m — %d failure(s), %d warning(s).\n' "$FAIL" "$WARN"
+exit 1
