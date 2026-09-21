@@ -43,6 +43,18 @@ IS_SANDBOX=1 CLAUDE_CODE_SIMPLE= claude \
 **Verify before launching a run** — ask the new session: *"do you have a Workflow tool?"* If the
 answer is no, nothing below will work.
 
+### If it asks you to log in
+
+That is not an auth failure. `~/.claude/settings.json` sets `ANTHROPIC_API_KEY` to the literal
+string `dummy` (the real credential is `ANTHROPIC_CUSTOM_HEADERS`, against a gateway), and
+`~/.claude.json` records `customApiKeyResponses.rejected: ["dummy"]` — the key was declined at some
+earlier prompt. An interactive session therefore refuses to use it and falls through to the login
+screen. Both the file's and the session's headers authenticate fine when tested headlessly, so
+nothing is actually expired.
+
+**Answer YES / "use this key" when the prompt appears.** That moves it to `approved` and it will not
+ask again. The launcher checks this list up front and warns before spending the launch.
+
 ## Stage 1 — shake the orchestration out on 0.5B (~20 min, cheap)
 
 The point is **not** a speedup. It is the first time the six role prompts are executed by an agent;

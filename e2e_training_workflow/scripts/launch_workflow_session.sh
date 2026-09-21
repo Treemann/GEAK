@@ -37,6 +37,23 @@ Check the tool is really there first by asking: "do you have a Workflow tool?"
 
 TXT
 
+# A custom API key that was once REJECTED sends an interactive session to the login screen instead
+# of using it -- and it looks like an auth failure, not like a stored preference. Checked here
+# because the fix is one dialog answer, and finding that out after launching wastes the launch.
+python3 - <<'PY'
+import json, os, sys
+try:
+    st = json.load(open(os.path.expanduser("~/.claude/settings.json"))).get("env", {})
+    key = os.environ.get("ANTHROPIC_API_KEY") or st.get("ANTHROPIC_API_KEY", "")
+    resp = json.load(open(os.path.expanduser("~/.claude.json"))).get("customApiKeyResponses", {})
+    if key and key[-20:] in (resp.get("rejected") or []):
+        print("\033[33m  warning\033[0m  this API key is in customApiKeyResponses.rejected, so an")
+        print("           interactive session will show the LOGIN screen rather than use it.")
+        print("           When the prompt appears, choose YES / 'use this key'.")
+except Exception:
+    pass
+PY
+
 cd "$WF"
 exec env IS_SANDBOX=1 CLAUDE_CODE_SIMPLE= \
   claude --settings "$SETTINGS" --dangerously-skip-permissions "$@"
