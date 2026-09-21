@@ -13,6 +13,36 @@ recurses into, `harness_lib.py` (task dirs need it), the test suites, disk, and 
 measurement leg. `GO` / `NO-GO` at the end. Every check corresponds to something that actually went
 wrong during bring-up.
 
+## Getting a session that HAS the Workflow tool
+
+**This is the step that silently blocks everything.** A normal session on this box does not have the
+`Workflow` tool at all — it is simply absent from the toolset, and an agent asked to "run the
+workflow" will improvise something else instead of saying it cannot.
+
+```bash
+bash scripts/launch_workflow_session.sh
+```
+
+Two causes, both verified on `claude 2.1.273`:
+
+1. `CLAUDE_CODE_SIMPLE=1` in `~/.claude/settings.json` strips the toolset to exactly
+   `Bash, Edit, Read`. Clearing it yields `Agent, Bash, ..., Workflow, Write`.
+2. Public builds (≥2.1.x) **reject** `--effort ultracode`; the Workflow/parallel/phase primitives are
+   gated behind the `enableWorkflows` + `ultracode` **settings keys**. Having the tool present is not
+   the same as it *executing* the JS pipeline rather than backgrounding it, so both are injected —
+   mirroring `interface/run_e2e.py`.
+
+Equivalent one-liner if you prefer:
+```bash
+cd <REPO>/e2e_training_workflow
+IS_SANDBOX=1 CLAUDE_CODE_SIMPLE= claude \
+  --settings '{"enableWorkflows":true,"ultracode":true,"env":{"CLAUDE_CODE_SIMPLE":""}}' \
+  --dangerously-skip-permissions
+```
+
+**Verify before launching a run** — ask the new session: *"do you have a Workflow tool?"* If the
+answer is no, nothing below will work.
+
 ## Stage 1 — shake the orchestration out on 0.5B (~20 min, cheap)
 
 The point is **not** a speedup. It is the first time the six role prompts are executed by an agent;
