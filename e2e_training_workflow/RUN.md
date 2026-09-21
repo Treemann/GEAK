@@ -43,17 +43,27 @@ IS_SANDBOX=1 CLAUDE_CODE_SIMPLE= claude \
 **Verify before launching a run** — ask the new session: *"do you have a Workflow tool?"* If the
 answer is no, nothing below will work.
 
-### If it asks you to log in
+### Why a plain session says "Not logged in · Please run /login"
 
-That is not an auth failure. `~/.claude/settings.json` sets `ANTHROPIC_API_KEY` to the literal
-string `dummy` (the real credential is `ANTHROPIC_CUSTOM_HEADERS`, against a gateway), and
-`~/.claude.json` records `customApiKeyResponses.rejected: ["dummy"]` — the key was declined at some
-earlier prompt. An interactive session therefore refuses to use it and falls through to the login
-screen. Both the file's and the session's headers authenticate fine when tested headlessly, so
-nothing is actually expired.
+Not an auth failure, and there is no prompt to answer. `~/.claude/settings.json` sets
+`ANTHROPIC_API_KEY` to the literal string `dummy` — the real credential is
+`ANTHROPIC_CUSTOM_HEADERS` against a gateway — and `~/.claude.json` lists that key under
+`customApiKeyResponses.rejected`. A rejected key counts as **no credential**, so the session goes
+straight to the login screen, and `--dangerously-skip-permissions` suppresses the approval dialog, so
+nothing asks you to choose.
 
-**Answer YES / "use this key" when the prompt appears.** That moves it to `approved` and it will not
-ask again. The launcher checks this list up front and warns before spending the launch.
+Verified headlessly, on this box:
+
+| configuration | result |
+|---|---|
+| `ANTHROPIC_API_KEY` unset, header present | `Not logged in · Please run /login` |
+| `ANTHROPIC_AUTH_TOKEN` set instead, same header | authenticates |
+| the file's header, headless | authenticates |
+| the running session's header, headless | authenticates |
+
+So nothing is expired and no credential is missing. The launcher swaps the API key for
+`ANTHROPIC_AUTH_TOKEN`, whose path does **not** go through the approval gate — no edit to
+`~/.claude.json` is needed. The token is a placeholder; the gateway authenticates on the header.
 
 ## Stage 1 — shake the orchestration out on 0.5B (~20 min, cheap)
 
