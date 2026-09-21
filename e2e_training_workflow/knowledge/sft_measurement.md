@@ -61,6 +61,29 @@ ordinary non-win would quietly spend the rest of the gate budget on measurements
 anything. (Order matters in `legUsable`: a blocked leg also has `status != "ok"`, so the
 contamination check must run FIRST or the generic one shadows it.)
 
+## 5b. Compare two legs on a COMMON window, or the delta is mostly artifact
+`useful_tok_s_per_gpu` is `median(useful_tokens) / median(step_ms)`, and on SFT data `useful_tokens`
+swings **+-25% step to step** (7389..11945 on the reference workload). Each leg detects its own
+warmup end — legitimately 8, 10 or 11 — so two legs summarised on their own windows average
+**different samples**:
+
+| three runs of the SAME config | useful tok/s/GPU |
+|---|---|
+| each on its own window | 863.2, 862.6, 872.2 — spread **1.1%** |
+| on a common window | 872.4, 871.9, 872.2 — spread **0.06%** |
+
+1.1% is 3.7x the 0.3% band floor. Measured on one such pair: unaligned **+0.3294%** (a "win") versus
+aligned **+0.0235%** (nothing) — 93% of it was window placement. Data order is deterministic, so
+aligning the window makes the term cancel exactly; there is nothing to correct statistically.
+Always compare with `scripts/compare_legs.py`.
+
+## 5c. A leg too short to estimate dispersion is not a measurement
+The README smoke settings (`--iters 8`) leave 7 steady steps, and the quartiles then straddle the
+near-warmup value: measured IQR **1.243%** against **0.078%** on a 30-step run of the same workload.
+Small samples err in both directions, and an artificially TIGHT band is the dangerous one — it
+accepts changes that are not there. Below 12 steady steps `dispersion_reliable` is false and the gate
+refuses the leg. Use `--iters 8` to check that the plumbing works, never to measure.
+
 ## 6. Two legs must have the same `config_digest`
 The digest is computed from what the **probe observed inside the ranks**, not from what the caller
 intended. `ranks_agree_on_argv` additionally catches two configurations mixed inside ONE leg. A ratio

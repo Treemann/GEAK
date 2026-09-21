@@ -107,6 +107,15 @@ function legUsable(leg) {
   }
   if (!leg || leg.status !== 'ok') return { ok: false, why: 'leg status != ok' };
   if (leg.hang_detected) return { ok: false, why: 'hang detected' };
+  // A leg too short to estimate dispersion is not a measurement either. Measured: 7 steady steps
+  // gave an IQR of 1.243% where 24 steps of the same workload gave 0.072% -- the quartiles simply
+  // land on different samples. Small-n can err in BOTH directions, and an artificially tight band
+  // is the dangerous one: it accepts changes that are not there.
+  if (leg.dispersion_reliable === false) {
+    return { ok: false,
+             why: `only ${leg.min_steady_steps} steady steps — too few to estimate dispersion; ` +
+                  're-run with more iters' };
+  }
   const occ = (leg.occupancy_verdict || {}).verdict;
   if (occ === 'contaminated') return { ok: false, why: 'another process held a GPU during this leg' };
   if (occ === 'unknown') return { ok: false, why: 'isolation could not be established (rocm-smi unavailable)' };
@@ -118,6 +127,16 @@ function legUsable(leg) {
  *  global batch size, the parallel mapping or the data path changes the workload identity, and a
  *  ratio across two identities is fiction no matter how tight each leg is. The digest comes from
  *  what the PROBE observed inside the ranks, not from what the caller intended. */
+/** The delta MUST come from a window-aligned comparison (scripts/compare_legs.py). Each leg detects
+ *  its own warmup end, and `useful_tokens` swings +-25% step to step on SFT data, so two legs
+ *  summarised on their OWN windows contain different samples. Measured on two runs of an identical
+ *  configuration: unaligned +0.3294% (a "win" against a 0.3% band) versus aligned +0.0235% (correctly
+ *  nothing) -- 93% of the apparent delta was window placement. */
+function alignedDelta(integ) {
+  const c = integ && integ.comparison;
+  return c && typeof c.delta_pct === 'number' ? c : null;
+}
+
 function comparable(ref, cand) {
   if (!ref.config_digest || !cand.config_digest) return { ok: false, why: 'a leg carries no config digest' };
   if (ref.config_digest !== cand.config_digest) {
@@ -132,7 +151,8 @@ function comparable(ref, cand) {
 
 /** The gate. Throughput is the only thing that can ACCEPT in fast mode; memory is banked (there is
  *  no config knob to convert it with until ConfigSweep exists). L0/L1 can only ever REJECT. */
-function gateVerdict({ ref, cand, l0, l1, mode }) {
+function gateVerdict(spec) {
+  const { ref, cand, l0, l1, mode } = spec;
   const ru = legUsable(ref), cu = legUsable(cand);
   if (!ru.ok) return { accepted: false, klass: ru.fatal ? 'blocked' : 'unusable_ref',
                        fatal: !!ru.fatal, reason: `reference leg unusable: ${ru.why}` };
@@ -144,13 +164,18 @@ function gateVerdict({ ref, cand, l0, l1, mode }) {
   if (l1 && l1.pass === false) return { accepted: false, klass: 'trajectory', reason: `L1 failed: ${l1.reason || 'loss/grad-norm trajectory'}` };
 
   const r = Number(ref.useful_tok_s_per_gpu), c = Number(cand.useful_tok_s_per_gpu);
-  const deltaPct = ((c - r) / r) * 100;
+  // Prefer the aligned delta when the Integrator supplied one; fall back to the raw ratio only when
+  // it did not, and say so, because the raw ratio carries the window artifact.
+  const aligned = alignedDelta(spec);
+  const deltaPct = aligned ? aligned.delta_pct : ((c - r) / r) * 100;
   const band = noiseBandPct(ref, cand);
   const memDeltaPct = (Number(ref.peak_reserved_mb) > 0 && Number(cand.peak_reserved_mb) > 0)
     ? ((Number(cand.peak_reserved_mb) - Number(ref.peak_reserved_mb)) / Number(ref.peak_reserved_mb)) * 100
     : null;
 
-  const base = { delta_pct: +deltaPct.toFixed(3), band_pct: +band.toFixed(3), mem_delta_pct: memDeltaPct == null ? null : +memDeltaPct.toFixed(2) };
+  const base = { delta_pct: +deltaPct.toFixed(3), band_pct: +band.toFixed(3),
+    delta_source: aligned ? 'window-aligned' : 'raw ratio (NOT window-aligned — includes sample-composition drift)',
+    window_artifact_pct: aligned ? aligned.window_artifact_pct : null, mem_delta_pct: memDeltaPct == null ? null : +memDeltaPct.toFixed(2) };
   if (deltaPct > band) return { accepted: true, klass: 'win', reason: `+${deltaPct.toFixed(2)}% > band ${band.toFixed(2)}%`, ...base };
   if (deltaPct < -band) return { accepted: false, klass: 'regression', reason: `${deltaPct.toFixed(2)}% < -band`, ...base };
   // In band. Memory is a CURRENCY, not a metric: it counts only once a config change spends it.

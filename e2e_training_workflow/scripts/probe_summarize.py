@@ -33,6 +33,11 @@ def load_rank(path):
     return header, steps
 
 
+# Below this many steady steps the IQR is dominated by where the quartiles happen to land, not by
+# the machine. Measured: 7 steady steps gave 1.243%, 24 gave 0.072% on the same workload.
+MIN_STEADY_FOR_DISPERSION = 12
+
+
 def detect_warmup_end(durs, tol=0.02, patience=3):
     """First index from which the run has SETTLED to its steady level.
 
@@ -72,7 +77,7 @@ def dispersion(vals):
     return out
 
 
-def summarize(dirpath, tol=0.02):
+def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
     ranks = {}
     for p in sorted(glob.glob(os.path.join(dirpath, "probe_rank*.jsonl"))):
         h, s = load_rank(p)
@@ -85,15 +90,29 @@ def summarize(dirpath, tol=0.02):
     per_rank, world = {}, max(len(ranks), int(next(iter(ranks.values()))[0].get("world_size", 1)))
     for rank, (h, steps) in sorted(ranks.items()):
         durs = [s["dur_ms"] for s in steps]
-        i0 = detect_warmup_end(durs, tol=tol)
+        # force_warmup/max_steps exist so two legs can be summarised on a COMMON window. The headline
+        # divides median(useful_tokens) by median(step_ms), and useful_tokens swings +-25% step to
+        # step on SFT data (7389..11945 on the reference workload). So a window that starts one or
+        # two steps later contains DIFFERENT SAMPLES and the headline moves -- measured at 1.1%
+        # across three runs of the same config, i.e. 9x the machine's own 0.118% reproducibility.
+        # Data order is deterministic, so aligning the window makes that term cancel exactly.
+        i0 = int(force_warmup) if force_warmup is not None else detect_warmup_end(durs, tol=tol)
         steady = steps[i0:]
+        if max_steps:
+            steady = steady[:int(max_steps)]
         sd = [s["dur_ms"] for s in steady]
         disp = dispersion(sd)
         med = disp["median_ms"]
         useful = statistics.median([s.get("useful_tokens", 0) for s in steady])
         total = statistics.median([s.get("total_tokens", 0) for s in steady])
+        # A dispersion estimate needs samples. With the README smoke settings (--iters 8) the steady
+        # window is 7 steps, and the quartiles then straddle the near-warmup value: measured IQR
+        # 1.243% against 0.078% on a 30-step run of the same workload. A band built on that is ~8x
+        # too loose, so the number is flagged rather than quietly used.
+        reliable = len(sd) >= MIN_STEADY_FOR_DISPERSION
         per_rank[rank] = {
             "steps_total": len(steps), "warmup_steps": i0, "steady_steps": len(sd),
+            "dispersion_reliable": reliable,
             **disp,
             # Per-GPU rate: this rank's own tokens over its own step time.
             "useful_tokens_per_step": useful, "total_tokens_per_step": total,
@@ -149,6 +168,8 @@ def summarize(dirpath, tol=0.02):
         "ranks_agree_on_argv": len(argv_hashes) == 1,
         "worst_spread_pct": max(v["spread_pct"] for v in per_rank.values()),
         "worst_iqr_spread_pct": max(v.get("iqr_spread_pct", 0) for v in per_rank.values()),
+        "dispersion_reliable": all(v.get("dispersion_reliable") for v in per_rank.values()),
+        "min_steady_steps": min(v["steady_steps"] for v in per_rank.values()),
         "outlier_steps_max": max(v["outlier_steps"] for v in per_rank.values()),
         "pad_fraction_pct": statistics.median([v["pad_fraction_pct"] or 0 for v in per_rank.values()]),
     }
@@ -158,4 +179,6 @@ def summarize(dirpath, tol=0.02):
 if __name__ == "__main__":
     d = sys.argv[1]
     tol = float(sys.argv[2]) if len(sys.argv) > 2 else 0.02
-    print(json.dumps(summarize(d, tol), indent=2))
+    fw = int(sys.argv[3]) if len(sys.argv) > 3 else None
+    ms = int(sys.argv[4]) if len(sys.argv) > 4 else None
+    print(json.dumps(summarize(d, tol, fw, ms), indent=2))

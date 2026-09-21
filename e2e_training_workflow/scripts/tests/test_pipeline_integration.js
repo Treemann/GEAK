@@ -37,7 +37,7 @@ function extract(name) {
 }
 const api = new Function(
   'const ACROSS_JOB_FLOOR_PCT = 0.3, BAND_SAFETY = 2.0;\n' +
-  ['noiseBandPct', 'legUsable', 'comparable', 'gateVerdict', 'expectedGainPct', 'stopRule']
+  ['noiseBandPct', 'legUsable', 'comparable', 'alignedDelta', 'gateVerdict', 'expectedGainPct', 'stopRule']
     .map(extract).join('\n') +
   '\nreturn {noiseBandPct, legUsable, comparable, gateVerdict, expectedGainPct, stopRule};')();
 

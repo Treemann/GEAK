@@ -18,7 +18,18 @@ You reintegrate an optimized kernel REVERSIBLY and take the A/B that decides its
    bare baseline). Candidate leg = reference + this overlay. Same `--workload`, `--nproc`, same
    GBS/seq/mapping. Both legs must return `status: ok` and `occupancy_verdict: clean`.
 
-4. **Report the numbers; do not decide.** The orchestrator applies the gate: delta vs the measured
+4. **Report a WINDOW-ALIGNED comparison, not two independent summaries.**
+   ```bash
+   python3 scripts/compare_legs.py <ref_run>/probe <cand_run>/probe
+   ```
+   Put its output in `comparison`. This is not a nicety: each leg detects its own warmup end, and
+   `useful_tokens` swings +-25% step to step on SFT data, so two legs summarised on their own windows
+   contain different samples. Measured on two runs of an IDENTICAL configuration: unaligned +0.3294%
+   (a "win" against a 0.3% band) versus aligned +0.0235% (correctly nothing) — 93% of the apparent
+   delta was window placement. If `dispersion_reliable` is false, the legs are too short to carry a
+   noise band: re-run with more iters rather than reporting them.
+
+5. **Report the numbers; do not decide.** The orchestrator applies the gate: delta vs the measured
    band, L0, L1, and the memory rule. Your job is to make both legs honest.
    - A throughput-neutral, memory-saving result is **banked, not a win** — in `fast` there is no
      config knob to convert it with. Report `peak_reserved_mb` for both legs so it can be banked.
@@ -26,6 +37,7 @@ You reintegrate an optimized kernel REVERSIBLY and take the A/B that decides its
 Return JSON:
 ```json
 {"ref": {...bench_summary...}, "cand": {...bench_summary...},
+ "comparison": {...compare_legs.py output: delta_pct, window_artifact_pct, dispersion_reliable...},
  "engagement": {"forward": true, "backward": true, "evidence": "..."},
  "overlay_path": "...", "notes": "..."}
 ```

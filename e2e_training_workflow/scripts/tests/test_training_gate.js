@@ -54,7 +54,8 @@ const load = (names, extra = '') => new Function(
 const leg = (o = {}) => Object.assign({
   status: 'ok', hang_detected: false, occupancy_verdict: { verdict: 'clean' },
   useful_tok_s_per_gpu: 4760, worst_iqr_spread_pct: 0.13, peak_reserved_mb: 14394,
-  config_digest: 'abc123def456', ranks_agree_on_argv: true,
+  config_digest: 'abc123def456', ranks_agree_on_argv: true, dispersion_reliable: true,
+  min_steady_steps: 20,
 }, o);
 
 // ---------------------------------------------------------------- 1. noise band
@@ -89,11 +90,16 @@ const leg = (o = {}) => Object.assign({
     'the contamination check runs BEFORE the generic status check (it would otherwise be shadowed)');
   ok(!legUsable(leg({ status: 'unusable' })).ok, 'status!=ok is unusable');
   ok(!legUsable(leg({ useful_tok_s_per_gpu: 0 })).ok, 'no useful-token throughput is unusable');
+  const short = legUsable(leg({ dispersion_reliable: false, min_steady_steps: 7 }));
+  ok(!short.ok && /too few to estimate dispersion/.test(short.why),
+    'a leg too short to estimate dispersion is refused (7 steady steps measured 1.243% IQR where ' +
+    '24 measured 0.072% — small-n can err tight, which accepts changes that are not there)');
+  ok(legUsable(leg({ dispersion_reliable: true })).ok, 'a reliable leg passes');
 }
 
 // ---------------------------------------------------------------- 3./4. the gate
 {
-  const { gateVerdict } = load(['gateVerdict', 'legUsable', 'noiseBandPct', 'comparable']);
+  const { gateVerdict } = load(['gateVerdict', 'legUsable', 'noiseBandPct', 'comparable', 'alignedDelta']);
   const v = (o) => gateVerdict(Object.assign({ ref: leg(), cand: leg(), mode: 'fast' }, o));
 
   ok(v({ cand: leg({ useful_tok_s_per_gpu: 4800 }) }).accepted,
@@ -117,6 +123,15 @@ const leg = (o = {}) => Object.assign({
   ok(/fast mode has no config knob/.test(m.reason), 'the banked reason names why it is not a win');
   const md = gateVerdict({ ref: leg(), cand: leg({ useful_tok_s_per_gpu: 4762, peak_reserved_mb: 12000 }), mode: 'deep' });
   ok(/proposeMemoryConversion/.test(md.reason), 'in deep mode the same result routes to the converter');
+
+  // The aligned delta must WIN over the raw ratio when both are present.
+  const al = gateVerdict({ ref: leg(), cand: leg({ useful_tok_s_per_gpu: 4776 }), mode: 'fast',
+                           comparison: { delta_pct: 0.02, window_artifact_pct: 0.31 } });
+  ok(al.klass === 'no_win' && al.delta_source === 'window-aligned',
+    'a +0.34% RAW ratio with a +0.02% ALIGNED delta is a no_win: 93% of it was window placement');
+  const raw = gateVerdict({ ref: leg(), cand: leg({ useful_tok_s_per_gpu: 4776 }), mode: 'fast' });
+  ok(/NOT window-aligned/.test(raw.delta_source),
+    'without an aligned comparison the verdict says the number carries the artifact');
 
   const inc = v({ cand: leg({ useful_tok_s_per_gpu: 9999, config_digest: 'different99' }) });
   ok(inc.klass === 'incomparable' && !inc.accepted,
