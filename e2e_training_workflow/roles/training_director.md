@@ -18,9 +18,15 @@ Read `knowledge/sft_measurement.md` before doing anything.
    a measurement — re-run it, and say so; never report it.
 
 3. **Derive this run's bands from those two legs, do not assume them.**
-   - throughput: `across_job` = |A-B| / A on `useful_tok_s_per_gpu`. Measured on this box: 0.118%
-     (7B/8GPU) and 0.128% (0.5B/2GPU). If yours is wildly larger, the box is not quiet — investigate
-     before proceeding, because every later gate inherits this number.
+   - throughput: **use `scripts/compare_legs.py <legA>/probe <legB>/probe`**, never a raw ratio of
+     the two summaries. Each leg detects its own warmup end and `useful_tokens` swings ±25% step to
+     step, so a raw ratio carries a sample-composition term larger than the signal. Measured over six
+     pairwise comparisons of one 7B configuration across four days: **aligned worst 0.0589%**,
+     **unaligned worst 0.4456%**. Take `delta_pct` (the aligned one) as this run's `across_job`.
+     Reproducibility is workload-dependent — the same analysis gives 0.06% at 7B but 0.31-0.42% at
+     0.5B, where host jitter is a much larger share of the step — so measure it, never assume it.
+     If `dispersion_reliable` is false, the legs are too short: re-run with more iters. At 7B,
+     `--iters 30` leaves 19 steady steps after an 11-step warmup; below ~25 iters the leg is refused.
    - trajectory: `python3 scripts/trajectory_gate.py calibrate <probeA> <probeB> -o band.json`.
      Re-calibrate per workload: divergence rates differ with model size and parallel mapping.
 

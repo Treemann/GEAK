@@ -79,7 +79,20 @@ let tasksUsed = 0;
 // Floors come from MEASURED reproducibility, not convention: two independent jobs at identical
 // config on this box agreed to 0.128% on useful_tok_s_per_gpu, and the within-job IQR spread is
 // 0.07-0.13%. A 2-3% band (the inference layer's) would throw away every real sub-1% win here.
-const ACROSS_JOB_FLOOR_PCT = parseFloat(A.across_job_floor_pct != null ? A.across_job_floor_pct : 0.3);
+// The floor DEPENDS ON HOW THE DELTA WAS OBTAINED, and a single value is wrong in both directions.
+// Six pairwise comparisons of one 7B configuration spanning four days:
+//     window-aligned   worst |delta| 0.0589%   (typical 0.02-0.05%)
+//     unaligned        worst |delta| 0.4456%   (window artifact up to 0.3867%)
+// A single 0.3% floor is ~5x too loose for the aligned regime (it discards real sub-0.3% wins) AND
+// too TIGHT for the unaligned fallback (0.4456% > 0.3%, so the gate manufactures a win out of window
+// placement). Two floors, each above its own regime's worst observation with margin.
+// NOTE the floor is only a floor: Setup measures this workload's own reproducibility and the larger
+// of the two wins. That matters because reproducibility is workload-dependent — the same six-pair
+// analysis gives 0.06% at 7B but 0.31-0.42% at 0.5B, where host-side jitter is a far bigger share of
+// the step (idle 14% vs 2.4%) and does not cancel.
+const FLOOR_PCT = { aligned: 0.15, unaligned: 0.5 };
+const ACROSS_JOB_FLOOR_PCT = parseFloat(A.across_job_floor_pct != null ? A.across_job_floor_pct
+                                                                      : FLOOR_PCT.aligned);
 const BAND_SAFETY = parseFloat(A.band_safety != null ? A.band_safety : 2.0);
 
 // ===========================================================================
@@ -89,11 +102,13 @@ const BAND_SAFETY = parseFloat(A.band_safety != null ? A.band_safety : 2.0);
 /** Noise band for a pair of legs, DERIVED from their own dispersion rather than assumed.
  *  Uses the robust (IQR) spread, because the raw spread of a clean run is dominated by isolated
  *  stalls: the same 25-step run measured 38.6% raw and 0.072% IQR. Raw would gate nothing. */
-function noiseBandPct(ref, cand) {
+function noiseBandPct(ref, cand, aligned = true) {
   const iqr = Math.max(
     Number(ref && ref.worst_iqr_spread_pct) || 0,
     Number(cand && cand.worst_iqr_spread_pct) || 0);
-  return Math.max(ACROSS_JOB_FLOOR_PCT, iqr * BAND_SAFETY);
+  const floor = aligned ? ACROSS_JOB_FLOOR_PCT
+                        : Math.max(ACROSS_JOB_FLOOR_PCT, FLOOR_PCT.unaligned);
+  return Math.max(floor, iqr * BAND_SAFETY);
 }
 
 /** Is a leg usable at all? A leg that is unusable must never become a reference. */
@@ -179,7 +194,7 @@ function gateVerdict(spec) {
   // it did not, and say so, because the raw ratio carries the window artifact.
   const aligned = alignedDelta(spec);
   const deltaPct = aligned ? aligned.delta_pct : ((c - r) / r) * 100;
-  const band = noiseBandPct(ref, cand);
+  const band = noiseBandPct(ref, cand, !!aligned);
   const memDeltaPct = (Number(ref.peak_reserved_mb) > 0 && Number(cand.peak_reserved_mb) > 0)
     ? ((Number(cand.peak_reserved_mb) - Number(ref.peak_reserved_mb)) / Number(ref.peak_reserved_mb)) * 100
     : null;

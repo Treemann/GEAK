@@ -47,7 +47,7 @@ function extract(name) {
   throw new Error(`unterminated function ${name}`);
 }
 
-const CONSTS = 'const ACROSS_JOB_FLOOR_PCT = 0.3, BAND_SAFETY = 2.0;';
+const CONSTS = 'const FLOOR_PCT = {aligned:0.15,unaligned:0.5}; const ACROSS_JOB_FLOOR_PCT = 0.15, BAND_SAFETY = 2.0;';
 const load = (names, extra = '') => new Function(
   `${CONSTS}\n${extra}\n${names.map(extract).join('\n')}\nreturn {${names.join(',')}};`)();
 
@@ -62,7 +62,14 @@ const leg = (o = {}) => Object.assign({
 // ---------------------------------------------------------------- 1. noise band
 {
   const { noiseBandPct } = load(['noiseBandPct']);
-  ok(noiseBandPct(leg(), leg()) === 0.3, 'tight legs fall back to the measured across-job floor (0.3%)');
+  ok(noiseBandPct(leg(), leg()) === 0.26,
+    'tight legs fall back to 2x their own IQR (0.26%) — above the 0.15% aligned floor');
+  const tight = leg({ worst_iqr_spread_pct: 0.05 });
+  ok(noiseBandPct(tight, tight, true) === 0.15,
+    'the ALIGNED floor is 0.15% — 2.5x the worst aligned reproducibility measured over six 7B pairs (0.0589%)');
+  ok(noiseBandPct(tight, tight, false) === 0.5,
+    'the UNALIGNED floor is 0.5% — it MUST exceed the 0.4456% worst unaligned delta, or the gate ' +
+    'manufactures a win out of window placement');
   ok(noiseBandPct(leg({ worst_iqr_spread_pct: 1.2 }), leg()) === 2.4,
     'a noisy leg widens the band via its own IQR (1.2% -> 2.4%), rather than a constant');
   // The hazard this encodes: raw spread is NOT the input.

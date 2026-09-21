@@ -18,6 +18,9 @@ separate workflow rather than a mode of the inference one.
 | scarce resource | agent time | **gates** (one A/B = two job launches, exclusive) |
 | noise band | 2-3% | **measured 0.12-0.13%** |
 
+**`DECISIONS.md` records every framework-level choice with the measurement that forced it.**
+`PLAN.md` carries the narrative; `RUNBOOK.md` the commands.
+
 ## Measured facts this design rests on
 All from 8x MI308X (gfx942), `rocm/primus:v26.4`, bare Megatron `pretrain_gpt.py --sft`.
 
@@ -27,8 +30,10 @@ All from 8x MI308X (gfx942), `rocm/primus:v26.4`, bare Megatron `pretrain_gpt.py
   skipping to the measured warmup end gives 0.18% — with an unchanged median.
 - **Raw spread vs robust spread differ 500x** on a clean run (38.6% vs 0.072%): two isolated stalls
   carry all of it. Both are always reported; the band uses the robust one.
-- **Across-job reproducibility is 0.118% (7B/8GPU) and 0.128% (0.5B/2GPU)** — so sub-1% kernel wins
-  are gateable, and the band is derived per-pair rather than assumed.
+- **Across-job reproducibility, window-aligned, is 0.0589% worst over six 7B pairs spanning four
+  days** (0.31-0.42% at 0.5B, where host jitter is a far larger share of the step). The earlier
+  0.118% figure was unaligned and mostly window artifact. Bands are derived per pair, and the floor
+  depends on whether the delta was window-aligned: 0.15% if it was, 0.5% if it was not.
 - **Training is chaotic**: two identical runs are bit-identical at step 1, 0.76% apart by step 5, and
   **2.04 apart in absolute loss by step 21**. L1 is therefore a step-indexed envelope, anchored on
   the one bit-reproducible quantity available (step-1 loss).
