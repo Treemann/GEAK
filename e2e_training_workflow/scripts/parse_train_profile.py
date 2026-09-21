@@ -170,7 +170,7 @@ def decompose(trace_path):
 
 def config_diagnosis(buckets, bench_summary=None, rank_skew_pct=None):
     """Read-only verdict: can kernel work pay at this configuration, and if not, which knob is why."""
-    findings, blocking = [], []
+    findings, blocking, opportunity = [], [], []
     exposed = buckets.get("exposed_comm_pct") or 0
     idle = buckets.get("idle_pct") or 0
     pad = (bench_summary or {}).get("pad_fraction_pct") or 0
@@ -187,16 +187,27 @@ def config_diagnosis(buckets, bench_summary=None, rank_skew_pct=None):
     if idle > 15:
         blocking.append({
             "finding": f"{idle:.1f}% of the step has NO kernel resident",
-            "knob": "data.num_workers / data.packing / launch overhead",
-            "why": "the GPU is waiting on the host; making GPU kernels faster changes nothing"})
+            "knob": "data.num_workers / launch overhead",
+            "why": ("the step is host-bound: shortening a kernel converts into MORE idle rather "
+                    "than into a shorter step, so the win does not reach the headline")})
     elif idle > 5:
         findings.append({"finding": f"{idle:.1f}% idle", "knob": "data.num_workers", "why": "host-side stalls"})
     if pad > 40:
-        blocking.append({
+        # NOT a blocker, and the earlier claim that it was is arithmetically wrong. The headline is
+        # useful_tokens / step_time; a kernel win shortens step_time and leaves useful_tokens alone,
+        # so the RELATIVE gain is independent of the padding fraction (a 20% win on a head that is
+        # 19% of the step is +3.95% at 70% padding and +3.95% at 0% padding). What padding really
+        # says is that a MUCH larger lever exists elsewhere -- packing raises useful_tokens directly
+        # -- so the kernel budget carries a high opportunity cost. That is a priority argument, not
+        # an impossibility argument, and calling it blocking would have told the first real run to
+        # give up on work that would have paid.
+        opportunity.append({
             "finding": f"{pad:.1f}% of tokens are padding",
             "knob": "data.packing (with attention isolation)",
-            "why": ("most of the compute is spent on padding, so a kernel win is diluted by the same "
-                    "factor; and the nominal tokens/s a stack reports hides this entirely")})
+            "why": ("kernel wins still pay in full -- the padding fraction cancels out of "
+                    "useful_tokens/step_time -- but packing would raise useful_tokens directly and "
+                    "is therefore a much larger lever. High opportunity cost, not a blocker."),
+            "available_in": "deep (ConfigSweep)"})
     if skew > 5:
         blocking.append({"finding": f"{skew:.1f}% rank skew", "knob": "parallel mapping / placement",
                          "why": "the step is as slow as its slowest rank; a straggler caps any win"})
@@ -205,6 +216,10 @@ def config_diagnosis(buckets, bench_summary=None, rank_skew_pct=None):
     return {
         "verdict": verdict,
         "blocking": blocking,
+        # Levers that would pay MORE than the kernel track, without making the kernel track pointless.
+        # Kept separate from `blocking` because the two demand different answers: a blocker says the
+        # measurement cannot show a win, an opportunity says the budget could be better spent.
+        "opportunity": opportunity,
         "findings": findings,
         "note": ("READ-ONLY. fast mode does not fix these; it reports them so a rejected kernel win "
                  "is attributable to the configuration rather than mistaken for a bad kernel. This "

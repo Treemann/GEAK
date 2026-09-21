@@ -44,11 +44,20 @@ ok("exposes MORE comm" in d["blocking"][0]["why"],
 
 d = config_diagnosis({"exposed_comm_pct": 1.0, "idle_pct": 30.0}, {"pad_fraction_pct": 5}, 0.1)
 ok(d["verdict"] == "config_first" and "num_workers" in d["blocking"][0]["knob"],
-   "30% idle blocks and points at the host side, not at the kernels")
+   "30% idle DOES block: a host-bound step converts a shorter kernel into more idle, not into a "
+   "shorter step")
+ok("MORE idle" in d["blocking"][0]["why"], "and the reason names that mechanism")
 
 d = config_diagnosis({"exposed_comm_pct": 1.0, "idle_pct": 1.0}, {"pad_fraction_pct": 71.6}, 0.1)
-ok(d["verdict"] == "config_first" and "packing" in d["blocking"][0]["knob"],
-   "71.6% padding (the measured value on this workload) blocks and points at packing")
+ok(d["verdict"] == "kernel_work_can_pay",
+   "71.6% padding does NOT block: the headline is useful_tokens/step_time, and a kernel win shortens "
+   "step_time while leaving useful_tokens alone, so the relative gain is independent of padding "
+   "(a 20% win on a 19% head is +3.95% at 70% padding and at 0% padding alike)")
+ok(d["opportunity"] and "packing" in d["opportunity"][0]["knob"],
+   "it is reported as an OPPORTUNITY instead: packing raises useful_tokens directly, so the kernel "
+   "budget carries a high opportunity cost — a priority argument, not an impossibility argument")
+ok("not a blocker" in d["opportunity"][0]["why"],
+   "and the reason says so explicitly, because the earlier text claimed the opposite")
 
 d = config_diagnosis({"exposed_comm_pct": 1.0, "idle_pct": 1.0}, {"pad_fraction_pct": 5}, 12.0)
 ok(d["verdict"] == "config_first" and "skew" in d["blocking"][0]["finding"],

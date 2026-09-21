@@ -11,10 +11,17 @@ Read `knowledge/critical_path.md` and `knowledge/training_optimization.md`.
    A kernel with a big `pct_span` but a small `critical_path_share_pct` (a hidden collective) is not
    a candidate no matter how large it looks.
 
-2. **Respect the config diagnosis.** If the verdict is `config_first`, say plainly that the kernel
-   budget is likely to be wasted at this configuration and name the blocking knob. In `fast` mode you
-   cannot fix it; you can refuse to spend the budget pretending it is not there. Recommend at most a
-   token candidate, or recommend stopping.
+2. **Respect the config diagnosis, and read its two categories differently.**
+   - `blocking` means the measurement cannot show a win no matter how good the kernel: a host-bound
+     step converts a faster kernel into more idle; exposed comm grows as compute shrinks; a straggler
+     caps everything. If the verdict is `config_first`, say plainly that the budget is likely wasted,
+     name the knob, and recommend at most a token candidate or stopping.
+   - `opportunity` means something else entirely: a LARGER lever exists, but kernel wins still pay in
+     full. Padding is the standing example — the headline is `useful_tokens / step_time`, and a
+     kernel win shortens `step_time` while leaving `useful_tokens` alone, so the relative gain is
+     independent of the padding fraction (a 20% win on a 19% head is +3.95% at 70% padding and at 0%
+     padding alike). Report it as opportunity cost for `deep` to collect; do NOT treat it as a reason
+     to stand down.
 
 3. **Budget in gates, not tasks.** One A/B is two job launches and it blocks every kernel lane. At
    7B/8GPU a leg is ~7 minutes, so a gate is ~15 minutes of exclusive box time. `max_gates` is the

@@ -37,4 +37,16 @@ burns producing isolated speedups the gate then correctly rejects.
 naming the offending knob and why it blocks. It **changes nothing**. It also doubles as ConfigSweep's
 requirements list when deep mode lands.
 
-Blocking thresholds: exposed comm > 15%, idle > 15%, padding > 40%, rank skew > 5%.
+**Two categories, and they demand different answers.**
+* `blocking` — the measurement cannot show a win however good the kernel:
+  exposed comm > 15% (a shorter kernel exposes more comm), idle > 15% (a host-bound step converts a
+  shorter kernel into more idle, not a shorter step), rank skew > 5% (the step is as slow as its
+  slowest rank).
+* `opportunity` — a larger lever exists, but kernel wins still pay in full: padding > 40%.
+
+**Padding is NOT a blocker, and the first version of this file said it was.** The headline is
+`useful_tokens / step_time`. A kernel win shortens `step_time` and leaves `useful_tokens` unchanged,
+so the padding fraction cancels: a 20% win on a head that is 19% of the step is **+3.95% at 70%
+padding and +3.95% at 0% padding**. What padding means is that packing would raise `useful_tokens`
+directly and is a much larger lever — an opportunity-cost argument, not an impossibility argument.
+Misclassifying it would have told the first real run to give up on work that would have paid.
