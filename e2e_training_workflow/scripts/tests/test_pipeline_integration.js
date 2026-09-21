@@ -43,12 +43,30 @@ const api = new Function(
 
 const [dirA, dirB] = process.argv.slice(2);
 if (!dirA || !dirB) { console.error('usage: <runA_dir> <runB_dir>'); process.exit(2); }
-const load = (d) => JSON.parse(fs.readFileSync(path.join(d, 'bench_summary.json'), 'utf8'));
+// A summary written before the digest definition last changed is STALE, not incomparable: the probe
+// sidecars are on disk, so re-summarising answers the question. That is exactly what the gate tells
+// a caller to do, so the test does it rather than pretending old artifacts are current.
+const { execFileSync } = require('child_process');
+const SUMMARIZE = path.resolve(__dirname, '..', 'probe_summarize.py');
+const CURRENT_SCHEMA = 2;
+
+function load(d) {
+  const stored = JSON.parse(fs.readFileSync(path.join(d, 'bench_summary.json'), 'utf8'));
+  if (stored.digest_schema === CURRENT_SCHEMA) return stored;
+  const fresh = JSON.parse(execFileSync('python3', [SUMMARIZE, path.join(d, 'probe')],
+                                        { encoding: 'utf8', maxBuffer: 64 << 20 }));
+  // Keep the dispatcher-added fields; take the digest/dispersion half from the fresh computation.
+  return Object.assign({}, stored, fresh, { _resummarised: true });
+}
 const A = load(dirA), B = load(dirB);
+if (A._resummarised || B._resummarised) {
+  console.log('  note: re-summarised a stale artifact (digest definition changed since it was written)');
+}
 
 // ---- 1. the contract: every field the gate reads is actually produced by the dispatcher ----
 for (const f of ['status', 'useful_tok_s_per_gpu', 'worst_iqr_spread_pct', 'peak_reserved_mb',
-                 'config_digest', 'ranks_agree_on_argv', 'occupancy_verdict', 'hang_detected']) {
+                 'config_digest', 'digest_schema', 'ranks_agree_on_argv', 'occupancy_verdict',
+                 'hang_detected', 'dispersion_reliable']) {
   ok(A[f] !== undefined, `bench_summary.json carries "${f}" (gateVerdict reads it)`);
 }
 ok(typeof A.occupancy_verdict === 'object' && 'verdict' in A.occupancy_verdict,
@@ -59,12 +77,29 @@ ok(api.legUsable(A).ok && api.legUsable(B).ok, 'both real baseline legs are usab
 ok(api.comparable(A, B).ok, `both legs share a config digest (${A.config_digest})`);
 
 // ---- 3. THE check: two identical baselines must NOT produce a win ----
-const v = api.gateVerdict({ ref: A, cand: B, mode: 'fast' });
+// This is also the regression guard for the window-placement defect. On THESE two runs -- same
+// configuration, same data, nothing changed -- the raw ratio is +0.329%, which clears the 0.3% band
+// and reads as a win. It is not: 93% of it is where each leg's warmup detection happened to land,
+// and `useful_tokens` swings +-25% step to step so a two-step shift moves the median.
+const CMP = path.resolve(__dirname, '..', 'compare_legs.py');
+const cmp = JSON.parse(execFileSync('python3', [CMP, path.join(dirA, 'probe'), path.join(dirB, 'probe')],
+                                    { encoding: 'utf8', maxBuffer: 64 << 20 }));
+
+const raw = api.gateVerdict({ ref: A, cand: B, mode: 'fast' });
+ok(raw.klass === 'win',
+  `WITHOUT alignment the raw ratio (${raw.delta_pct}%) reads as a "${raw.klass}" against the ` +
+  `${raw.band_pct}% band — this is the defect, pinned so it cannot come back silently`);
+ok(/NOT window-aligned/.test(raw.delta_source),
+  'and the verdict says so, rather than presenting the raw ratio as if it were the delta');
+
+const v = api.gateVerdict({ ref: A, cand: B, mode: 'fast', comparison: cmp });
 ok(v.klass === 'no_win' && v.accepted === false,
-  `two real baseline runs -> "${v.klass}" (${v.delta_pct}% inside the ${v.band_pct}% band): ` +
-  'the gate does not manufacture a win out of run-to-run variation');
-ok(Math.abs(v.delta_pct) < 0.3,
-  `measured run-to-run delta is ${v.delta_pct}%, consistent with the calibrated across-job band`);
+  `WITH a window-aligned comparison the same pair is "${v.klass}" (${v.delta_pct}% inside ` +
+  `${v.band_pct}%): the gate does not manufacture a win out of window placement`);
+ok(cmp.window_artifact_pct > 0.25,
+  `window placement alone accounted for ${cmp.window_artifact_pct}% on this pair`);
+ok(cmp.dispersion_reliable === true,
+  `both legs are long enough to carry a band (${cmp.min_steady_steps} steady steps)`);
 
 // ---- 4. the band came from the legs themselves, not from a constant ----
 const band = api.noiseBandPct(A, B);

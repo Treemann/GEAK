@@ -55,6 +55,7 @@ const leg = (o = {}) => Object.assign({
   status: 'ok', hang_detected: false, occupancy_verdict: { verdict: 'clean' },
   useful_tok_s_per_gpu: 4760, worst_iqr_spread_pct: 0.13, peak_reserved_mb: 14394,
   config_digest: 'abc123def456', ranks_agree_on_argv: true, dispersion_reliable: true,
+  digest_schema: 2,
   min_steady_steps: 20,
 }, o);
 
@@ -132,6 +133,12 @@ const leg = (o = {}) => Object.assign({
   const raw = gateVerdict({ ref: leg(), cand: leg({ useful_tok_s_per_gpu: 4776 }), mode: 'fast' });
   ok(/NOT window-aligned/.test(raw.delta_source),
     'without an aligned comparison the verdict says the number carries the artifact');
+
+  const stale = gateVerdict({ ref: Object.assign(leg(), { digest_schema: 1 }),
+                             cand: leg({ digest_schema: 2 }), mode: 'fast' });
+  ok(stale.klass === 'stale_summary' && /Re-summarise/.test(stale.reason),
+    'a summary written under an older digest definition is "stale", not "different workload" — ' +
+    'the probe sidecars are on disk, so re-summarising answers it');
 
   const inc = v({ cand: leg({ useful_tok_s_per_gpu: 9999, config_digest: 'different99' }) });
   ok(inc.klass === 'incomparable' && !inc.accepted,

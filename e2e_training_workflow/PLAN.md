@@ -1014,6 +1014,44 @@ template binds arguments by name.
 outputs are the sensitive one at different scales**, which is a concrete argument for gating on all
 of them rather than on the forward alone.
 
+### Two defects found by analysing user runs (0.5B and 7B)
+Both runs were healthy — `status: ok`, `occupancy: clean`, no retries, ranks agreed, and the 7B step
+median landed within 0.05% of the reference pair. The defects were in the MEASUREMENT CONTRACT, and
+both would have corrupted a gate.
+
+**1. The headline moves with window placement, by more than the noise band.**
+`useful_tok_s_per_gpu` is `median(useful_tokens) / median(step_ms)`, and `useful_tokens` swings
+**±25% step to step** on SFT data (7389..11945 on the reference workload). Each leg detects its own
+warmup end — legitimately 8, 10 or 11 — so two legs summarised on their own windows average
+**different samples**:
+
+| three runs of the SAME config | useful tok/s/GPU |
+|---|---|
+| each on its own window | 863.2, 862.6, 872.2 — spread **1.1%** |
+| on a common window | 872.4, 871.9, 872.2 — spread **0.06%** |
+
+On the actual pair: **unaligned +0.3294%**, which clears the 0.3% band and reads as a **win**, versus
+**aligned +0.0235%**, correctly nothing. **93% of the apparent delta was window placement.** Data
+order is deterministic, so aligning the window cancels the term exactly — there is nothing to correct
+statistically, only the same steps to use on both sides. `scripts/compare_legs.py` does it and
+reports `window_artifact_pct`; `gateVerdict` prefers the aligned delta and labels the raw ratio when
+it has to fall back. The failing case is pinned in `test_pipeline_integration.js` against the real
+artifacts, so it cannot come back quietly.
+
+**2. A leg too short to estimate dispersion is not a measurement.** The README smoke settings
+(`--iters 8`) leave 7 steady steps, and the quartiles then straddle the near-warmup value: IQR
+**1.243%** against **0.078%** on a 30-step run of the same workload. Small n errs in BOTH directions,
+and an artificially TIGHT band is the dangerous one — it accepts changes that are not there. Below 12
+steady steps `dispersion_reliable` is false and the gate refuses the leg with an instruction to
+re-run. `--iters 8` checks that the plumbing works; it never measures.
+
+**Also surfaced: stale summaries are not incomparable summaries.** The two runs' stored
+`config_digest`s disagreed only because the digest DEFINITION had changed in between (implementation
+keys were split out of identity). Re-summarising from the probe sidecars — which are on disk, so it
+is free — gives identical digests. Summaries now carry `digest_schema`, and a schema mismatch is
+reported as `stale_summary` with "re-summarise", not as a workload difference that would send the
+reader hunting for a configuration change that never happened.
+
 ### New risk: the box is shared
 ~20 unrelated containers are up on this node (idle at the time of measurement, but not ours). The
 inference layer gets isolation from "same-session sequential A/B"; training needs an explicit

@@ -139,6 +139,16 @@ function alignedDelta(integ) {
 
 function comparable(ref, cand) {
   if (!ref.config_digest || !cand.config_digest) return { ok: false, why: 'a leg carries no config digest' };
+  // Distinguish "different workload" from "the digest DEFINITION changed between these summaries".
+  // The second is not a real incomparability: re-summarise from the probe sidecars, which are on
+  // disk, and the question answers itself. Reporting it as a workload difference sends the reader
+  // looking for a configuration change that never happened.
+  const rs = ref.digest_schema, cs = cand.digest_schema;
+  if (rs !== cs) {
+    return { ok: false, stale: true,
+             why: `digest schema differs (${rs} vs ${cs}) — one summary predates a change in how the ` +
+                  'digest is computed. Re-summarise both from their probe dirs, then compare.' };
+  }
   if (ref.config_digest !== cand.config_digest) {
     return { ok: false, why: `config digest differs (${ref.config_digest} vs ${cand.config_digest}): ` +
       `these legs did not measure the same workload` };
@@ -159,7 +169,8 @@ function gateVerdict(spec) {
   if (!cu.ok) return { accepted: false, klass: cu.fatal ? 'blocked' : 'unusable_cand',
                        fatal: !!cu.fatal, reason: `candidate leg unusable: ${cu.why}` };
   const cmp = comparable(ref, cand);
-  if (!cmp.ok) return { accepted: false, klass: 'incomparable', reason: cmp.why };
+  if (!cmp.ok) return { accepted: false, klass: cmp.stale ? 'stale_summary' : 'incomparable',
+                        reason: cmp.why };
   if (l0 && l0.pass === false) return { accepted: false, klass: 'numerics', reason: `L0 failed: ${l0.reason || 'op-level numerics'}` };
   if (l1 && l1.pass === false) return { accepted: false, klass: 'trajectory', reason: `L1 failed: ${l1.reason || 'loss/grad-norm trajectory'}` };
 

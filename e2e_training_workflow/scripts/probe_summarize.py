@@ -162,6 +162,11 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         "config": cfg,
         "workload_identity": identity,
         "implementation": impl,
+        # Bumped whenever the digest DEFINITION changes (e.g. when implementation keys were split
+        # out of identity). Without it, a summary written under an older definition looks like a
+        # different workload, and the gate refuses a comparison that is actually fine after a
+        # re-summarise -- which is free, since the probe sidecars are on disk.
+        "digest_schema": 2,
         "config_digest": cfg_digest,      # identity only: what is being trained
         "impl_digest": impl_digest,       # how it is computed: a candidate is EXPECTED to differ here
         # Ranks running different argv would silently mix two configurations inside ONE leg.
