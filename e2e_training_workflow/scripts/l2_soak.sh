@@ -15,26 +15,27 @@
 # asks one question: does the accepted stack train the same way as the reference over a long run?
 #
 # Usage:
-#   l2_soak.sh --mode ref|cand|pos --bundle <finalize_bundle_dir> --steps N --out <dir> [--pos-kernel F]
+#   l2_soak.sh --mode ref|cand|pos --bundle <bundle> --steps N --out <dir> [--pos-bias 1.004]
 #
 #     ref   reference leg, overlay OFF. >=3 of these: they calibrate the criteria AND supply the
 #           null control (hold one out; if the criteria reject a held-out CLEAN leg, they are junk).
 #     cand  the accepted stack, overlay ON, bytes verified against the bundle's SHA256SUMS.overlay.
-#     pos   POSITIVE CONTROL: the same overlay with a known-bad kernel substituted. If the soak does
-#           not reject this, the soak proves nothing about the candidate. A negative test is worth
-#           more than a passing one -- that doctrine is what produced scale_bias (DECISIONS 3.2).
+#     pos   POSITIVE CONTROL: the same overlay with a deliberate multiplicative bias injected into
+#           the GRADIENT it returns (--pos-bias, default 1.004). If the soak does not reject this,
+#           the soak proves nothing about the candidate. A negative test is worth more than a
+#           passing one -- that doctrine is what produced scale_bias (DECISIONS 3.2).
 set -euo pipefail
 
 GEAK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_HOST="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
-MODE="" ; BUNDLE="" ; STEPS=300 ; OUT_HOST="" ; POS_KERNEL=""
+MODE="" ; BUNDLE="" ; STEPS=300 ; OUT_HOST="" ; POS_KERNEL="" ; BIAS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --mode) MODE="$2"; shift 2;;
     --bundle) BUNDLE="$2"; shift 2;;
     --steps) STEPS="$2"; shift 2;;
     --out) OUT_HOST="$2"; shift 2;;
-    --pos-kernel) POS_KERNEL="$2"; shift 2;;
+    --pos-bias|--pos-kernel) POS_KERNEL="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -51,29 +52,55 @@ unset GEAK_OVERLAY
 EXTRA_ENV=""
 
 if [ "$MODE" = cand ] || [ "$MODE" = pos ]; then
-  OVL_HOST="$WORK_HOST/overlays/l2soak_$MODE"
-  rm -rf "$OVL_HOST"; mkdir -p "$OVL_HOST"
+  # A dir PER LEG, named after the output dir. Two reasons: a shared one cannot be cleaned (the
+  # container writes __pycache__ as root, and `rm -rf` then fails under `set -e`), and a stale file
+  # from a previous leg silently becomes part of the next one's measurement.
+  OVL_HOST="$WORK_HOST/overlays/l2soak_$(basename "$OUT_HOST")"
+  mkdir -p "$OVL_HOST"
   cp "$BUNDLE/overlays/lmhead_ce_unmasked_gather/"{impl.py,candidate_kernel.py,lmhead_ce_triton.py} "$OVL_HOST/"
   if [ "$MODE" = cand ]; then
     # Fail loudly if the bytes are not the ones that were gated. L0 passed on THESE sha256s.
     ( cd "$OVL_HOST" && sha256sum -c --quiet "$BUNDLE/SHA256SUMS.overlay" ) || {
       echo "!!! overlay bytes differ from the gated ones -- refusing to launch" >&2; exit 3; }
   else
-    [ -f "$POS_KERNEL" ] || { echo "!!! --pos-kernel required for mode=pos" >&2; exit 2; }
-    # Substitute the known-bad kernel. The checksum check is deliberately SKIPPED here and the
-    # substitution is printed: this leg is SUPPOSED to differ from the gated bytes, and hiding that
-    # would make the control indistinguishable from the candidate.
-    cp "$POS_KERNEL" "$OVL_HOST/candidate_kernel.py"
-    echo ">>> POSITIVE CONTROL: candidate_kernel.py replaced by $POS_KERNEL"
-    echo ">>> sha256 $(sha256sum "$OVL_HOST/candidate_kernel.py" | cut -d' ' -f1)"
-    grep -n "bias\|1\.00[0-9]" "$OVL_HOST/candidate_kernel.py" | head -3 || true
+    # POSITIVE CONTROL: inject a multiplicative bias into the GRADIENT the overlay returns.
+    #
+    # Injection point matters, and the obvious choices are wrong. Substituting a foreign "known-bad"
+    # kernel does not even load: the overlay's impl.py requires candidate_kernel's internals
+    # (_prep/_scatter_loss), so a task-harness kernel dies with AttributeError before step 1 and
+    # controls nothing. Biasing the forward loss is subtly worse -- it is inside a custom
+    # autograd.Function whose backward is computed independently, so the REPORTED loss shifts while
+    # training proceeds identically. That would test the criteria against a cosmetic shift and would
+    # look like a working control.
+    #
+    # `gscale` is the real entry: it feeds dlogits -> dh -> dgrad AND wgrad, so a bias here actually
+    # changes what the optimizer sees, which is what a convergence soak must be able to detect. The
+    # checksum check is deliberately SKIPPED and the patch printed -- this leg is SUPPOSED to differ
+    # from the gated bytes, and hiding that would make the control indistinguishable from the
+    # candidate.
+    BIAS="${POS_KERNEL:-1.004}"
+    python3 - "$OVL_HOST/impl.py" "$BIAS" <<'PY'
+import re, sys
+p, bias = sys.argv[1], sys.argv[2]
+src = open(p).read()
+old = "gscale = (g_f.index_select(0, idx) * mg).contiguous()"
+if old not in src:
+    sys.exit("POSITIVE CONTROL: gradient injection point not found in impl.py -- refusing to run a "
+             "control that would silently be a second candidate leg")
+src = src.replace(old, f"gscale = (g_f.index_select(0, idx) * mg * {bias}).contiguous()"
+                       f"   # POSITIVE CONTROL: deliberate gradient bias")
+open(p, "w").write(src)
+print(f">>> POSITIVE CONTROL: gradient scaled by {bias} in impl.py backward")
+PY
+    grep -n "POSITIVE CONTROL" "$OVL_HOST/impl.py" | head -2
+    echo ">>> impl.py sha256 $(sha256sum "$OVL_HOST/impl.py" | cut -d' ' -f1) (differs from gated, by design)"
   fi
   # Manifest generated PER RUN: a checked-in one names an absolute engagement_out and would write
   # this run's proof into an old run's directory, where stale counters read as a fresh pass.
   MANIFEST_HOST="$OUT_HOST/geak_overlay_manifest.json"
   cat > "$MANIFEST_HOST" <<EOF
 {"target": "megatron.core.models.gpt.gpt_model:GPTModel._postprocess",
- "replacement": "/work/overlays/l2soak_$MODE/impl.py:postprocess",
+ "replacement": "/work/overlays/l2soak_$(basename "$OUT_HOST")/impl.py:postprocess",
  "engagement_out": "$OUT_CTR/engagement.json"}
 EOF
   EXTRA_ENV="GEAK_OVERLAY=${MANIFEST_HOST/#$WORK_HOST//work}"

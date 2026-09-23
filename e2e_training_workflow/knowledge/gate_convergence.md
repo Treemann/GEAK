@@ -175,6 +175,58 @@ pre-registered statistics whose sensitivity was demonstrated on a known-bad kern
 mean the kernel is numerically correct (that is L0), nor that a longer run, a different dataset, a
 different parallel mapping, or multi-node would agree. One epoch is one epoch.
 
+### L2 soak RESULT, 2026-09-23 — the soak is UNDERPOWERED and its verdict is ADVISORY
+
+First execution of the spec above: 5 legs × 300 steps on 7B/8GPU (`l2soak_0923_*`), all
+`status ok` / `occupancy clean`, candidate and positive control both engaged on all 8 ranks
+(`fwd = bwd = 2400`, `fallback_fwd = 0`).
+
+| control / subject | verdict |
+|---|---|
+| null control (leave-one-out over 3 refs) | **PASSED** — the criteria do not reject a clean leg |
+| positive control (×1.004 gradient bias) | **NOT REJECTED** ← the soak has no demonstrated sensitivity |
+| candidate | PASS on all criteria — **which therefore means nothing** |
+
+**Read the second row first.** A kernel with a deliberate 0.4% gradient bias, invoked 2400×/rank
+over 300 steps, passed every criterion. The candidate passing the same criteria is not evidence that
+it is safe; it is evidence that this instrument cannot tell the two apart.
+
+**The measured power.** Terminal loss level, which was the most sensitive of the three:
+
+```
+reference-vs-reference spread  S       = 0.02901
+effect of the ×1.004 bias              = 0.03742  = 1.29 × S
+effect of the candidate                = 0.02791  = 0.96 × S   (indistinguishable from noise)
+threshold demanded by K = 3            = 0.08704
+```
+
+Scaling linearly, this design resolves a gradient bias of roughly **0.9%**, not 0.4%.
+
+**Two things that do NOT buy power, both measured rather than assumed:**
+1. **More steps within a leg.** Averaging the offset over all 288 steady steps gives 1.12 × S —
+   *worse* than the 28-step tail's 1.29 × S. Chaotic divergence is serially correlated: once two legs
+   separate they stay separated, so there is no √n to collect. The noise floor of a soak is set by
+   run-to-run chaos, not by sampling within a run.
+2. **A cleverer statistic on the same legs.** The drift-slope criterion carried no signal at all —
+   the positive control's slope (−3.31e-4) is *smaller* in magnitude than the candidate's (−3.73e-4).
+
+Power has to come from **more reference legs**, which is the one place a √n exists (averaging the
+chaos itself). Rough order: resolving a 0.4% bias at K=3 needs on the order of 5–9 reference legs,
+i.e. 5–9 h of additional 8-GPU time.
+
+**Criterion 4 (`sign_balance`) was VACUOUS as pre-registered** and is withdrawn. Measured
+ref-vs-ref spread S = 0.2049, so K=3 sets a limit of 0.6146 — while the statistic's maximum possible
+deviation from 0.5 is 0.5. It could not fail under any data. Cause: chaotic trajectories that
+separate early stay on one side, so "fraction of steps above the reference" is not a
+noise-like quantity and a threshold expressed as a multiple of its own spread is meaningless.
+K was **not** retuned after seeing the data — doing so is exactly what pre-registration exists to
+prevent, and the vacuity is recorded instead.
+
+**What this leaves.** The lmhead overlay's convergence evidence remains L0 (clean, and the candidate
+was *more* accurate than the original on all four outputs) plus the step-1 forward probe (8.2e-05%
+against a 2.0% limit). The soak added no evidence in either direction. Do not describe this candidate
+as "soak-validated".
+
 **Still open:** the 0.2917% attention-backend pair has still not been separated into "pure numerics"
 versus "the flash path does not preserve packing isolation" (the separating test is
 packed-vs-unpacked per backend). That is a question about that pair, not about the envelope.
