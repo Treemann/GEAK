@@ -227,6 +227,45 @@ was *more* accurate than the original on all four outputs) plus the step-1 forwa
 against a 2.0% limit). The soak added no evidence in either direction. Do not describe this candidate
 as "soak-validated".
 
+### L2 soak spec v2 — PRE-REGISTERED 2026-09-23, before any v2 leg ran
+
+v1 failed its positive control. The redesign below is registered *before* the legs that will judge
+it, and it corrects a wrong recommendation made when v1 was reported ("add 5–9 reference legs").
+
+**Why more reference legs cannot work.** The binding constraint is the effect measured in units of
+the between-leg spread: σ (between-leg SD of terminal loss, from 3 refs) = **0.01495**, and the
+×1.004 bias moves terminal loss by **0.03742 = 2.50 σ**. v1 demanded 3 σ. More reference legs does
+not shrink σ — it is a population spread, not an estimation error, and v1's `S = max pairwise` gets
+*larger* with more legs. Even with infinitely many references, a **single** candidate leg carries one
+full σ of its own, so the threshold tends to K·σ = 0.0448 > 0.0374. It is unreachable by leg count
+alone.
+
+**The fix is replicate CANDIDATE legs**, i.e. compare *means* rather than a leg against a mean:
+
+| n_ref | m_cand | SE factor √(1/n+1/m) | t = δ/(σ·SE) | detected at α=0.05 |
+|---|---|---|---|---|
+| 3 | 1 | 1.155 | 2.17 | no |
+| 3 | 2 | 0.913 | 2.74 | no |
+| 3 | 3 | 0.816 | 3.07 | yes (thin) |
+| **3** | **4** | **0.764** | **3.28** | **yes** |
+
+**v2 design.** n = 3 reference legs (reuse `l2soak_0923_ref{1,2,3}`), m = 4 candidate legs and
+m = 4 positive-control legs, all 300 steps, legs interleaved `cand, pos, cand, pos, …` so drift
+cannot align with condition.
+
+**v2 statistic and threshold, fixed in advance.** Primary: terminal loss level (mean loss over the
+last 10% of steps), two-sample **Welch t-test, two-sided, α = 0.05**. Secondary, reported but not
+gating: the same test on mean offset over the full steady window.
+
+α = 0.05 rather than v1's ≈3 σ is a deliberate, stated trade: for a safety gate a false REJECT costs
+one candidate and a re-run, while a false ACCEPT ships a kernel that quietly damages training. The
+threshold is chosen *before* the data and its adequacy is not asserted — it is **demonstrated by the
+positive control**, which must be rejected or v2 is advisory exactly as v1 was.
+
+**Criterion 4 (`sign_balance`) is not carried into v2** — it was vacuous by construction (see above).
+Drift slope is demoted to reported-only: on v1 data it carried no signal (the positive control's
+slope was *smaller* in magnitude than the candidate's).
+
 **Still open:** the 0.2917% attention-backend pair has still not been separated into "pure numerics"
 versus "the flash path does not preserve packing isolation" (the separating test is
 packed-vs-unpacked per backend). That is a question about that pair, not about the envelope.
