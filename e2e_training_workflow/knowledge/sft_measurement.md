@@ -82,6 +82,24 @@ Caveats, recorded rather than buried: pairs are non-independent (legs are reused
 clean legs and 0.5B on 9, the 0.5B legs span several days while the 7B legs span two, and the
 noisy-candidate evidence is n=1.
 
+### 4c. Both controls, for the throughput gate
+
+The L2 soak failure taught the general rule the hard way: **a gate whose sensitivity has not been
+demonstrated on a known input is not a gate.** L0 has had a negative control since `scale_bias` was
+introduced. L1 now has a null control inside `calibrate()`. The throughput gate's two controls,
+measured 2026-09-23 on real legs with the recalibrated band:
+
+| control | input | result |
+|---|---|---|
+| **null** — must not fire | 47 same-identity baseline pairs, true delta 0 | **0 false wins** (old formula: 6) |
+| **positive** — must fire | `td_lmhead_legA_ref` vs `td_lmhead_legB`, aligned **+4.6597%** | **fires**, `klass: win`, band 0.415% |
+
+The band on that real pair is **0.415%** where the old formula assigned **0.914%** — roughly double
+the sensitivity *and* fewer false positives, which is the combination that tells you the old
+constant was mis-specified rather than merely cautious. Note the same pair's raw ratio carries a
+**3.19%** window artifact, so it is also a live demonstration of why an unaligned delta may never
+accept.
+
 ## 5. A leg is not a measurement unless it is clean
 `status == "ok"`, no hang, and `occupancy_verdict == "clean"`. This node carries ~20 unrelated
 containers; a neighbour taking a GPU mid-leg drags one side down and the delta becomes fiction.
