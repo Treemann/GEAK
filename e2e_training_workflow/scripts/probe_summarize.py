@@ -136,9 +136,15 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
     # IMPLEMENTATION (how it is computed) is exactly what a candidate changes -- requiring it to match
     # would refuse every config-level candidate as "incomparable", which is what happened the first
     # time an attention-backend pair was compared.
-    IMPL_KEYS = ("attention-backend", "GEAK_OVERLAY")
+    # GEAK_OVERLAY_SHA is IMPLEMENTATION, and listing it here is mandatory, not cosmetic: `identity`
+    # is the COMPLEMENT of `impl`, so an unlisted new key silently becomes WORKLOAD IDENTITY and
+    # every overlay candidate would be refused as "a different workload" before it could be gated.
+    IMPL_KEYS = ("attention-backend", "GEAK_OVERLAY", "GEAK_OVERLAY_SHA")
+    # Snapshot-format metadata is NEITHER half: it describes the record, not the run. It is excluded
+    # from both digests and surfaces as digest_schema below.
+    META_KEYS = ("snapshot_keys",)
     impl = {k: v for k, v in cfg.items() if k in IMPL_KEYS or k.startswith("NVTE_")}
-    identity = {k: v for k, v in cfg.items() if k not in impl}
+    identity = {k: v for k, v in cfg.items() if k not in impl and k not in META_KEYS}
     cfg_digest = hashlib.sha256(
         json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]
     impl_digest = hashlib.sha256(json.dumps(impl, sort_keys=True).encode()).hexdigest()[:16]
@@ -166,7 +172,15 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         # out of identity). Without it, a summary written under an older definition looks like a
         # different workload, and the gate refuses a comparison that is actually fine after a
         # re-summarise -- which is free, since the probe sidecars are on disk.
-        "digest_schema": 2,
+        #
+        # READ FROM THE HEADER, not hardcoded, and that distinction is load-bearing. Schema 3 widened
+        # workload identity from 5 realized fields to the regularization/optimizer/architecture set,
+        # after attention_dropout 0.0 vs 0.1 digested identically. A v2 sidecar PHYSICALLY DOES NOT
+        # CONTAIN attention_dropout, so unlike every previous bump this one cannot be repaired by
+        # re-summarising: hardcoding 3 here would stamp v3 on a v2 header and produce a digest that
+        # CLAIMS to cover dropout and does not -- precisely the fiction the guard exists to prevent.
+        # A v2-vs-v3 pair must be RE-MEASURED, not re-summarised.
+        "digest_schema": 3 if cfg.get("snapshot_keys") == "v3" else 2,
         "config_digest": cfg_digest,      # identity only: what is being trained
         "impl_digest": impl_digest,       # how it is computed: a candidate is EXPECTED to differ here
         # Ranks running different argv would silently mix two configurations inside ONE leg.

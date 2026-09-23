@@ -48,7 +48,18 @@ const STACK = A.stack || 'megatron';
 const GPU_IDS = String(A.gpu_ids || '0,1,2,3,4,5,6,7').split(',').map((s) => s.trim()).filter(Boolean);
 const NPROC = parseInt(A.nproc != null ? A.nproc : GPU_IDS.length, 10);
 const ITERS = parseInt(A.iters != null ? A.iters : 40, 10);
-const KERNEL_WF_SCRIPT = (A.kernel_workflow_dir || `${WORKFLOW_DIR}/../kernel_workflow`) + '/kernel_workflow.js';
+const KERNEL_WF_DIR = (A.kernel_workflow_dir || `${WORKFLOW_DIR}/../kernel_workflow`).replace(/\/+$/, '');
+// Call the WORKER lane directly, not the dispatcher. kernel_workflow.js is a dispatcher: in
+// mode=optimize/author (the default) it is a pure pass-through that forwards every arg unchanged to
+// kernel_lane.js, and in mode=bakeoff it fans out to lanes itself. Either way it spends a nesting
+// level, and the runtime allows exactly one: training -> dispatcher -> lane is three, and throws
+// "workflow() cannot be called from within a child workflow" AFTER extraction has already run.
+// e2e_workflow.js hit this and resolved it the same way (see its KERNEL_WF_SCRIPT comment); the
+// training layer simply never got the same update. The worker's behaviour and args are unchanged,
+// so this is a routing fix, not a semantic one — the kernel layer is still the UNCHANGED one.
+// Consequence worth knowing: mode=bakeoff is NOT reachable from here, because the fan-out it does
+// would need the level this layer has already spent. A bake-off has to be driven from the top.
+const KERNEL_WF_SCRIPT = `${KERNEL_WF_DIR}/kernel_lane.js`;
 const EXP_ROOT = A.exp_root || '/work/runs';
 
 // ---- modes (mirror of e2e_workflow.js; deep wins if both are set) ----------------------------
@@ -160,9 +171,19 @@ function comparable(ref, cand) {
   // looking for a configuration change that never happened.
   const rs = ref.digest_schema, cs = cand.digest_schema;
   if (rs !== cs) {
+    // Schema 3 is the exception to the "re-summarise and the question answers itself" remedy above.
+    // It widened workload identity to the regularization/optimizer/architecture set after
+    // attention_dropout 0.0 vs 0.1 digested identically, and a v2 probe sidecar PHYSICALLY DOES NOT
+    // CONTAIN those values -- there is nothing on disk to re-summarise them from. Saying
+    // "re-summarise" here would send the reader after a fix that cannot work.
+    const across3 = (rs === 3) !== (cs === 3);
     return { ok: false, stale: true,
              why: `digest schema differs (${rs} vs ${cs}) — one summary predates a change in how the ` +
-                  'digest is computed. Re-summarise both from their probe dirs, then compare.' };
+                  (across3
+                    ? 'digest is computed. Schema 3 captures fields (dropout, lr, seed, architecture) ' +
+                      'that a schema-2 sidecar never recorded, so this pair must be RE-MEASURED; ' +
+                      're-summarising cannot recover them.'
+                    : 'digest is computed. Re-summarise both from their probe dirs, then compare.') };
   }
   if (ref.config_digest !== cand.config_digest) {
     return { ok: false, why: `config digest differs (${ref.config_digest} vs ${cand.config_digest}): ` +
@@ -202,6 +223,18 @@ function gateVerdict(spec) {
   const base = { delta_pct: +deltaPct.toFixed(3), band_pct: +band.toFixed(3),
     delta_source: aligned ? 'window-aligned' : 'raw ratio (NOT window-aligned — includes sample-composition drift)',
     window_artifact_pct: aligned ? aligned.window_artifact_pct : null, mem_delta_pct: memDeltaPct == null ? null : +memDeltaPct.toFixed(2) };
+  // A raw ratio may REJECT but may never ACCEPT. Two IDENTICAL-config 7B legs (true delta zero by
+  // construction) gave unaligned +4.5925% against aligned -0.0588% at a 0.914% band: window placement
+  // alone manufactures a 5x-band "win". No floor can bound that -- the artifact scales with the data's
+  // +-25% useful_tokens swing, not with a constant. The asymmetry is deliberate and matches L0/L1: a
+  // false REJECT costs one candidate, which can be re-gated once the Integrator reports an aligned
+  // comparison; a false ACCEPT installs the candidate as the reference every later delta compounds on
+  // (see `refLeg = integ.cand` below) and puts the artifact in the headline permanently.
+  if (deltaPct > band && !aligned) {
+    return { accepted: false, klass: 'no_aligned_delta',
+             reason: `+${deltaPct.toFixed(2)}% > band ${band.toFixed(2)}%, but this is a raw ratio: ` +
+                     're-report with scripts/compare_legs.py before it can be a win', ...base };
+  }
   if (deltaPct > band) return { accepted: true, klass: 'win', reason: `+${deltaPct.toFixed(2)}% > band ${band.toFixed(2)}%`, ...base };
   if (deltaPct < -band) return { accepted: false, klass: 'regression', reason: `${deltaPct.toFixed(2)}% < -band`, ...base };
   // In band. Memory is a CURRENCY, not a metric: it counts only once a config change spends it.
@@ -325,14 +358,39 @@ ${JSON.stringify(inputs, null, 2)}`;
 
 async function safeAgentStub(role, phase, inputs, intro = '') {
   requireRole(role);   // unreachable until roles land; keeps the call sites honest meanwhile
-  return safeAgent(roleAgent(role, phase, intro, inputs), { phase, label: `${role}:${phase}` });
+  const opts = { phase, label: `${role}:${phase}` };
+  const schema = PHASE_SCHEMA[phase];
+  if (schema) opts.schema = schema;   // absent for 'report', which returns prose by design
+  return safeAgent(roleAgent(role, phase, intro, inputs), opts);
+}
+
+// An agent() call made WITHOUT a schema returns the agent's final text — a string. Every role call
+// site here dereferences its result as an object (setup.baseline_legs, profile.top_n, ...), so a
+// string silently reads as a wall of `undefined`. That is how a Setup leg that had genuinely
+// measured two clean baselines was thrown away as "produced no baseline": the agent did its job and
+// the plumbing dropped it on the floor.
+//
+// The *_SCHEMA constants below were declared for this and never passed to agent(). They are wired
+// in now. Coercion stays as a second line of defence for two reasons: it costs nothing, and a
+// schema-less call (the 'report' phase legitimately returns prose) must still not be mistaken for
+// an object. Anything that parses to a non-null object is accepted; a role that emits a bare string
+// or a fenced block still lands as structured data instead of failing three phases downstream.
+function coerceResult(r) {
+  if (r == null || typeof r === 'object') return r;
+  if (typeof r !== 'string') return r;
+  const txt = r.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  if (!(txt.startsWith('{') || txt.startsWith('['))) return r;   // genuine prose (e.g. 'report')
+  try {
+    const parsed = JSON.parse(txt);
+    return (parsed && typeof parsed === 'object') ? parsed : r;
+  } catch (e) { return r; }   // malformed: hand back the raw text, let the call site's guard speak
 }
 
 async function safeAgent(prompt, opts, tries = 3) {
   let lastErr = 'unknown';
   for (let i = 0; i < tries; i++) {
     try {
-      const r = await agent(prompt, opts);
+      const r = coerceResult(await agent(prompt, opts));
       if (r) return r;
       lastErr = 'null/empty result';
     } catch (e) { lastErr = String(e); }
@@ -374,8 +432,12 @@ const STRATEGY_SCHEMA = obj({ head_candidates: arrObj, stop: { type: 'boolean' }
   reasoning: { type: 'string' } }, ['head_candidates']);
 const EXTRACT_SCHEMA = obj({ task_dir: { type: 'string' }, op: { type: 'string' },
   has_backward: { type: 'boolean' }, engagement: { type: 'object' } }, ['task_dir']);
+// `comparison` is REQUIRED, not optional: without it the gate cannot accept at all (see
+// no_aligned_delta), so a return value that lacks it has wasted two job launches. Requiring it makes
+// the model layer retry for it instead of the orchestrator discovering the omission after the A/B.
 const INTEGRATE_SCHEMA = obj({ ref: { type: 'object' }, cand: { type: 'object' },
-  engagement: { type: 'object' }, overlay_path: { type: 'string' } }, ['ref', 'cand']);
+  comparison: { type: 'object' }, engagement: { type: 'object' },
+  overlay_path: { type: 'string' } }, ['ref', 'cand', 'comparison']);
 const AUDIT_SCHEMA = obj({ l0: { type: 'object' }, l1: { type: 'object' },
   l2_recommended: { type: 'boolean' }, risk_class: { type: 'string' } }, ['l0', 'l1']);
 const FINALIZE_SCHEMA = obj({ overlay: { type: 'string' }, patch: { type: 'string' },
@@ -384,16 +446,72 @@ const VALIDATE_SCHEMA = obj({ validation_status: { type: 'string' },
   baseline_useful_tok_s: { type: 'number' }, final_useful_tok_s: { type: 'number' },
   delta_pct: { type: 'number' } }, ['validation_status']);
 
-const T0 = Date.now ? Date.now() : 0;
-const outOfTime = () => (Date.now ? (Date.now() - T0) > TIME_BUDGET_MS * 0.6 : false);
+// ---- wall clock -------------------------------------------------------------------------------
+// The workflow sandbox has NO clock at all: the `Date.now` / argless `new Date` family, plus
+// `performance` and `process`, are each either absent or throw, so that a resumed run replays
+// identically. The previous `Date.now ? … : 0` feature-detect was worse than nothing — the binding
+// EXISTS and throws only when CALLED, so the guard was always truthy and the run died at launch
+// before its first agent. `new Date(<explicit ms>)` is pure and still works; only "now" is gone.
+//
+// A wall-clock budget therefore cannot be self-served. Two honest sources, in order:
+//   T0  — passed in as args.t0_epoch_ms by the launcher, which does have a clock.
+//   now — read through an agent, which runs bash and so can call `date`.
+// On resume a cached stamp replays its ORIGINAL value. That is the behaviour we want: hours spent
+// parked between sessions must not count against a budget that is meant to bound GPU work.
+//
+// If T0 is absent the budget is unenforceable. We then say so, once and loudly, and let the loop's
+// two hard bounds (BUDGET, MAX_GATES) carry it — rather than fabricating a deadline from a clock we
+// do not have, or silently reporting a bound that is not actually being applied.
+// Phase -> schema. Passing this to agent() forces the role through the StructuredOutput tool, so a
+// shape mismatch retries at the MODEL layer instead of arriving here as prose to be pattern-matched.
+// 'report' is deliberately absent: it returns a written report, and prose is its correct output.
+const PHASE_SCHEMA = {
+  setup: SETUP_SCHEMA, profile: PROFILE_SCHEMA, reprofile: PROFILE_SCHEMA,
+  strategize: STRATEGY_SCHEMA, extract: EXTRACT_SCHEMA, integrate: INTEGRATE_SCHEMA,
+  gate: AUDIT_SCHEMA, finalize: FINALIZE_SCHEMA, validate: VALIDATE_SCHEMA,
+};
+
+const T0 = A.t0_epoch_ms != null ? parseInt(A.t0_epoch_ms, 10) : null;
+if (T0 == null || !isFinite(T0)) {
+  log0(`WARNING: no args.t0_epoch_ms, so the ${(TIME_BUDGET_MS / 3600000).toFixed(1)}h wall-clock ` +
+       `budget is NOT enforced this run. The lane loop is still bounded by budget=${BUDGET} tasks ` +
+       `and max_gates=${MAX_GATES}. Pass t0_epoch_ms (epoch ms at launch) to enforce it.`);
+}
+const CLOCK_SCHEMA = obj({ epoch_ms: { type: 'number' } }, ['epoch_ms']);
+let clockFailed = false;
+const outOfTime = async () => {
+  if (T0 == null || !isFinite(T0) || clockFailed) return false;
+  const r = await agent(
+    'Run exactly `date +%s%3N` and return its output as epoch_ms. Do nothing else — no files, no ' +
+    'analysis. This is a clock read for the orchestrator\'s wall-clock budget.',
+    { label: 'clock', phase: 'KernelTrack', schema: CLOCK_SCHEMA });
+  if (!r || typeof r.epoch_ms !== 'number' || !isFinite(r.epoch_ms)) {
+    clockFailed = true;   // a broken clock must not end the run early; the hard bounds still hold
+    log0('WARNING: clock read failed; wall-clock budget disabled for the rest of this run.');
+    return false;
+  }
+  const elapsed = r.epoch_ms - T0;
+  const over = elapsed > TIME_BUDGET_MS * 0.6;
+  log0(`elapsed ${(elapsed / 3600000).toFixed(2)}h of ${(TIME_BUDGET_MS * 0.6 / 3600000).toFixed(2)}h` +
+       ` lane deadline${over ? ' — OVER, draining' : ''}`);
+  return over;
+};
 
 // ---------------------------------------------------------------------------
 // Setup — the TRUE baseline, measured twice so this run's bands are its own.
 // ---------------------------------------------------------------------------
 phase('Setup');
+// REPEAT is 3, not 2, and the third leg is the cheapest correctness this pipeline buys. With two
+// legs the L1 envelope is a single abs(A-B) sample per step, so it collapses wherever those two legs
+// happened to cross -- and BOTH real runs then had their L1 verdict rejected by its own null
+// control, forcing the Director to hand-recalibrate mid-flight (0.5B from 5 legs, 7B likewise).
+// trajectory_gate.MIN_BAND_LEGS is 3: below it the envelope is reported but may not vote. The cost
+// is one extra baseline leg per run; the legs also feed the across-job throughput band, so it is not
+// wasted. If the band's null control still fails at 3, raise this to 5 -- the band now SAYS so.
 const setup = await safeAgentStub('training_director', 'setup',
-  { ...benchInputs(curConfig, 'baseline'), REPEAT: 2 },
-  'Pin the config IR, measure the TRUE baseline TWICE, and derive both bands from those two legs.');
+  { ...benchInputs(curConfig, 'baseline'), REPEAT: 3 },
+  'Pin the config IR, measure the TRUE baseline THREE times, and derive both bands from those legs. ' +
+  'The L1 band MUST pass its own null control; if it does not, say so rather than using it.');
 if (!setup || !(setup.baseline_legs || []).length) {
   throw new Error('Setup produced no baseline. Every later number is a ratio against it, so there ' +
     'is nothing to continue with — a run that proceeds here reports deltas against nothing.');
@@ -435,6 +553,23 @@ let { profile, strategy } = await profileAndRoute(curConfig, 'baseline');
 wfReturn.config_diagnosis = (profile && profile.config_diagnosis) || null;
 let headQueue = ((strategy && strategy.head_candidates) || []).slice();
 log0(`heads queued: ${headQueue.length}${strategy && strategy.stop ? ' (architect says stop)' : ''}`);
+// The Architect's `stop` was PRINTED and then ignored: it could report that no head is worth a gate
+// and the loop would spend the whole budget regardless. A gate costs two job launches and blocks
+// every lane, so an explicit "nothing here pays" is the cheapest signal in the run. Honour it, but
+// only when it is not contradicted by the Architect's own numbers -- if it queued a head it expects
+// to clear the band, the queue is the better evidence and the flag is treated as stale.
+if (strategy && strategy.stop) {
+  const best = headQueue.length ? Math.max(...headQueue.map((h) => expectedGainPct(h))) : 0;
+  if (best <= runFloor) {
+    log0(`architect says stop and no queued head beats the band (best ${best.toFixed(2)}% <= ` +
+         `${runFloor.toFixed(2)}%) — skipping the kernel track rather than spending gates on it`);
+    headQueue.length = 0;
+  } else {
+    log0(`architect says stop, but queued a head expected at ${best.toFixed(2)}% > band ` +
+         `${runFloor.toFixed(2)}% — continuing, and recording the disagreement`);
+    wfReturn.architect_stop_overruled = { best_expected_gain_pct: +best.toFixed(2), band_pct: +runFloor.toFixed(3) };
+  }
+}
 
 // ---------------------------------------------------------------------------
 // ConfigSweep — deep only. Refuses rather than silently skipping.
@@ -455,7 +590,10 @@ let curOverlay = null;
 let refLeg = baseline;          // the carried accepted stack, not the bare baseline
 let noImprove = 0;
 
-while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !outOfTime()) {
+// outOfTime() is async (it reads the clock through an agent) and is deliberately LAST in the
+// condition: && short-circuits, so the free bounds are checked first and no clock agent is spawned
+// once the queue is empty or the task/gate budget is already spent.
+while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(await outOfTime())) {
   const stop = stopRule(headQueue, runFloor);
   if (stop.stop) { log0(`stop rule: best remaining ${stop.best_expected_gain_pct}% <= band ${stop.band_pct}%`); break; }
   const h = headQueue.shift();
@@ -476,7 +614,7 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !outOf
     }
     // The UNCHANGED kernel layer, called exactly as a hand-written kernel task would be.
     const r = await workflow({ scriptPath: KERNEL_WF_SCRIPT }, {
-      kernel_path: ext.task_dir, workflow_dir: (A.kernel_workflow_dir || `${WORKFLOW_DIR}/../kernel_workflow`),
+      kernel_path: ext.task_dir, workflow_dir: KERNEL_WF_DIR,
       budget: parseInt(A.kernel_budget != null ? A.kernel_budget : 3, 10),
       gpu_ids: GPU_IDS.join(','),
     });
@@ -504,7 +642,10 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !outOf
       BAND: wfReturn.bands.trajectory_band_path },
     'Run L0 (out/dgrad/wgrad vs fp32, magnitude AND sign) and L1 (step-indexed envelope).');
 
-  const v = gateVerdict({ ref: integ.ref, cand: integ.cand,
+  // Forward the Integrator's window-aligned comparison. Omitting it here made alignedDelta() return
+  // null on EVERY real gate -- the unit tests pass `comparison` straight into gateVerdict(), so they
+  // exercised the aligned path while production never did, and the 7B run gated on a raw ratio.
+  const v = gateVerdict({ ref: integ.ref, cand: integ.cand, comparison: integ.comparison,
                           l0: audit && audit.l0, l1: audit && audit.l1,
                           mode: DEEP_MODE ? 'deep' : 'fast' });
   log0(`  gate: ${v.klass} — ${v.reason}`);
@@ -538,6 +679,23 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !outOf
   }
   if (noImprove >= 2) { log0('two consecutive non-wins — stopping the kernel track'); break; }
 }
+// What was NOT tried, and why the loop ended. The 7B run stopped on the wall clock with 3 of 4
+// queued heads never attempted, and nothing in the result said so -- a reader seeing accepted=1,
+// tasks=1/2 cannot tell "nothing else was worth trying" (the stop rule) from "we ran out of clock
+// with the queue still full". Those call for opposite next actions, so the run has to say which.
+wfReturn.unexplored_heads = headQueue.map((h) => ({
+  kernel: h.short_name || h.kernel,
+  critical_path_share_pct: h.critical_path_share_pct,
+  expected_gain_pct: +expectedGainPct(h).toFixed(2),
+}));
+wfReturn.stop_reason = !headQueue.length ? 'queue_exhausted'
+  : tasksUsed >= BUDGET ? 'task_budget'
+  : gatesUsed >= MAX_GATES ? 'gate_budget'
+  : 'wall_clock_or_stop_rule';
+if (wfReturn.unexplored_heads.length) {
+  log0(`${wfReturn.unexplored_heads.length} head(s) never attempted (${wfReturn.stop_reason}): ` +
+       wfReturn.unexplored_heads.map((h) => `${h.kernel} exp=${h.expected_gain_pct}%`).join(', '));
+}
 wfReturn.memory_conversion = proposeMemoryConversion(bankedMemory);
 
 // ---------------------------------------------------------------------------
@@ -548,6 +706,22 @@ const fin = await safeAgentStub('integrator', 'finalize',
   { ...benchInputs(curConfig, 'finalize'), ACCEPTED: wfReturn.accepted, OVERLAY: curOverlay },
   'Assemble the bundle and RE-CHECK engagement on the assembled artifact.');
 wfReturn.final = fin || null;
+// The Finalize intro ORDERS an engagement re-check on the assembled artifact, and FINALIZE_SCHEMA
+// asks for the answer -- but nothing read it, so a bundle whose overlay stopped engaging shipped
+// looking identical to one that engaged. That is the same class of bug as the *_SCHEMA constants
+// that were never passed to agent(): the agent does the work and the orchestrator discards it.
+// This does not re-open the gate (the win was already measured); it refuses to present an artifact
+// as validated when its own re-check says the overlay is no longer bound.
+if (fin && fin.engagement_recheck && wfReturn.accepted.length) {
+  const er = fin.engagement_recheck;
+  if (er.forward === false || er.backward === false) {
+    wfReturn.finalize_engagement_failed = true;
+    log0('FINALIZE RE-CHECK FAILED: the assembled bundle does not engage on ' +
+         `${er.forward === false ? 'forward' : ''}${er.forward === false && er.backward === false ? ' and ' : ''}` +
+         `${er.backward === false ? 'backward' : ''} — the measured win belongs to a binding this ` +
+         'bundle does not reproduce. Do NOT ship it on these numbers.');
+  }
+}
 
 phase('Report');
 wfReturn.report = await safeAgentStub('system_architect', 'report',
@@ -562,6 +736,40 @@ const val = await safeAgentStub('training_director', 'validate',
   'Re-measure the accepted stack against the TRUE baseline yourself and arbitrate.');
 wfReturn.validation = val || null;
 
+// ANNOTATE the accepted records against the independent re-measurement -- never rewrite them.
+// In the 7B run accepted[0].verdict.delta_pct stayed 7.853% after the Director had PROVEN that
+// figure was a window-placement artifact and the real number was +4.54%. Anything reading
+// .accepted[] got the disproven one. Overwriting the gate's measurement would destroy the audit
+// trail (and the disagreement between the two is itself the finding), so the original stays byte
+// for byte and gains a pointer to what superseded it.
+if (val && typeof val.delta_pct === 'number' && wfReturn.accepted.length) {
+  const tol = Math.max(Number(wfReturn.bands && wfReturn.bands.floor_pct) || 0, 0.15);
+  // Only meaningful when ONE candidate was accepted: with several, per-candidate deltas are each
+  // measured against a different carried reference and are not expected to equal the headline.
+  const single = wfReturn.accepted.length === 1;
+  for (const a of wfReturn.accepted) {
+    const gated = a.verdict && a.verdict.delta_pct;
+    a.validation = {
+      validated_delta_pct: val.delta_pct,
+      validation_status: val.validation_status || null,
+      gate_delta_pct: typeof gated === 'number' ? gated : null,
+      gate_delta_source: (a.verdict && a.verdict.delta_source) || null,
+      superseded: single && typeof gated === 'number'
+        && Math.abs(gated - val.delta_pct) > tol,
+      note: single
+        ? 'The Director re-measured this stack independently. Where `superseded` is true, quote '
+          + 'validated_delta_pct; the gate figure is kept for audit, not for reporting.'
+        : 'Several candidates were accepted, so per-candidate deltas are measured against different '
+          + 'carried references and do NOT sum to the headline. Compare them individually, not to '
+          + 'validated_delta_pct.',
+    };
+    if (a.validation.superseded) {
+      log0(`NOTE: ${a.head} gated at ${gated}% (${a.verdict.delta_source}); independent ` +
+           `re-measurement says ${val.delta_pct}%. Report the latter.`);
+    }
+  }
+}
+
 wfReturn.gates_used = gatesUsed;
 wfReturn.tasks_used = tasksUsed;
 wfReturn.kb_identity = kbIdentity(curConfig);
@@ -570,7 +778,12 @@ wfReturn.status = val && val.validation_status === 'confirmed' ? 'ok'
 log0(`done: status=${wfReturn.status} accepted=${wfReturn.accepted.length} ` +
      `gates=${gatesUsed}/${MAX_GATES} tasks=${tasksUsed}/${BUDGET}`);
 
-export const _test = { noiseBandPct, legUsable, comparable, gateVerdict, expectedGainPct, stopRule,
-                       makeBarrier, proposeMemoryConversion, kbIdentity, want, FAST_MODE, DEEP_MODE };
+// NOT exported. The Workflow loader special-cases only the leading `export const meta` and parses
+// everything after it as a function body, so a second top-level `export` is a syntax error and the
+// run never launches. The gate suite reads this file as TEXT and regexes it, so it never imported
+// this binding; the manifest stays as documentation of which pure functions are under test.
+const _test = { noiseBandPct, legUsable, comparable, gateVerdict, expectedGainPct, stopRule,
+                makeBarrier, proposeMemoryConversion, kbIdentity, want, FAST_MODE, DEEP_MODE };
+void _test;
 
 return wfReturn;

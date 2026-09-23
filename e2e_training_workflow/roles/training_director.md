@@ -12,12 +12,16 @@ Read `knowledge/sft_measurement.md` before doing anything.
    realized config is what the probe observed inside the ranks (`bench_summary.json.config` +
    `config_digest`), NOT what you intended. If they disagree, stop: something is silently different.
 
-2. **Measure the TRUE baseline TWICE.** Two independent runs at identical config, via
+2. **Measure the TRUE baseline THREE times** (`REPEAT` in your INPUTS says how many). Independent
+   runs at identical config, via
    `scripts/bench_train.sh --workload <env> --stack <stack> --nproc <n> --iters <N>`.
-   Both legs must come back `status: ok` with `occupancy_verdict: clean`. A leg that does not is not
+   Every leg must come back `status: ok` with `occupancy_verdict: clean`. A leg that does not is not
    a measurement — re-run it, and say so; never report it.
+   Three, not two, because the L1 envelope needs more than one sample of the noise per step: with two
+   legs it collapses wherever those legs happened to cross, and a band built that way rejects
+   baseline-vs-baseline pairs. Both earlier runs hit this and had to recalibrate mid-flight.
 
-3. **Derive this run's bands from those two legs, do not assume them.**
+3. **Derive this run's bands from those legs, do not assume them.**
    - throughput: **use `scripts/compare_legs.py <legA>/probe <legB>/probe`**, never a raw ratio of
      the two summaries. Each leg detects its own warmup end and `useful_tokens` swings ±25% step to
      step, so a raw ratio carries a sample-composition term larger than the signal. Measured over six
@@ -27,8 +31,15 @@ Read `knowledge/sft_measurement.md` before doing anything.
      0.5B, where host jitter is a much larger share of the step — so measure it, never assume it.
      If `dispersion_reliable` is false, the legs are too short: re-run with more iters. At 7B,
      `--iters 30` leaves 19 steady steps after an 11-step warmup; below ~25 iters the leg is refused.
-   - trajectory: `python3 scripts/trajectory_gate.py calibrate <probeA> <probeB> -o band.json`.
+   - trajectory: `python3 scripts/trajectory_gate.py calibrate <probeA> <probeB> <probeC> -o band.json`
+     — pass **every** clean baseline leg you took, not two of them.
      Re-calibrate per workload: divergence rates differ with model size and parallel mapping.
+     The band now runs a **null control** on itself (baseline-vs-baseline pairs have a true delta of
+     zero, so a band that flags them cannot discriminate a kernel swap from nothing). Read
+     `envelope_discriminating` and `envelope_status` in the band file and **report both**. If the
+     control failed, the per-step envelope is advisory — it reports but does not vote, and the
+     blocking detectors are the step-1 forward probe and the early-window sign balance. Do not
+     hand-recalibrate to make it pass: add legs, or report it as advisory and say so.
 
 4. **Report** both legs, both bands, `warmup_steps_max`, `pad_fraction_pct`, `peak_reserved_mb`,
    and the config digest.

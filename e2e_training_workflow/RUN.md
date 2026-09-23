@@ -1,5 +1,30 @@
 # Launching a run
 
+## Read this first if you ran this workflow before 2026-09-23
+
+Two changes alter what a run costs and what it will accept. Neither is optional.
+
+**1. Existing baselines must be RE-MEASURED, not re-summarised.** `config_digest` moved to schema 3
+(it covered five fields; `attention_dropout` 0.0 and 0.1 digested identically). The version lives in
+the probe header, so legs recorded earlier stay schema 2 forever and a 2-vs-3 pair is refused with
+`stale_summary`. Re-summarising cannot fix it — a v2 sidecar never recorded the new fields. Concretely:
+the 7B `+4.54%` baseline needs one fresh leg pair before the next candidate can be gated.
+
+**2. Setup now takes three baseline legs, not two** (`REPEAT: 3`). The L1 envelope needs more than
+one sample of the noise per step; with two legs it collapsed wherever those legs happened to cross,
+and both earlier runs had to hand-recalibrate mid-flight. The band now self-tests (see below), so if
+three is not enough it will say so rather than quietly under-gating. Cost: one extra leg per run,
+which also feeds the across-job throughput band.
+
+**What to check in the result.** `validation` is still the official number. Additionally:
+`accepted[].verdict.delta_source` must read `window-aligned` — a raw ratio can no longer be accepted
+at all (`klass: no_aligned_delta`), because two identical 7B legs measured +4.5925% unaligned against
+−0.0588% aligned. `accepted[].validation.superseded` flags any gate figure the Director's independent
+re-measurement contradicts; quote `validated_delta_pct` when it is true. The band file's
+`envelope_discriminating` / `envelope_status` say whether L1's per-step envelope was allowed to vote
+or was demoted to advisory. `unexplored_heads` and `stop_reason` say what the run never got to —
+Stage 2 stopped on the wall clock with 3 of 4 heads untried, and nothing used to record that.
+
 ## Before you spend hours
 
 ```bash
@@ -80,7 +105,8 @@ Workflow({
     iters: 30,          // 30 leaves ~29 steady steps at 0.5B; below 12 the gate refuses the leg
     budget: 1,          // one kernel task
     max_gates: 2,
-    kernel_budget: 2
+    kernel_budget: 2,
+    t0_epoch_ms: <paste `date +%s%3N`>   // see "Why the launch args carry a timestamp" below
   }
 })
 ```
@@ -98,10 +124,21 @@ Workflow({
     budget: 2,
     max_gates: 4,
     kernel_budget: 3,
-    time_budget_ms: 18000000
+    time_budget_ms: 18000000,
+    t0_epoch_ms: <paste `date +%s%3N`>   // REQUIRED, or time_budget_ms is not enforced
   }
 })
 ```
+
+### Why the launch args carry a timestamp
+
+The workflow sandbox has **no clock**: `Date.now`, argless `new Date`, `performance` and `process`
+are all absent or throw, so a resumed run replays identically. Probed on this box, only
+`new Date(<explicit ms>)` still works. So the script cannot time itself — it takes the start from
+`t0_epoch_ms` and reads "now" through an agent, which runs bash and can call `date`. On resume a
+cached stamp replays its original value, which is what we want: hours parked between sessions must
+not count against a budget meant to bound GPU work. Omit `t0_epoch_ms` and the run proceeds with
+`time_budget_ms` unenforced, logging a warning instead of implying a bound it is not applying.
 
 ## What should happen
 

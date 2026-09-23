@@ -110,8 +110,13 @@ const leg = (o = {}) => Object.assign({
   const { gateVerdict } = load(['gateVerdict', 'legUsable', 'noiseBandPct', 'comparable', 'alignedDelta']);
   const v = (o) => gateVerdict(Object.assign({ ref: leg(), cand: leg(), mode: 'fast' }, o));
 
-  ok(v({ cand: leg({ useful_tok_s_per_gpu: 4800 }) }).accepted,
-    '+0.84% clears the 0.3% band and is accepted');
+  // An ACCEPT now requires an aligned comparison, so every accept-asserting case must supply one.
+  // That is the point of the fix, not an inconvenience: before it, these tests passed `comparison`
+  // straight into gateVerdict() while the single production call site omitted it, so the suite
+  // exercised the aligned path that production never took.
+  const cmp = (d) => ({ comparison: { delta_pct: d, window_artifact_pct: 0 } });
+  ok(v({ cand: leg({ useful_tok_s_per_gpu: 4800 }), ...cmp(0.84) }).accepted,
+    '+0.84% aligned clears the band and is accepted');
   ok(v({ cand: leg({ useful_tok_s_per_gpu: 4766 }) }).klass === 'no_win',
     '+0.13% is inside the band -> no_win (not a win)');
   ok(v({ cand: leg({ useful_tok_s_per_gpu: 4700 }) }).klass === 'regression',
@@ -120,8 +125,21 @@ const leg = (o = {}) => Object.assign({
     'L0 (op numerics incl. backward) can reject a throughput win');
   ok(!v({ cand: leg({ useful_tok_s_per_gpu: 4800 }), l1: { pass: false } }).accepted,
     'L1 (loss/grad-norm trajectory) can reject a throughput win');
-  ok(v({ l0: { pass: true }, l1: { pass: true }, cand: leg({ useful_tok_s_per_gpu: 4800 }) }).accepted,
+  ok(v({ l0: { pass: true }, l1: { pass: true }, cand: leg({ useful_tok_s_per_gpu: 4800 }), ...cmp(0.84) }).accepted,
     'passing gates do not by themselves accept — throughput still has to clear the band');
+
+  // A raw ratio may REJECT but may never ACCEPT. Two identical-config 7B legs (true delta zero by
+  // construction) measured +4.5925% unaligned against -0.0588% aligned at a 0.914% band, so an
+  // unaligned number above the band is not evidence of anything.
+  const noAl = v({ cand: leg({ useful_tok_s_per_gpu: 4800 }) });
+  ok(noAl.accepted === false && noAl.klass === 'no_aligned_delta',
+    '+0.84% with NO aligned comparison is refused as no_aligned_delta, not accepted');
+  ok(/compare_legs\.py/.test(noAl.reason),
+    'the refusal names the tool that would make it gateable');
+  ok(v({ cand: leg({ useful_tok_s_per_gpu: 4700 }) }).klass === 'regression',
+    'a raw ratio may still REJECT: a false reject costs one candidate, a false accept poisons the reference');
+  ok(!v({ l0: { pass: false }, cand: leg({ useful_tok_s_per_gpu: 4800 }) }).klass.includes('aligned'),
+    'L0/L1 keep first claim on the rejection reason — their klass is more actionable');
 
   // memory is banked, never accepted, while no ConfigSweep exists to spend it
   const m = v({ cand: leg({ useful_tok_s_per_gpu: 4762, peak_reserved_mb: 12000 }) });
@@ -146,6 +164,14 @@ const leg = (o = {}) => Object.assign({
   ok(stale.klass === 'stale_summary' && /Re-summarise/.test(stale.reason),
     'a summary written under an older digest definition is "stale", not "different workload" — ' +
     'the probe sidecars are on disk, so re-summarising answers it');
+
+  // ...EXCEPT across schema 3. It widened workload identity to dropout/lr/seed/architecture, and a
+  // v2 sidecar never recorded those, so the usual "re-summarise" remedy is impossible here. Telling
+  // the reader to re-summarise would send them after a fix that cannot work.
+  const v3 = gateVerdict({ ref: leg({ digest_schema: 2 }), cand: leg({ digest_schema: 3 }), mode: 'fast' });
+  ok(v3.klass === 'stale_summary' && /RE-MEASURED/.test(v3.reason) && !/Re-summarise both/.test(v3.reason),
+    'a schema-2 vs schema-3 pair says RE-MEASURE, not re-summarise: the v2 sidecar never recorded ' +
+    'the fields schema 3 digests, so there is nothing on disk to recover them from');
 
   const inc = v({ cand: leg({ useful_tok_s_per_gpu: 9999, config_digest: 'different99' }) });
   ok(inc.klass === 'incomparable' && !inc.accepted,

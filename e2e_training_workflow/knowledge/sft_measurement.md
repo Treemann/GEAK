@@ -77,6 +77,24 @@ aligned **+0.0235%** (nothing) — 93% of it was window placement. Data order is
 aligning the window makes the term cancel exactly; there is nothing to correct statistically.
 Always compare with `scripts/compare_legs.py`.
 
+**The artifact is NOT bounded by the 0.5% unaligned floor (measured 2026-09-22, 7B/8GPU).** The
+worst case above was 0.3867%, which is where the `unaligned: 0.5` floor came from. A later pair
+blew straight through it: two **identical-config** baseline legs, true delta zero by construction,
+gave `unaligned_delta_pct` **+4.5925%** against `aligned` **-0.0588%** — window placement alone
+manufacturing a win **5x the run's 0.914% band**. No floor can bound this term, because it scales
+with the +-25% `useful_tokens` swing rather than with a constant.
+
+Consequence, now enforced in `gateVerdict()`: **a raw ratio may REJECT but may never ACCEPT**
+(`klass: no_aligned_delta`). The asymmetry is deliberate — a false reject costs one candidate, which
+can be re-gated once an aligned comparison is reported; a false accept installs the candidate as the
+reference every later delta compounds on, and puts the artifact in the headline permanently.
+
+How this went unnoticed for two runs: the Integrator's role card *did* require `comparison`, and the
+unit tests *did* exercise the aligned path — but they passed `comparison` straight into
+`gateVerdict()`, while the single production call site never forwarded it. `alignedDelta()` therefore
+returned null on **every real gate**, and the honest `delta_source` label was the only symptom. Test
+the call site, not just the function.
+
 ## 5c. A leg too short to estimate dispersion is not a measurement
 The README smoke settings (`--iters 8`) leave 7 steady steps, and the quartiles then straddle the
 near-warmup value: measured IQR **1.243%** against **0.078%** on a 30-step run of the same workload.
@@ -88,6 +106,41 @@ refuses the leg. Use `--iters 8` to check that the plumbing works, never to meas
 The digest is computed from what the **probe observed inside the ranks**, not from what the caller
 intended. `ranks_agree_on_argv` additionally catches two configurations mixed inside ONE leg. A ratio
 across two identities is fiction no matter how tight each leg is.
+
+**Correction made 2026-09-22: the guard was far weaker than this section implied — schema 3.**
+Until then `workload_identity` contained **five** realized fields (`micro-batch-size`,
+`global-batch-size`, `seq-length`, `sft-tokenizer-prompt-format`, `world_size`). The probe scraped
+nine `--flag value` pairs out of `sys.argv` and nothing else, so:
+
+* **`attention_dropout` 0.0 and 0.1 digested identically** (`288f95e335ac66a4` on both). Diffing the
+  two 686-line realized Megatron arg dumps gave exactly **one** differing line, while step-1 loss
+  moved **3.1689 -> 4.3728** on identical data (`useful_tokens[step1] = 7273` in both) and throughput
+  differed by **+7.3%**. A headline "+7.3% win" was in substantial part "we did not do the dropout".
+* **The model was never covered.** `ARCH_ARGS` never reached the snapshot, so a 0.5B and a 7B leg at
+  the same mbs/gbs/seq/world_size would have digested the same.
+* **TP/PP/CP were in the allowlist but never appeared**, because the adapter does not pass them
+  explicitly — so the "parallel mapping" this guard was documented to cover was covered on no leg
+  ever measured.
+* store_true flags (`--bf16`, `--sft`, `--finetune`, ...) could never be captured by a pair-only scan.
+
+Schema 3 captures the regularization/optimizer/architecture set plus presence-only flags: **37 config
+fields, 33 of them identity**, verified on a real leg. The version lives in the **snapshot** (header
+`snapshot_keys: v3`), not in the summariser, because a v2 sidecar physically does not contain
+`attention_dropout` — stamping v3 on it would produce a digest that *claims* to cover dropout and
+does not. **A v2-vs-v3 pair must therefore be RE-MEASURED, not re-summarised**, which is the one
+previous bump this remedy does not apply to.
+
+Residual limitation, stated rather than papered over: the digest still reads **argv**, not the
+realized arg table. A leg that relies on a framework default (the baseline does not pass
+`--attention-dropout` at all) records nothing for that key, so a default that changed between runs
+would still be invisible. The container image is pinned, which is what currently makes that safe.
+
+`impl_digest` had the mirror-image defect: it hashed the overlay manifest's **basename**, a label
+that moves on a repackage and does **not** move when the kernel bytes under a kept filename are
+swapped — yet it was cited as proof that a leg "IS the TRUE baseline stack re-measured". It now
+hashes the manifest's semantic fields plus the **contents** of every file it points at, excluding
+paths and `engagement_out` (those are per-leg output locations; hashing them would make two legs
+running the identical kernel look like different implementations).
 
 ## 7. A profiled run is not a measurement
 The profiler window perturbs the steps it traces. `bench_summary.json.profiled_run == true` forces

@@ -187,18 +187,105 @@ def _argv_hash():
     return hashlib.sha256(" ".join(sys.argv).encode()).hexdigest()[:16]
 
 
+def _overlay_content_hash(manifest_path):
+    """Hash what the overlay WILL RUN, not what it is CALLED.
+
+    The basename alone moved for a repackage that kept the kernel bytes identical, and would NOT
+    move for a swapped kernel under a kept filename -- so it cannot support the "same implementation
+    re-measured" claim that was made of impl_digest in the 7B run.
+
+    What is hashed: the manifest's SEMANTIC fields (the rebind target, and the attribute half of
+    `replacement`) plus the BYTES of every file it points at, length-prefixed so two files cannot be
+    concatenated into a third's hash. What is NOT hashed: any path, and `engagement_out`. Those are
+    per-leg output locations -- hashing the raw manifest would give two legs running the identical
+    kernel different impl_digests purely because they wrote engagement JSON to different files,
+    which is the same class of false alarm this hash exists to remove.
+
+    A file that cannot be read yields a value that is visibly NOT a digest, carried in-band into the
+    config and therefore into impl_digest and the report. Skipping it and hashing a shorter list
+    would return a confident-looking 16 hex chars for an unverified overlay -- a guard that silently
+    degrades is worse than no guard.
+    """
+    import hashlib
+    try:
+        with open(manifest_path, "rb") as f:
+            cfg = json.loads(f.read())
+    except Exception as e:
+        print(f"[geak-overlay] MANIFEST UNREADABLE ({e!r}) -- impl_digest cannot identify this "
+              f"overlay; do not cite it as provenance.", flush=True)
+        return f"UNREADABLE_MANIFEST:{type(e).__name__}"
+    rep_path, _, rep_attr = (cfg.get("replacement") or "").partition(":")
+    h = hashlib.sha256()
+    # Semantic head: what gets rebound, and to which attribute. Both change meaning; neither is a path.
+    h.update(("target=" + str(cfg.get("target") or "") + "\nattr=" + rep_attr + "\n").encode())
+    files = ([rep_path] if rep_path else []) + list(cfg.get("sources") or [])
+    for p in files:
+        try:
+            with open(p, "rb") as f:
+                b = f.read()
+        except Exception as e:
+            print(f"[geak-overlay] OVERLAY FILE UNREADABLE {p!r} ({e!r}) -- impl_digest cannot "
+                  f"identify this overlay; do not cite it as provenance.", flush=True)
+            return f"UNREADABLE_FILE:{os.path.basename(p)}:{type(e).__name__}"
+        h.update(b"%d:" % len(b) + b)
+    return h.hexdigest()[:16]
+
+
+# WORKLOAD IDENTITY KEYS (Seam 1). Every flag here changes WHAT is trained, so two legs that differ
+# in any of them are not comparable and a ratio between them is fiction.
+#
+# This list was NINE flags and covered five realized fields (mbs/gbs/seq/tokenizer-format/world_size).
+# That was not enough by a wide margin, proven twice on real runs:
+#   - attention_dropout 0.0 vs 0.1 digested IDENTICALLY (288f95e335ac66a4). Diffing the two 686-line
+#     Megatron arg dumps gave exactly ONE differing line, and step-1 loss moved 3.1689 -> 4.3728 on
+#     the same data. A +7.3% "win" was partly just "we did not do the dropout".
+#   - the model itself was never covered: a 0.5B and a 7B leg at the same mbs/gbs/seq/world_size
+#     would have digested identically, because ARCH_ARGS never reached the snapshot.
+#   - tensor/pipeline/context-parallel-size were in the old list but NEVER appeared in any recorded
+#     config, because the adapter does not pass them explicitly -- so the "parallel mapping" the
+#     gate's docstring claims is covered was in fact covered on no leg ever measured.
+# train_iters is deliberately EXCLUDED: it is a measurement length, not a workload, and legs are
+# window-aligned by compare_legs.py anyway.
+_IDENTITY_PAIR_KEYS = (
+    # mapping / batching
+    "--micro-batch-size", "--global-batch-size", "--seq-length", "--tensor-model-parallel-size",
+    "--pipeline-model-parallel-size", "--context-parallel-size", "--recompute-granularity",
+    "--sft-tokenizer-prompt-format",
+    # regularization + optimizer: these move the loss/grad-norm trajectory L1 gates on
+    "--attention-dropout", "--hidden-dropout", "--weight-decay", "--clip-grad",
+    "--lr", "--min-lr", "--lr-decay-style", "--lr-warmup-iters",
+    "--adam-beta1", "--adam-beta2", "--adam-eps", "--seed",
+    # what is trained, on what
+    "--load", "--tokenizer-model", "--train-data-path",
+    "--num-layers", "--hidden-size", "--ffn-hidden-size", "--num-attention-heads",
+    "--num-query-groups", "--kv-channels", "--max-position-embeddings", "--rotary-base",
+)
+# Presence-only flags (store_true). The old scan read `--flag value` pairs ONLY, so none of these
+# could ever be captured -- a leg run with --bf16 and one without were the same workload to the gate.
+_IDENTITY_FLAG_KEYS = (
+    "--bf16", "--fp16", "--sft", "--finetune", "--swiglu", "--disable-bias-linear",
+    "--add-qkv-bias", "--no-rope-fusion", "--untie-embeddings-and-output-weights",
+    "--group-query-attention", "--sequence-parallel", "--use-flash-attn",
+)
+
+
 def _config_snapshot():
     """Pinned-config verification input (Seam 1): what the process ACTUALLY runs with."""
     import sys
-    keys = ("--micro-batch-size", "--global-batch-size", "--seq-length", "--tensor-model-parallel-size",
-            "--pipeline-model-parallel-size", "--context-parallel-size", "--recompute-granularity",
-            "--attention-backend", "--sft-tokenizer-prompt-format")
     argv, out = sys.argv, {}
-    for k in keys:
+    for k in _IDENTITY_PAIR_KEYS:
         if k in argv:
             i = argv.index(k)
             if i + 1 < len(argv):
                 out[k.lstrip("-")] = argv[i + 1]
+    for k in _IDENTITY_FLAG_KEYS:
+        if k in argv:
+            out[k.lstrip("-")] = "true"
+    # Version the SNAPSHOT at the capture site, not the summary. A v2 sidecar physically does not
+    # contain attention_dropout, so re-summarising it cannot recover the value: stamping a newer
+    # schema onto it in probe_summarize would produce a digest that CLAIMS to cover dropout and does
+    # not. Old dirs stay v2 forever, new dirs are v3, and any v2-vs-v3 pair must be RE-MEASURED.
+    out["snapshot_keys"] = "v3"
     out["world_size"] = os.environ.get("WORLD_SIZE", "1")
     for e in ("NVTE_FLASH_ATTN", "NVTE_FUSED_ATTN", "NVTE_USE_HIPBLASLT"):
         if e in os.environ:
@@ -208,6 +295,8 @@ def _config_snapshot():
     # report cannot say what was actually swapped.
     if os.environ.get("GEAK_OVERLAY"):
         out["GEAK_OVERLAY"] = os.path.basename(os.environ["GEAK_OVERLAY"])
+        # The basename is a LABEL. This is the identity: it moves iff the bytes that will run move.
+        out["GEAK_OVERLAY_SHA"] = _overlay_content_hash(os.environ["GEAK_OVERLAY"])
     return out
 
 

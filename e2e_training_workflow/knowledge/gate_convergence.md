@@ -77,13 +77,35 @@ from a same-kernel pair rejects any kernel swap out of hand. Pass `candidate_kin
 | kind | meaning | step-1 floor |
 |---|---|---|
 | `overlay` | should not change numerics at all | 0.05% |
-| `kernel_swap` | different implementation, same mathematics | 0.35% (measured, one pair) |
+| `kernel_swap` | different implementation, same mathematics | 2.0% (`STEP1_FLOOR_PCT` in trajectory_gate.py; an UPPER bound — the fp32 reference makes it loose for a bf16→bf16 swap) |
 
-**Still open:** the per-step ENVELOPE has the same problem and is not yet solved — calibrated from a
-same-kernel pair, it over-rejects a legitimate kernel swap (under `kernel_swap` the step-1 check
-passes while the envelope still fails). It needs a band from a KNOWN-GOOD kernel-swap pair. The
-0.2917% pair does not qualify yet: it has not been separated into "pure numerics" versus "the flash
-path does not preserve packing isolation" (the separating test is packed-vs-unpacked per backend).
+**RESOLVED, and the earlier diagnosis here was wrong.** This section used to say the envelope
+"over-rejects a legitimate kernel swap" and needed "a band from a KNOWN-GOOD kernel-swap pair". That
+prescription would not have worked, because the envelope does not over-reject *swaps* — it rejects
+**everything**, including pairs where nothing changed at all. The null control proves it:
+
+| run | null control (same kernel, true delta = 0) | the candidate it was meant to discriminate |
+|---|---|---|
+| 0.5B | failed every baseline-vs-baseline pair, including the band's **own calibration pair** | — |
+| 7B | failed 8 loss / 10 grad_norm steps, worst 36.27× | 8 / 12 steps, worst 37.36× — indistinguishable |
+
+Two causes, both now fixed in `trajectory_gate.py`:
+1. **One sample.** `envelope[i]` was `max−min` over the calibration legs, and with two legs that is a
+   single `|A−B|` observation that collapses to ~0 wherever those two legs happened to cross. Fixed
+   by requiring `MIN_BAND_LEGS = 3` (5 recommended); below it the envelope may not vote.
+2. **A borrowed floor.** The zero-width-step floor was `STEP1_REL_FLOOR_PCT` (0.05%) for *every*
+   metric — a constant calibrated for step-1 loss, which is bit-reproducible in a healthy stack.
+   grad_norm is not: three identical 0.5B runs gave **152.10 / 218.77 / 83.44** at step 2. Fixed by
+   `rel_floor_pct`, measured per metric from the calibration legs themselves.
+
+`calibrate()` now runs the null control on itself and stores `envelope_discriminating` /
+`envelope_status` in the band file. A band that fails its own control is **advisory**: its numbers are
+still reported, but they do not vote, and the blocking detectors remain the step-1 forward probe and
+the early-window sign balance. Covered by `scripts/tests/test_trajectory_gate.py`.
+
+**Still open:** the 0.2917% attention-backend pair has still not been separated into "pure numerics"
+versus "the flash path does not preserve packing isolation" (the separating test is
+packed-vs-unpacked per backend). That is a question about that pair, not about the envelope.
 
 **Workload identity vs implementation.** L1 compares only the workload-identity keys (batch,
 sequence, mapping, data). The implementation keys (`attention-backend`, `NVTE_*`) are what a candidate

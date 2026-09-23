@@ -135,10 +135,17 @@ Workflow({
     budget: 2,             // kernel tasks for a first run
     max_gates: 4,          // ONE A/B = two job launches and it blocks every lane
     kernel_budget: 3,      // passed down to each recursive kernel_workflow run
-    time_budget_ms: 18000000
+    time_budget_ms: 18000000,
+    t0_epoch_ms: <paste `date +%s%3N`>   // REQUIRED for time_budget_ms to be enforced
   }
 })
 ```
+`t0_epoch_ms` is not optional noise. The workflow sandbox has **no clock** — `Date.now`, argless
+`new Date`, `performance` and `process` are all absent or throw, so that a resumed run replays
+identically. The script therefore cannot time itself: it takes the start from `t0_epoch_ms` and
+reads "now" through an agent (agents run bash, so they can call `date`). Omit it and the run still
+works, but `time_budget_ms` is **not applied** — the lane loop falls back to its `budget` and
+`max_gates` bounds, and says so in the log rather than reporting a deadline it is not enforcing.
 Start with `workloads/qwen2_5_0_5b.env`, `nproc: 2`, `budget: 1` to shake the orchestration out
 cheaply — a 0.5B leg is ~1 s/step against ~11.6 s at 7B.
 

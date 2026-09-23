@@ -151,12 +151,117 @@ def _early(stats_series, n=EARLY_STEPS):
     return stats_series[:n]
 
 
+# How many INDEPENDENT baseline legs a band needs. Measured, not conventional: a 2-leg band makes
+# envelope[i] a single abs(A-B) sample, which collapses to ~0 wherever those two legs happened to
+# cross, and 3x~0 is still ~0. Both real runs then rejected their own null control --
+#   0.5B: the band failed every baseline-vs-baseline pair, including its own calibration pair;
+#   7B:   a same-kernel pair failed on 8 loss / 10 grad_norm steps, WORSE than the candidate's.
+# A band built from fewer than MIN legs is not refused outright (it still carries the step-1 probe,
+# which is the detector that actually discriminates) but it cannot cast a blocking envelope vote.
+MIN_BAND_LEGS = 3
+RECOMMENDED_BAND_LEGS = 5
+
+
+def _rel_floor_pct(series, key, n):
+    """A per-metric relative floor MEASURED from the calibration legs themselves.
+
+    The envelope needs a floor or a step where the legs happened to agree exactly trips on any
+    rounding difference. That floor used to be STEP1_REL_FLOOR_PCT (0.05%) for EVERY metric at every
+    step -- a constant borrowed from step-1 loss, which is bit-reproducible in a healthy stack.
+    grad_norm is not remotely that stable: three identical 0.5B runs gave 152.10 / 218.77 / 83.44 at
+    step 2, so a 0.05% floor there is ~4 orders of magnitude too tight and every real run trips it.
+    Take the metric's own typical relative disagreement instead (median over steps, which ignores the
+    handful of steps where the legs crossed), so loss keeps a tight floor and grad_norm gets an
+    honest one.
+    """
+    rels = []
+    for i in range(n):
+        vals = [s[key][i] for s in series if s[key][i] is not None]
+        if len(vals) < 2:
+            continue
+        mid = statistics.median([abs(v) for v in vals])
+        if mid:
+            rels.append(100.0 * (max(vals) - min(vals)) / mid)
+    return round(statistics.median(rels), 6) if rels else None
+
+
+def _envelope_exceedances(rs, cs, band, key, n):
+    """THE envelope check, factored out so the gate and its null control run the SAME instrument.
+
+    A control that used a reimplementation of this logic would prove nothing about the gate.
+    Returns (exceeded_step_numbers, worst_ratio_to_limit).
+    """
+    env = (band.get("envelope") or {}).get(key) or []
+    safety = band.get("safety", 3.0)
+    rel_floor = ((band.get("rel_floor_pct") or {}).get(key)
+                 or STEP1_REL_FLOOR_PCT)
+    exceed, worst = [], 0.0
+    for i in range(min(n, len(env))):
+        if env[i] is None or rs[key][i] is None or cs[key][i] is None:
+            continue
+        d = abs(cs[key][i] - rs[key][i])
+        lim = max(env[i] * safety, abs(rs[key][i]) * (rel_floor / 100.0))
+        if d > lim:
+            exceed.append(i + 1)
+            worst = max(worst, d / lim if lim else float("inf"))
+    return exceed, round(worst, 3)
+
+
+def _exceedance_is_pattern(exceed, checked):
+    """One isolated exceedance is chaos; a pattern is a bug. Shared by the gate and its control."""
+    return len(exceed) > max(1, int(0.1 * checked))
+
+
+def _null_control(series, dirs, band, n):
+    """Does this band reject a pair that changed NOTHING?
+
+    Every calibration leg is a baseline, so any two of them have a true numerics delta of zero by
+    construction. If the band flags such a pair, it is not measuring a kernel change -- it is
+    measuring chaos, and an L1 FAIL carries no information. Running it here, inside calibrate(),
+    means the band cannot come into existence without its own control verdict attached: there is no
+    separate step for a Director or an Auditor to skip, which is how both real runs ended up
+    hand-recalibrating mid-flight.
+
+    HONEST LIMITATION, recorded in the band: these pairs are the same legs the band was fitted to, so
+    the test is self-fitting and therefore WEAK -- passing it is necessary, not sufficient. It still
+    catches the observed failures: the 0.5B band rejected its own calibration pair.
+    """
+    worst = {"loss": 0.0, "grad_norm": 0.0}
+    failures = []
+    for a in range(len(series)):
+        for b in range(a + 1, len(series)):
+            for key in ("loss", "grad_norm"):
+                exceed, w = _envelope_exceedances(series[a], series[b], band, key, n)
+                worst[key] = max(worst[key], w)
+                checked = min(n, len((band.get("envelope") or {}).get(key) or []))
+                if _exceedance_is_pattern(exceed, checked):
+                    failures.append({
+                        "pair": [os.path.basename(str(dirs[a]).rstrip("/")),
+                                 os.path.basename(str(dirs[b]).rstrip("/"))],
+                        "metric": key, "exceeded_steps": exceed[:8],
+                        "worst_ratio_to_limit": w})
+    return {
+        "passed": not failures,
+        "pairs_tested": len(series) * (len(series) - 1) // 2,
+        "worst_ratio_to_limit": {k: round(v, 3) for k, v in worst.items()},
+        "failures": failures[:6],
+        "note": ("Baseline-vs-baseline pairs have a true delta of zero. A band that flags them "
+                 "cannot discriminate a kernel swap from nothing and must not cast a blocking vote. "
+                 "Self-fitting (same legs the band was built from), so passing is necessary, not "
+                 "sufficient."),
+    }
+
+
 def calibrate(dirs, safety=3.0):
     """Noise floor from >=2 INDEPENDENT baseline runs at identical config.
 
     Produces a STEP-INDEXED envelope, not a scalar: chaotic divergence means the tolerable delta at
     step 20 is orders of magnitude larger than at step 2, and collapsing that into one number yields
     a gate that passes everything (measured: a 6.1 limit on a loss of 3).
+
+    The band it returns carries its own PROVENANCE and its own NULL-CONTROL verdict, because a 2-leg
+    band and a 5-leg band used to be byte-indistinguishable to verdict() -- which is exactly how a
+    non-discriminating band got used as evidence in two consecutive runs.
     """
     series = [_series(d) for d in dirs]
     if len(series) < 2:
@@ -169,7 +274,8 @@ def calibrate(dirs, safety=3.0):
             if len(vals) < 2:
                 env[key].append(None)
                 continue
-            # Widest disagreement seen among baseline runs AT THIS STEP.
+            # Widest disagreement seen among baseline runs AT THIS STEP. With 2 legs this is ONE
+            # sample of the noise; the leg count is what makes it an estimate rather than a coin flip.
             env[key].append(round(max(vals) - min(vals), 8))
     step1_rel = None
     l1 = [s["loss"][0] for s in series if s["loss"] and s["loss"][0] is not None]
@@ -177,16 +283,37 @@ def calibrate(dirs, safety=3.0):
         step1_rel = round(100 * (max(l1) - min(l1)) / abs(l1[0]), 6)
     g1 = [s["grad_norm"][0] for s in series if s["grad_norm"] and s["grad_norm"][0] is not None]
     gn1_rel = round(100 * (max(g1) - min(g1)) / abs(g1[0]), 6) if len(g1) >= 2 and g1[0] else None
-    return {
+    band = {
         "safety": safety, "runs": list(dirs), "steps": n,
         "envelope": env,
+        "rel_floor_pct": {k: _rel_floor_pct(series, k, n) for k in ("loss", "grad_norm")},
         "step1_loss_rel_pct": step1_rel,
         "step1_grad_norm_rel_pct": gn1_rel,
         "early_steps": EARLY_STEPS,
+        "n_legs": len(series),
         "note": ("envelope[i] is the widest baseline-vs-baseline disagreement AT STEP i; the gate "
-                 "allows safety x that. step1 loss is bit-reproducible in a healthy stack, so its "
+                 "allows safety x that, floored by the metric's OWN measured relative dispersion "
+                 "(rel_floor_pct). step1 loss is bit-reproducible in a healthy stack, so its "
                  "floor is deliberately tight."),
     }
+    # The band must survive its own control before it may block anything. Computed here, stored here:
+    # verdict() reads the flag rather than re-deriving it, so the two can never disagree.
+    band["null_control"] = _null_control(series, dirs, band, n)
+    band["envelope_discriminating"] = bool(
+        band["null_control"]["passed"] and len(series) >= MIN_BAND_LEGS)
+    if not band["envelope_discriminating"]:
+        why = ("only %d leg(s); %d is the measured minimum" % (len(series), MIN_BAND_LEGS)
+               if len(series) < MIN_BAND_LEGS else "it rejects a baseline-vs-baseline null control")
+        band["envelope_status"] = (
+            "ADVISORY -- the per-step envelope is REPORTED BUT DOES NOT VOTE, because %s. The "
+            "blocking detectors remain the step-1 forward probe and the early-window sign balance, "
+            "which are unaffected. Recalibrate from >=%d independent clean legs of the SAME identity "
+            "to restore a blocking envelope." % (why, RECOMMENDED_BAND_LEGS))
+        print("[trajectory_gate] WARNING: " + band["envelope_status"], flush=True)
+    else:
+        band["envelope_status"] = "BLOCKING -- passed its null control on %d baseline pair(s)" % (
+            band["null_control"]["pairs_tested"])
+    return band
 
 
 def verdict(ref_dir, cand_dir, band, candidate_kind="overlay"):
@@ -197,9 +324,15 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay"):
     # Compare WORKLOAD IDENTITY only. A candidate is supposed to change the implementation; requiring
     # the whole config to match refuses every backend swap as "incomparable" without ever looking at
     # the trajectory -- which is the evidence that actually decides whether the swap is safe.
-    IMPL = {"attention-backend", "GEAK_OVERLAY"}
+    # SECOND COPY of probe_summarize.py's filter -- keep the two in step. identity is the COMPLEMENT
+    # of IMPL here too, so an unlisted new key becomes workload identity and this returns "legs
+    # trained a different WORKLOAD" for every overlay candidate. snapshot_keys is record metadata and
+    # belongs to neither half (a v2-vs-v3 pair is caught by digest_schema, with a remedy that says
+    # RE-MEASURE rather than the impossible re-summarise).
+    IMPL = {"attention-backend", "GEAK_OVERLAY", "GEAK_OVERLAY_SHA"}
+    META = {"snapshot_keys"}
     ident = lambda c: {k: v for k, v in (c or {}).items()
-                       if k not in IMPL and not k.startswith("NVTE_")}
+                       if k not in IMPL and k not in META and not k.startswith("NVTE_")}
     if ident(rs.get("config")) != ident(cs.get("config")):
         return {"pass": False, "reason": "legs trained a different WORKLOAD (batch/seq/mapping/data "
                                          "differ); step-aligned trajectories are not comparable",
@@ -214,6 +347,9 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay"):
     safety = float(band.get("safety", 3.0))
     env = band.get("envelope", {})
     failures = []
+    # Things the envelope WOULD have failed on if it had proven it can discriminate. Kept separate
+    # from `failures` so they never silently become a verdict, and never silently vanish either.
+    advisories = []
 
     # ---- check 1: the step-1 forward probe (zero natural noise) -------------------------------
     if rs["loss"] and cs["loss"] and rs["loss"][0]:
@@ -227,27 +363,31 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay"):
                             f"changed before any optimizer update could explain it")
 
     # ---- check 2: per-step envelope ------------------------------------------------------------
+    # Blocking ONLY if the band proved it can tell a kernel swap from nothing (calibrate() runs that
+    # control and stores the verdict). An advisory envelope still reports every number it would have
+    # blocked on -- the numbers are real and worth reading -- it just does not convert them into a
+    # FAIL. Reporting a failure we have PROVEN is an instrument artifact is worse than silence: it
+    # trains the reader to override L1, which is the habit that lets a real rejection through.
+    # Legacy bands (written before this field existed) have no control verdict; treat a MISSING flag
+    # as advisory rather than assuming the band is sound.
+    blocking = bool(band.get("envelope_discriminating"))
+    res["checks"]["envelope_blocking"] = blocking
+    res["checks"]["envelope_status"] = band.get(
+        "envelope_status", "ADVISORY -- band predates the null-control self-test")
     for key in ("loss", "grad_norm"):
         e = env.get(key) or []
-        exceed, worst = [], 0.0
-        for i in range(min(n, len(e))):
-            if e[i] is None or rs[key][i] is None or cs[key][i] is None:
-                continue
-            d = abs(cs[key][i] - rs[key][i])
-            lim = e[i] * safety
-            # A zero-width envelope step (perfect baseline agreement) still needs a floor, or any
-            # rounding difference trips it.
-            lim = max(lim, abs(rs[key][i]) * (STEP1_REL_FLOOR_PCT / 100.0))
-            if d > lim:
-                exceed.append(i + 1)
-                worst = max(worst, d / lim if lim else float("inf"))
+        exceed, worst = _envelope_exceedances(rs, cs, band, key, n)
         res["checks"][f"{key}_envelope"] = {
             "steps_checked": min(n, len(e)), "exceeded_steps": exceed,
-            "worst_ratio_to_limit": round(worst, 3)}
+            "worst_ratio_to_limit": worst, "blocking": blocking}
         # One isolated exceedance is chaos; a pattern is a bug.
-        if len(exceed) > max(1, int(0.1 * min(n, len(e)))):
-            failures.append(f"{key} left the calibrated envelope on {len(exceed)} steps "
-                            f"({exceed[:6]}{'...' if len(exceed) > 6 else ''})")
+        if _exceedance_is_pattern(exceed, min(n, len(e))):
+            msg = (f"{key} left the calibrated envelope on {len(exceed)} steps "
+                   f"({exceed[:6]}{'...' if len(exceed) > 6 else ''})")
+            if blocking:
+                failures.append(msg)
+            else:
+                advisories.append(msg)
 
     # ---- check 3: one-sidedness over the early window ------------------------------------------
     for key in ("loss", "grad_norm"):
@@ -262,7 +402,17 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay"):
 
     res["implementation_delta"] = impl_delta
     res["pass"] = not failures
-    res["reason"] = "; ".join(failures) if failures else "within the calibrated per-step envelope"
+    res["advisories"] = advisories
+    if failures:
+        res["reason"] = "; ".join(failures)
+    elif advisories:
+        # PASS, but say exactly what was set aside and why -- an unqualified "within the envelope"
+        # here would be a lie, since the envelope was never allowed to vote.
+        res["reason"] = ("no blocking detector fired. NOT CLEARED BY THE ENVELOPE: "
+                         + "; ".join(advisories)
+                         + f" -- reported only, because {res['checks'].get('envelope_status', '')}")
+    else:
+        res["reason"] = "within the calibrated per-step envelope"
     return res
 
 

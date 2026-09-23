@@ -18,11 +18,18 @@ You reintegrate an optimized kernel REVERSIBLY and take the A/B that decides its
    bare baseline). Candidate leg = reference + this overlay. Same `--workload`, `--nproc`, same
    GBS/seq/mapping. Both legs must return `status: ok` and `occupancy_verdict: clean`.
 
-4. **Report a WINDOW-ALIGNED comparison, not two independent summaries.**
+4. **Report a WINDOW-ALIGNED comparison, not two independent summaries.** Always run this; there is
+   no case where two independent summaries are an acceptable substitute.
    ```bash
    python3 scripts/compare_legs.py <ref_run>/probe <cand_run>/probe
    ```
-   Put its output in `comparison`. This is not a nicety: each leg detects its own warmup end, and
+   Paste its output VERBATIM into `comparison` — the whole object, including `window_artifact_pct`
+   and `dispersion_reliable`, not a summary of it. Without a numeric `comparison.delta_pct` the gate
+   returns `no_aligned_delta` and your candidate CANNOT be accepted however large its raw ratio: two
+   identical-config 7B legs measured +4.5925% unaligned against −0.0588% aligned at a 0.914% band, so
+   an unaligned number is not evidence of a win. If compare_legs.py errors, report the error object
+   as `comparison` and say so in `notes` — do not substitute the two independent summaries.
+   This is not a nicety: each leg detects its own warmup end, and
    `useful_tokens` swings +-25% step to step on SFT data, so two legs summarised on their own windows
    contain different samples. Measured on two runs of an IDENTICAL configuration: unaligned +0.3294%
    (a "win" against a 0.3% band) versus aligned +0.0235% (correctly nothing) — 93% of the apparent
@@ -37,7 +44,8 @@ You reintegrate an optimized kernel REVERSIBLY and take the A/B that decides its
 Return JSON:
 ```json
 {"ref": {...bench_summary...}, "cand": {...bench_summary...},
- "comparison": {...compare_legs.py output: delta_pct, window_artifact_pct, dispersion_reliable...},
+ "comparison": {...compare_legs.py stdout verbatim — MUST contain a numeric delta_pct; also carries
+                 window_artifact_pct, dispersion_reliable, window...},
  "engagement": {"forward": true, "backward": true, "evidence": "..."},
  "overlay_path": "...", "notes": "..."}
 ```
