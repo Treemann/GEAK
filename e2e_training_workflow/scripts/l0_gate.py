@@ -100,7 +100,102 @@ def linear_reference(w, x, b=None):
     return torch.nn.functional.linear(x.float(), w.float(), b.float() if b is not None else None)
 
 
-REFERENCES = {"rmsnorm_linear": rmsnorm_linear_reference, "linear": linear_reference}
+def attention_varlen_reference(cu_seqlens_q, cu_seqlens_kv, cu_seqlens_q_padded,
+                               cu_seqlens_kv_padded, q, k, v,
+                               attn_scale=None, causal=True, qkv_format="thd"):
+    """Independent fp32 reference for TE's `FusedAttnFunc` in thd (varlen / group) mode with GQA.
+
+    Three things here are semantics, not style, and getting any of them wrong produces an oracle
+    that looks plausible and is not:
+
+    * ISOLATION. `thd` packs several sequences into one buffer, and the whole point of the
+      cu_seqlens plumbing is that a token must NOT attend across a segment boundary. A reference
+      that runs one dense SDPA over [total, h, d] leaks between sequences and is a different
+      mathematical operation from the one the kernel implements. So this loops over segments.
+    * PADDING. `cu_seqlens_*` are the REAL lengths; `cu_seqlens_*_padded` are the offsets of each
+      segment inside the buffer. On this workload 71.3% of the buffer is padding, and TE leaves
+      those rows ZERO (fast_zero_fill). The output is therefore built as zeros_like(q) with only
+      the live rows written -- which also makes the padded rows of dq/dk/dv exactly zero, as the
+      fused kernel produces them.
+    * GQA. q has 14 heads, k/v have 2. The kv heads are expanded by repeat_interleave (group g
+      serves q-heads [7g, 7g+7)), NOT by repeat/tile -- the two differ in which q-head reads which
+      kv-head and both produce a same-shaped, wrong answer.
+
+    Everything is done in fp32; this is the truth the bf16 original is scored against.
+    """
+    qf, kf, vf = q.float(), k.float(), v.float()
+    d = qf.shape[-1]
+    scale = float(attn_scale) if attn_scale is not None else d ** -0.5
+    hq, hkv = qf.shape[-2], kf.shape[-2]
+    if hq % hkv:
+        raise ValueError(f"GQA: {hq} q-heads is not a multiple of {hkv} kv-heads")
+    rep = hq // hkv
+    cq = cu_seqlens_q.tolist()
+    ck = cu_seqlens_kv.tolist()
+    pq = cu_seqlens_q_padded.tolist() if cu_seqlens_q_padded is not None else cq
+    pk = cu_seqlens_kv_padded.tolist() if cu_seqlens_kv_padded is not None else ck
+    out = torch.zeros_like(qf)
+    for i in range(len(cq) - 1):
+        lq, lk = cq[i + 1] - cq[i], ck[i + 1] - ck[i]
+        if lq <= 0 or lk <= 0:
+            continue
+        qs, ks = pq[i], pk[i]
+        qi = qf[qs:qs + lq].transpose(0, 1)                       # [hq, lq, d]
+        ki = kf[ks:ks + lk].repeat_interleave(rep, dim=-2).transpose(0, 1)
+        vi = vf[ks:ks + lk].repeat_interleave(rep, dim=-2).transpose(0, 1)
+        s = torch.matmul(qi, ki.transpose(-1, -2)) * scale        # [hq, lq, lk]
+        if causal:
+            # top-left aligned, which is what TE's "causal" means when lq == lk (it does here:
+            # self-attention). Written as an explicit mask so the alignment is visible.
+            rows = torch.arange(lq, device=s.device).unsqueeze(-1)
+            cols = torch.arange(lk, device=s.device).unsqueeze(0)
+            s = s.masked_fill(cols > rows, float("-inf"))
+        p = torch.softmax(s, dim=-1)
+        out = out.index_copy(0, torch.arange(qs, qs + lq, device=out.device),
+                             torch.matmul(p, vi).transpose(0, 1))
+    return out
+
+
+def lmhead_ce_reference(hidden_states, weight, labels, loss_mask):
+    """Independent fp32 reference for the LM-head + cross-entropy COMPOSITE.
+
+    Mirrors, in fp32 and out-of-place, exactly what Megatron does on this config:
+        ColumnParallelLinear(no bias, TP1)  ->  vocab_parallel_cross_entropy  ->  * loss_mask
+
+    Four things here are semantics, not style:
+
+    * THE `* loss_mask` IS PART OF THE OP. The candidate elides loss-masked rows, which is exact
+      only if those rows contribute zero. Writing the multiply into the op contract is what makes
+      the oracle able to say so; leaving it out would score an exact kernel against garbage rows.
+      It is safe in both directions because loss_mask is 0/1 and `pretrain_gpt.loss_func`
+      multiplies by it again (x*m*m == x*m), so integration needs no change to the loss function.
+    * LAYOUT. `labels`/`loss_mask` arrive as [b, s] and the logits as [s, b, V]; Megatron's
+      `compute_language_model_loss` transposes labels in and the loss out. Getting this wrong
+      transposes a [1, 4096] tensor onto itself at MBS=1 and is invisible until MBS>1.
+    * OUT-OF-RANGE TARGETS. Megatron's CE masks targets outside [vocab_start, vocab_end) and
+      zeroes their predicted logit. At TP1 that band is the whole vocabulary, but SFT labels can
+      still carry ignore values, and a bare `gather` would RAISE on them.
+    * NO IN-PLACE. The original subtracts the max and exponentiates in place to save memory; a
+      differentiable reference cannot, and log-sum-exp is the same mathematics.
+    """
+    h = hidden_states.float()
+    w = weight.float()
+    logits = torch.nn.functional.linear(h, w)                 # [s, b, V]
+    vocab = logits.shape[-1]
+    tgt = labels.transpose(0, 1).contiguous()                 # [b, s] -> [s, b]
+    bad = (tgt < 0) | (tgt >= vocab)
+    safe = torch.where(bad, torch.zeros_like(tgt), tgt)
+    lse = torch.logsumexp(logits, dim=-1)                     # [s, b]
+    pred = logits.gather(-1, safe.unsqueeze(-1)).squeeze(-1)
+    pred = torch.where(bad, torch.zeros_like(pred), pred)
+    loss_sb = lse - pred
+    loss_bs = loss_sb.transpose(0, 1).contiguous()            # [s, b] -> [b, s]
+    return loss_bs * loss_mask.float().reshape(loss_bs.shape)
+
+
+REFERENCES = {"rmsnorm_linear": rmsnorm_linear_reference, "linear": linear_reference,
+              "attention_varlen": attention_varlen_reference,
+              "lmhead_ce": lmhead_ce_reference}
 
 # Which captured tensor plays which role, per reference. The names are the ORDER the reference's
 # signature expects, and they are also the labels the oracle's outputs carry.
@@ -111,6 +206,19 @@ LAYOUTS = {
     "linear": {"args": ["weight", "x", "bias"],
                "grad_labels": ["wgrad", "dgrad"],
                "grad_of": ["weight", "x"]},
+    # Attention has no weights: its three gradients are all dgrads. `grad_of` therefore lists only
+    # q/k/v -- the cu_seqlens tensors are int32 INDEXING metadata, and calling requires_grad_ on
+    # them is an error, not a no-op.
+    "attention_varlen": {"args": ["cu_seqlens_q", "cu_seqlens_kv", "cu_seqlens_q_padded",
+                                  "cu_seqlens_kv_padded", "q", "k", "v"],
+                         "grad_labels": ["dq", "dk", "dv"],
+                         "grad_of": ["q", "k", "v"]},
+    # The LM head is a COMPOSITE: two call sites, one op. `labels` is int64 index metadata and
+    # `loss_mask` is a 0/1 selector -- neither is differentiable, so `grad_of` lists only the two
+    # tensors the head actually learns through.
+    "lmhead_ce": {"args": ["hidden_states", "weight", "labels", "loss_mask"],
+                  "grad_labels": ["dgrad", "wgrad"],
+                  "grad_of": ["hidden_states", "weight"]},
 }
 
 

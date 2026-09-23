@@ -114,7 +114,11 @@ def install():
         if _state["captured"] or _state["step"] + 1 != _STEP:
             return orig(*a, **kw)
         _state["captured"] = True
-        rec = {"target": _TARGET, "step": _STEP, "args": _snap(a), "kwargs": _snap(kw)}
+        # `rank` travels in the record, not only in the sidecar meta.json: build_task_dir reads the
+        # record and was writing `captured_from.rank: null`, which silently loses the one fact that
+        # says WHICH rank's view of the op the oracle froze.
+        rec = {"target": _TARGET, "step": _STEP, "rank": _RANK,
+               "args": _snap(a), "kwargs": _snap(kw)}
         _state["rec"] = rec
 
         # Input gradients come from the autograd.Function BOUNDARY (_wrap_backward), NOT from

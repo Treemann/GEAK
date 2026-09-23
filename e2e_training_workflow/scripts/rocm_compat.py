@@ -86,6 +86,23 @@ if _os.environ.get("GEAK_PROBE_DIR"):
     except Exception as _e:  # capture is optional; never break a measurement run
         print(f"[geak-capture] not installed: {_e!r}", flush=True)
 
+    # The LM-head + CE COMPOSITE capture. Separate module because the op spans two call sites and
+    # no single autograd.Function covers it; no-op unless GEAK_LMHEAD_CAPTURE_DIR is set.
+    try:
+        import capture_lmhead_ce as _lmcap
+
+        if _lmcap.ENABLED:
+            _lmcap.install()
+            _orig_step_end_lm = _probe._Probe.step_end
+
+            def _step_end_lm(self, *a, **kw):
+                _lmcap.note_step(self.step)
+                return _orig_step_end_lm(self, *a, **kw)
+
+            _probe._Probe.step_end = _step_end_lm
+    except Exception as _e:
+        print(f"[geak-lmhead] not installed: {_e!r}", flush=True)
+
     # Reversible rebind + engagement proof. No-op unless GEAK_OVERLAY points at a manifest.
     try:
         import overlay_train as _ovl

@@ -181,7 +181,10 @@ done
 # A capture run writes the frozen record (tens of MB) from inside a backward hook, which costs real
 # time: measured 4043.9 vs ~4755 useful tok/s/GPU on the same config, a 15% dent. So a capture run is
 # no more a measurement leg than a profiled one is.
-if printf '%s' "${EXTRA_ENV:-}" | grep -q GEAK_CAPTURE_TARGET; then
+# Matches EVERY capture entry point, not just the generic one: the LM-head composite capture
+# (GEAK_LMHEAD_CAPTURE_DIR) writes a multi-GB record from a backward hook and would otherwise have
+# produced a throughput number that looks like a measurement and is not.
+if printf '%s' "${EXTRA_ENV:-}" | grep -qE 'GEAK_CAPTURE_TARGET|GEAK_LMHEAD_CAPTURE_DIR'; then
   echo ">>> NOTE: shape/oracle capture was active; this run's throughput is NOT a valid measurement." \
     | tee -a "$OUT_DIR/train.log"
   echo '{"captured_run": true}' > "$OUT_DIR/captured.json"

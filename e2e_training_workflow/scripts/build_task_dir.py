@@ -63,23 +63,23 @@ def _harness_tensor(node):
 
 
 
-def _base_error(rec, golden, labels, reference):
+def _base_error(rec, golden, labels, reference, layout):
     """Error the ORIGINAL carries against an fp32 reference, per output. Computed once, offline."""
     import sys
     sys.path.insert(0, HERE)
     from l0_gate import REFERENCES, error_stats
 
-    from l0_gate import LAYOUTS
-
-    layout = LAYOUTS[reference]
     args_t = _tensors(rec["args"])
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     named = {}
     for name, node in zip(layout["args"], args_t):
         t = node["data"].to(dev)
-        named[name] = t.requires_grad_(True) if name != "bias" else t
+        # Differentiate exactly the roles the layout says are differentiable. The old
+        # `name != "bias"` rule was specific to the two Linear-shaped ops: attention's cu_seqlens
+        # are int32 index metadata and `requires_grad_` on them RAISES.
+        named[name] = t.requires_grad_(True) if name in layout["grad_of"] else t
     call_args = [named.get(n) for n in layout["args"]]
-    out = REFERENCES[reference](*call_args)
+    out = REFERENCES[reference](*call_args, **layout.get("const", {}))
     go = rec["grad_output"]["data"].to(dev)
     wrt = [named[n] for n in layout["grad_of"] if named.get(n) is not None]
     grads = torch.autograd.grad(out, wrt, grad_outputs=go.float(), allow_unused=True)
@@ -93,7 +93,8 @@ def _base_error(rec, golden, labels, reference):
         stats[label] = error_stats(g["data"].to(dev).float(), r)
     return stats
 
-def build(capture_path, task_dir, reference="rmsnorm_linear", name=None):
+def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=None,
+          notes=None):
     rec = torch.load(capture_path, map_location="cpu", weights_only=False)
     iso = rec.get("isolated")
     if not iso:
@@ -111,15 +112,40 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None):
     # Order the golden the same way the unittest returns it.
     from l0_gate import LAYOUTS
 
-    layout = LAYOUTS[reference]
+    layout = dict(LAYOUTS[reference])
+    if const:
+        layout["const"] = const
     grads = iso.get("grads") or {}
-    by_shape = {tuple(v["shape"]): v for v in grads.values() if _is_t(v)}
     named_nodes = dict(zip(layout["args"], args_t))
     golden = [iso["out"]]
     labels = ["out"]
-    for label, role in zip(layout["grad_labels"], layout["grad_of"]):
+    # ORDER, not shape, whenever the isolated re-run gives a complete positional set. Shape matching
+    # is AMBIGUOUS for attention -- k and v are both [total_kv, h_kv, d], so a shape map silently
+    # hands dk's tensor to dv and the oracle is then wrong in a way that passes every check it runs
+    # against itself. The isolated re-run collects leaves in argument order, so its "0","1","2" keys
+    # line up with grad_of; the shapes are re-verified below before that is trusted.
+    idx_keys = sorted((k for k in grads if k.isdigit() and _is_t(grads[k])), key=int)
+    want = [tuple(named_nodes[r]["shape"]) for r in layout["grad_of"] if r in named_nodes]
+    positional = (len(idx_keys) == len(want)
+                  and all(tuple(grads[k]["shape"]) == w for k, w in zip(idx_keys, want)))
+    by_shape = {}
+    for v in grads.values():
+        if _is_t(v):
+            by_shape.setdefault(tuple(v["shape"]), []).append(v)
+    for i, (label, role) in enumerate(zip(layout["grad_labels"], layout["grad_of"])):
         node = named_nodes.get(role)
-        g = by_shape.get(tuple(node["shape"])) if node else None
+        if node is None:
+            continue
+        if positional:
+            g = grads[idx_keys[i]]
+        else:
+            cands = by_shape.get(tuple(node["shape"]), [])
+            if len(cands) > 1:
+                raise SystemExit(
+                    f"ambiguous gradient for {role}: {len(cands)} captured gradients share shape "
+                    f"{node['shape']} and the positional set is incomplete. Guessing here produces "
+                    f"an oracle that is wrong and self-consistent.")
+            g = cands[0] if cands else None
         if g is not None:
             golden.append(g)
             labels.append(label)
@@ -142,7 +168,7 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None):
     # The acceptance thresholds ARE the error the original already carries. Computing them here, once,
     # makes the task self-contained: the unittest never has to pick an rtol, and a candidate is never
     # penalised for rounding the baseline also does.
-    base_error = _base_error(rec, golden, labels, reference)
+    base_error = _base_error(rec, golden, labels, reference, layout)
 
     meta = {
         "name": name or (rec["target"].split(":")[-1] + "_fwd_bwd"),
@@ -192,6 +218,10 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None):
         "build": False,
         "reference_io_sha256": sha,
         "captured_from": {"step": rec.get("step"), "rank": rec.get("rank")},
+        # Everything the extractor knows that the tensors do not say: what the oracle deliberately
+        # does NOT cover, and what the integration therefore still has to prove. A caveat that lives
+        # only in a chat message is a caveat that will be discovered by a failed gate.
+        "task_notes": notes or {},
     }
     json.dump(meta, open(os.path.join(task_dir, "meta.json"), "w"), indent=2)
 
@@ -199,6 +229,9 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None):
         f.write(UNITTEST.replace("__REFERENCE__", reference))
     os.chmod(os.path.join(task_dir, "unittest.py"), 0o444)
     os.chmod(os.path.join(task_dir, "meta.json"), 0o444)
+    # The frozen inputs are the whole point: the kernel layer must be scored against data it cannot
+    # influence, so the oracle is made read-only here rather than by convention.
+    os.chmod(ref_path, 0o444)
     return {"task_dir": task_dir, "outputs": labels, "sha256": sha,
             "inputs": [t["shape"] for t in args_t]}
 
@@ -236,7 +269,18 @@ def _linear(w, x, b=None):
 
 
 _REFS = {"rmsnorm_linear": _rmsnorm_linear, "linear": _linear}
+# Anything more than two lines lives in baseline_src/reference_impl.py (the frozen copy of
+# l0_gate.py) and is loaded from there rather than duplicated into this template: two copies of an
+# attention reference are two chances to disagree, and the one that disagrees silently is the oracle.
+try:
+    _rspec = importlib.util.spec_from_file_location(
+        "reference_impl", os.path.join(HERE, "baseline_src", "reference_impl.py"))
+    _ri = importlib.util.module_from_spec(_rspec); _rspec.loader.exec_module(_ri)
+    _REFS.update(getattr(_ri, "REFERENCES", {}))
+except Exception as _e:
+    print(f"  [warn] could not load baseline_src/reference_impl.py: {_e!r}")
 _reference = _REFS["__REFERENCE__"]
+CONST = LAYOUT.get("const", {})
 
 
 def make_call(entry):
@@ -252,10 +296,12 @@ def make_call(entry):
         named = {}
         for name, t in zip(names, tensors):
             c = t.detach().clone()
-            if name != "bias":
+            # Exactly the roles the layout calls differentiable. `!= "bias"` was a Linear-ism:
+            # attention's cu_seqlens are int32 index metadata and requires_grad_ on them RAISES.
+            if name in LAYOUT["grad_of"]:
                 c.requires_grad_(True)
             named[name] = c
-        out = entry(*[named.get(n) for n in names])
+        out = entry(*[named.get(n) for n in names], **CONST)
         tgt = out[0] if isinstance(out, (list, tuple)) else out
         wrt = [named[n] for n in LAYOUT["grad_of"] if named.get(n) is not None]
         grads = torch.autograd.grad(tgt, wrt, grad_outputs=go, allow_unused=True)
@@ -347,5 +393,13 @@ if __name__ == "__main__":
     ap.add_argument("task_dir")
     ap.add_argument("--reference", default="rmsnorm_linear")
     ap.add_argument("--name", default=None)
+    # Non-tensor arguments the reference needs (attn_scale, causal, ...). They are CONSTANTS of the
+    # captured call, recorded in meta so the oracle is self-describing and the candidate sees the
+    # same ones. Defaulting them silently is how an oracle ends up scoring a different operation.
+    ap.add_argument("--const", default=None, help="JSON dict of non-tensor reference arguments")
+    ap.add_argument("--notes", default=None, help="JSON dict (or @file.json) recorded as meta.task_notes")
     a = ap.parse_args()
-    print(json.dumps(build(a.capture, a.task_dir, a.reference, a.name), indent=2))
+    print(json.dumps(build(a.capture, a.task_dir, a.reference, a.name,
+                       json.loads(a.const) if a.const else None,
+                       json.loads(open(a.notes[1:]).read() if a.notes.startswith("@") else a.notes)
+                       if a.notes else None), indent=2))
