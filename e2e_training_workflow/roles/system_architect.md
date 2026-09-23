@@ -42,7 +42,10 @@ Return JSON:
 
 ## PHASE=report
 
-Write `architect_report.md`. Required content, in this order:
+Write the report to **`$GEAK_WORK_DIR/runs/architect_report_<tag>.md`** (default
+`/home/treemann/geak_train/runs/`), never into the repository. It is a run artifact, not source: the
+first run wrote `architect_report.md` into the repo root because this line named no path, and one
+run's report then sat permanently in the tree. Required content, in this order:
 1. The headline: baseline vs final `useful_tok_s_per_gpu`, the measured band, and the delta.
 2. **Say which number is the stack's and which is ours.** The stack reports nominal tokens/s or
    TFLOP/s; on this workload ~70% of tokens are padding, so the two differ by ~3.5x. A reader who
