@@ -101,10 +101,49 @@ let tasksUsed = 0;
 // of the two wins. That matters because reproducibility is workload-dependent — the same six-pair
 // analysis gives 0.06% at 7B but 0.31-0.42% at 0.5B, where host-side jitter is a far bigger share of
 // the step (idle 14% vs 2.4%) and does not cancel.
-const FLOOR_PCT = { aligned: 0.15, unaligned: 0.5 };
+//
+// RECALIBRATED 2026-09-23 against 47 same-identity baseline pairs on disk (true delta zero by
+// construction), computed with compare_legs.py. The old formula, band = max(floor, max_iqr x 2),
+// was not merely conservative -- it was BACKWARDS:
+//     7B ws=8   n=10 pairs   worst |aligned delta| 0.0823%   assigned band 0.914%  -> 11x too LOOSE
+//     0.5B ws=2 n=37 pairs   worst |aligned delta| 0.4966%   floor 0.15%           -> 6/37 FALSE WINS
+// It handed the workload with the TIGHTEST reproducibility the WIDEST band, because
+// worst_iqr_spread_pct is a WITHIN-leg dispersion and carries almost no information about across-job
+// reproducibility: pearson(max_iqr, |aligned delta|) = +0.07 at 0.5B and NEGATIVE (-0.20) at 7B. The
+// measured OLS slope where it is predictive at all is 0.147, not the 2.0 the formula assumed.
+//
+// The term was also dimensionally wrong: it priced the dispersion of ONE step as the uncertainty of
+// a MEDIAN OF n STEPS, omitting the 1/sqrt(n). That single error explains both failure directions.
+// Corrected: se(leg) = 0.929 x iqr / sqrt(steps)   (0.929 = 1.253/1.349, the SE of a median implied
+// by an IQR), combined in quadrature across the pair.
+//
+// MEASURED, NOT ASSUMED: the dimensional fix ALONE is worse (15/47 false wins) -- the floor does the
+// real work, and the se term only binds for an unusually noisy candidate leg. Both are kept: the
+// floor for the common case, the se term for the case the old IQR term was reaching for.
+// Validation on those 47 pairs: current formula 6 false wins, this formula 0.
+//
+// The floor is PER WORKLOAD and 0.5% is the safe default for the noisier 0.5B class. Pass
+// --across_job_floor_pct 0.15 for the 7B ws=8 class (worst observed 0.0823%, so 0.15% keeps ~1.8x
+// margin and recovers the sub-0.5% wins the default would discard). Cheapest lever of all is NOT the
+// band: at 0.5B, pairs where BOTH legs had >=29 steady steps have worst |delta| 0.2544%, against
+// 0.4966% when either leg had 19 -- ~10 extra iterations halves the noise floor.
+// The ALIGNED floor is per-workload (default = the noisier 0.5B class). The UNALIGNED floor stays
+// where it was: since a raw ratio can no longer ACCEPT at all (no_aligned_delta), its floor now only
+// governs whether a raw number is labelled a REGRESSION, and keeping it sensitive is the useful
+// choice there. Read such a label as a prompt to re-measure with alignment, not as evidence -- the
+// unaligned artifact has been observed at 4.59%, far above this floor.
+const FLOOR_PCT = { aligned: 0.5, unaligned: 0.5 };
 const ACROSS_JOB_FLOOR_PCT = parseFloat(A.across_job_floor_pct != null ? A.across_job_floor_pct
                                                                       : FLOOR_PCT.aligned);
 const BAND_SAFETY = parseFloat(A.band_safety != null ? A.band_safety : 2.0);
+// Multiplier on the pair's sampling error. 3 and 4 both give 0/47 on the baseline pairs (the floor
+// binds there); 4 is chosen by the noisy-candidate case, not by these pairs.
+const SE_SAFETY = parseFloat(A.se_safety != null ? A.se_safety : 4.0);
+// The run's own measured across-job reproducibility (max pairwise aligned |delta| among Setup's
+// baseline legs). Set once, after Setup. It can only WIDEN the band, never narrow it below the
+// floor: three back-to-back legs underestimate day-scale drift -- at 0.5B the run-local figure was
+// 0.1002% against a 0.4966% worst over 37 pairs spanning several days.
+let runAcrossJobPct = 0;
 
 // ===========================================================================
 // Deterministic decision logic (unit-tested; no agent, no GPU)
@@ -114,12 +153,18 @@ const BAND_SAFETY = parseFloat(A.band_safety != null ? A.band_safety : 2.0);
  *  Uses the robust (IQR) spread, because the raw spread of a clean run is dominated by isolated
  *  stalls: the same 25-step run measured 38.6% raw and 0.072% IQR. Raw would gate nothing. */
 function noiseBandPct(ref, cand, aligned = true) {
-  const iqr = Math.max(
-    Number(ref && ref.worst_iqr_spread_pct) || 0,
-    Number(cand && cand.worst_iqr_spread_pct) || 0);
+  // Sampling error of a MEDIAN over n steady steps, not the dispersion of one step. Falls back to
+  // the old undivided term only when the step count is unknown, which keeps a leg summarised by an
+  // older probe from silently getting a 5x-tighter band than it can support.
+  const se = (leg) => {
+    const iqr = Number(leg && leg.worst_iqr_spread_pct) || 0;
+    const n = Number(leg && leg.min_steady_steps);
+    return isFinite(n) && n > 0 ? 0.929 * iqr / Math.sqrt(n) : iqr;
+  };
+  const sePair = Math.sqrt(se(ref) ** 2 + se(cand) ** 2);
   const floor = aligned ? ACROSS_JOB_FLOOR_PCT
                         : Math.max(ACROSS_JOB_FLOOR_PCT, FLOOR_PCT.unaligned);
-  return Math.max(floor, iqr * BAND_SAFETY);
+  return Math.max(floor, SE_SAFETY * sePair, BAND_SAFETY * runAcrossJobPct);
 }
 
 /** Is a leg usable at all? A leg that is unusable must never become a reference. */
@@ -141,6 +186,22 @@ function legUsable(leg) {
     return { ok: false,
              why: `only ${leg.min_steady_steps} steady steps — too few to estimate dispersion; ` +
                   're-run with more iters' };
+  }
+  // An ABSOLUTE dispersion ceiling, independent of the band. The band is derived FROM this number,
+  // so a leg whose IQR is comparable to its own step time defeats every downstream check by widening
+  // the band past any possible delta: td_baseline_legA reported worst_iqr_spread_pct 91.69% (10684 ms
+  // of IQR on an 11652 ms step) and passed every check here, while inducing a 183% band -- a gate
+  // that cannot reject anything. That leg turned out to be two different runs appended to one probe
+  // sidecar (now refused at the source, in train_probe.py and probe_summarize.load_rank), but the
+  // ceiling stays: whatever the cause, a leg this dispersed is not a measurement of anything.
+  // 25% is far above the worst legitimate value observed on a clean leg (0.533%) and far below the
+  // corrupt one, so it discriminates without guessing at a tight threshold.
+  const iqr = Number(leg.worst_iqr_spread_pct);
+  if (isFinite(iqr) && iqr > 25) {
+    return { ok: false,
+             why: `worst_iqr_spread_pct ${iqr}% — the step-to-step spread is the same order as the ` +
+                  'step itself, so this leg cannot bound anything (a band derived from it exceeds ' +
+                  'any delta a candidate could show). Suspect two runs merged into one probe dir.' };
   }
   const occ = (leg.occupancy_verdict || {}).verdict;
   if (occ === 'contaminated') return { ok: false, why: 'another process held a GPU during this leg' };
@@ -523,6 +584,11 @@ curConfig = { digest: setup.config_digest || (baseline && baseline.config_digest
 // The measured floor REPLACES the default when it is wider; a box noisier than the default must not
 // inherit a band that flatters it.
 const measuredFloor = Number(setup.across_job_band_pct) || 0;
+// Feed the run's own across-job reproducibility into every later band. It can only WIDEN one: with
+// REPEAT 3 this is the max pairwise aligned |delta| among three back-to-back legs, which measures
+// this box today and systematically UNDERSTATES day-scale drift (0.5B: 0.1002% run-local against a
+// 0.4966% worst over 37 pairs spanning days). So it is a widener, never a substitute for the floor.
+runAcrossJobPct = measuredFloor;
 const runFloor = Math.max(ACROSS_JOB_FLOOR_PCT, measuredFloor * BAND_SAFETY / 2);
 log0(`baseline: ${baseline && baseline.useful_tok_s_per_gpu} useful tok/s/GPU; ` +
      `measured across-job ${measuredFloor}% -> run floor ${runFloor.toFixed(3)}%`);

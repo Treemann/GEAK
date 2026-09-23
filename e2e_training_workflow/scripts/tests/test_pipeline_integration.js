@@ -36,7 +36,14 @@ function extract(name) {
   throw new Error(`unterminated ${name}`);
 }
 const api = new Function(
-  'const FLOOR_PCT = {aligned:0.15,unaligned:0.5}; const ACROSS_JOB_FLOOR_PCT = 0.15, BAND_SAFETY = 2.0;\n' +
+  // This file drives REAL 0.5B legs, so it must use the 0.5B-class floor (the shipped default, 0.5),
+  // not the 7B override. That is not bookkeeping: with the 7B floor of 0.15 the two real legs below
+  // -- one configuration, measured twice, true delta zero -- get a 0.228% band against an observed
+  // -0.254%, and the gate reports a REGRESSION that does not exist. It is the 0.5B false-positive
+  // rate (6 of 37 same-identity pairs on disk) reproducing on live data, and it is why the aligned
+  // floor is per workload rather than one constant.
+  'const FLOOR_PCT = {aligned:0.5,unaligned:0.5}; const ACROSS_JOB_FLOOR_PCT = 0.5, ' +
+  'BAND_SAFETY = 2.0, SE_SAFETY = 4.0; let runAcrossJobPct = 0;\n' +
   ['noiseBandPct', 'legUsable', 'comparable', 'alignedDelta', 'gateVerdict', 'expectedGainPct', 'stopRule']
     .map(extract).join('\n') +
   '\nreturn {noiseBandPct, legUsable, comparable, gateVerdict, expectedGainPct, stopRule};')();
@@ -117,7 +124,8 @@ if (warmupsDiffer) {
 // ---- 4. the band came from the legs themselves, not from a constant ----
 const band = api.noiseBandPct(A, B);
 ok(band >= 0.15 && band < 1.0,
-  `band derived from the legs' own IQR spread = ${band}% (aligned floor 0.15%, not a fixed 2-3%)`);
+  `band = ${band}% for this real pair — max(0.5% workload floor, 4 x sampling error of the median, ` +
+  `2 x the run's measured across-job spread), not a fixed 2-3% and not the old iqr x 2`);
 
 // ---- 5. a synthetic candidate JUST above the band is accepted; just below is not ----
 const bump = (leg, pct) => Object.assign({}, leg, {

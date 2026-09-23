@@ -48,6 +48,18 @@ class _Probe:
         os.makedirs(out_dir, exist_ok=True)
         self.path = os.path.join(out_dir, f"probe_rank{self.rank}.jsonl")
         self.hb_path = os.path.join(out_dir, f"heartbeat_rank{self.rank}.json")
+        # ONE probe dir == ONE leg. The handle is opened "a", so re-using a --tag appends a second
+        # run's steps to the first's sidecar; probe_summarize then merges them into one fictitious
+        # leg. That happened: td_baseline_legA holds a 0.5B run followed by a 7B run and summarised
+        # as a single 7B leg with 91.69% IQR, which would assign a 183% band and disable the gate.
+        # Refuse rather than truncate: an existing sidecar is somebody's measurement, and silently
+        # overwriting it is the same class of harm as silently appending to it.
+        if os.path.exists(self.path) and os.path.getsize(self.path) > 0:
+            raise SystemExit(
+                f"[geak-probe] REFUSING to append to an existing sidecar: {self.path} "
+                f"({os.path.getsize(self.path)} bytes). One probe dir is one leg. Appending a second "
+                f"run here produces a merged, fictitious leg that passes every downstream check. "
+                f"Use a fresh --tag / GEAK_PROBE_DIR, or delete this directory if it is scrap.")
         self.fh = open(self.path, "a", buffering=1)
         self.step = 0
         self.prof = None

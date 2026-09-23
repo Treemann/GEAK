@@ -19,7 +19,19 @@ import sys
 
 
 def load_rank(path):
-    header, steps = None, []
+    """One sidecar == ONE run. More than one header means two runs were appended to it.
+
+    Found on disk: td_baseline_legA/probe/probe_rank{0,1}.jsonl each held TWO headers -- a
+    ws=2/gbs=8 0.5B run (argv_hash a414f348..., ~980 ms/step) followed by a ws=8/gbs=64 7B run
+    (ed00d2f9..., ~11650 ms/step) -- while ranks 2-7 held only the 7B run. The old loop took the
+    LAST header but appended EVERY step, so a 0.5B run and a 7B run were summarised as one 7B leg:
+    worst_iqr_spread_pct 91.69%, useful_tok_s_per_gpu 777.1. Paired with anything that leg assigns a
+    band of 183%, i.e. it silently disables the throughput gate.
+
+    `ranks_agree_on_argv` could not catch it precisely BECAUSE last-header-wins made rank 0's
+    reported argv_hash match the uncorrupted ranks'. Refuse here, at the only place that can see it.
+    """
+    headers, steps = [], []
     with open(path) as f:
         for line in f:
             try:
@@ -27,10 +39,18 @@ def load_rank(path):
             except Exception:
                 continue
             if r.get("record") == "header":
-                header = r
+                headers.append(r)
             elif r.get("record") == "step":
                 steps.append(r)
-    return header, steps
+    if len(headers) > 1:
+        seen = [h.get("argv_hash") for h in headers]
+        raise SystemExit(
+            f"CORRUPT PROBE SIDECAR: {path} contains {len(headers)} header records "
+            f"(argv_hash {seen}). Two or more runs were appended to one sidecar, which merges their "
+            f"steps into a single fictitious leg. Do not re-summarise this directory -- the steps of "
+            f"the two runs are interleaved in one file and cannot be separated by rank. Re-measure "
+            f"into a FRESH output directory.")
+    return (headers[0] if headers else None), steps
 
 
 # Below this many steady steps the IQR is dominated by where the quartiles happen to land, not by

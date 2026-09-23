@@ -47,7 +47,11 @@ function extract(name) {
   throw new Error(`unterminated function ${name}`);
 }
 
-const CONSTS = 'const FLOOR_PCT = {aligned:0.15,unaligned:0.5}; const ACROSS_JOB_FLOOR_PCT = 0.15, BAND_SAFETY = 2.0;';
+// Mirrors the shipped constants. The 7B-class floor (0.15) is used here rather than the 0.5 default
+// so the band tests below still exercise the DERIVED terms; with the default floor the floor binds
+// on every case and the se term would never be tested. Keep in step with training_workflow.js.
+const CONSTS = 'const FLOOR_PCT = {aligned:0.15,unaligned:0.5}; const ACROSS_JOB_FLOOR_PCT = 0.15, '
+  + 'BAND_SAFETY = 2.0, SE_SAFETY = 4.0; let runAcrossJobPct = 0;';
 const load = (names, extra = '') => new Function(
   `${CONSTS}\n${extra}\n${names.map(extract).join('\n')}\nreturn {${names.join(',')}};`)();
 
@@ -62,16 +66,37 @@ const leg = (o = {}) => Object.assign({
 // ---------------------------------------------------------------- 1. noise band
 {
   const { noiseBandPct } = load(['noiseBandPct']);
-  ok(noiseBandPct(leg(), leg()) === 0.26,
-    'tight legs fall back to 2x their own IQR (0.26%) — above the 0.15% aligned floor');
+  const near = (a, b) => Math.abs(a - b) < 5e-4;
+  // The dispersion term is the SAMPLING ERROR OF A MEDIAN over n steady steps, not the dispersion of
+  // one step: se = 0.929 * iqr / sqrt(n), combined in quadrature, times SE_SAFETY. The old term
+  // (iqr x 2) omitted the 1/sqrt(n) and so priced a single step's spread as the uncertainty of the
+  // median of 20 of them. Measured consequence over 47 same-identity baseline pairs: it was 11x too
+  // LOOSE at 7B (worst |delta| 0.0823% against a 0.914% band) while allowing 6/37 FALSE WINS at
+  // 0.5B -- the widest band went to the most reproducible workload.
+  ok(near(noiseBandPct(leg(), leg()), 0.1528),
+    'two legs at iqr 0.13% over 20 steady steps -> 4 x se_pair = 0.153%, just over the 0.15% floor ' +
+    '(the old formula charged 0.26% for the same legs)');
   const tight = leg({ worst_iqr_spread_pct: 0.05 });
   ok(noiseBandPct(tight, tight, true) === 0.15,
-    'the ALIGNED floor is 0.15% — 2.5x the worst aligned reproducibility measured over six 7B pairs (0.0589%)');
+    'the ALIGNED floor still binds for quiet legs — here the 7B-class 0.15%, ~1.8x the worst aligned ' +
+    'reproducibility measured over 10 clean 7B pairs (0.0823%)');
   ok(noiseBandPct(tight, tight, false) === 0.5,
-    'the UNALIGNED floor is 0.5% — it MUST exceed the 0.4456% worst unaligned delta, or the gate ' +
-    'manufactures a win out of window placement');
-  ok(noiseBandPct(leg({ worst_iqr_spread_pct: 1.2 }), leg()) === 2.4,
-    'a noisy leg widens the band via its own IQR (1.2% -> 2.4%), rather than a constant');
+    'the UNALIGNED floor is 0.5%. It no longer guards against a manufactured win — a raw ratio ' +
+    'cannot be accepted at all now — it only governs the REGRESSION label');
+  ok(near(noiseBandPct(leg({ worst_iqr_spread_pct: 1.2 }), leg()), 1.0031),
+    'a noisy leg still widens the band via its own dispersion (1.2% iqr over 20 steps -> 1.003%), ' +
+    'but at the correct scale: the old formula charged 2.4% for it');
+  // n MUST divide the dispersion: a longer window is the cheapest way to tighten the band. Measured
+  // at 0.5B: pairs with both legs >=29 steady steps have worst |delta| 0.2544%, against 0.4966% when
+  // either leg had 19 -- ~10 extra iterations nearly halves the noise floor.
+  const long = leg({ worst_iqr_spread_pct: 1.2, min_steady_steps: 80 });
+  ok(noiseBandPct(long, long) < noiseBandPct(leg({ worst_iqr_spread_pct: 1.2 }), leg()),
+    'the same dispersion over 4x the steps yields a TIGHTER band — steps buy precision');
+  // A leg summarised by an older probe carries no step count; it must not get a 5x-tighter band for
+  // the omission.
+  const noN = leg({ worst_iqr_spread_pct: 1.2, min_steady_steps: undefined });
+  ok(noiseBandPct(noN, noN) > noiseBandPct(leg({ worst_iqr_spread_pct: 1.2 }), leg()),
+    'a leg with no step count falls back to the undivided term rather than being flattered by it');
   // The hazard this encodes: raw spread is NOT the input.
   ok(!/worst_spread_pct/.test(extract('noiseBandPct')),
     'the band is built on iqr spread only — raw spread (38.6% on a clean run) would gate nothing');

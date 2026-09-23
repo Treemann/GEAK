@@ -41,6 +41,47 @@ An order of magnitude tighter than the inference layer's 2-3%. Sub-1% deltas are
 precisely why the band must be derived from each pair's own dispersion (floor 0.3%) and never set to
 a convenient constant.
 
+### 4b. The band was RECALIBRATED 2026-09-23, and the old one was backwards
+
+Measured over **47 same-identity baseline pairs** on disk (true delta zero by construction, compared
+with `compare_legs.py`):
+
+| class | pairs | median \|aligned Δ\| | worst | old band assigned | old verdict |
+|---|---|---|---|---|---|
+| 7B ws=8 | 10 | 0.0236% | **0.0823%** | 0.914% | ~11× too **loose** |
+| 0.5B ws=2 | 37 | 0.1441% | **0.4966%** | 0.15% floor | **6 FALSE WINS** |
+
+The old formula `max(floor, max_iqr × 2)` gave the **widest** band to the **most reproducible**
+workload. `worst_iqr_spread_pct` is a *within-leg* dispersion and carries almost no information about
+across-job reproducibility: pearson(max_iqr, |aligned Δ|) = **+0.07** at 0.5B and **−0.20** at 7B.
+Where it is predictive at all the measured OLS slope is **0.147**, not the 2.0 assumed.
+
+The term was also **dimensionally wrong** — it priced the dispersion of ONE step as the uncertainty
+of a MEDIAN OF n STEPS, dropping the 1/√n. That single error produces both failure directions at
+once. Corrected: `se(leg) = 0.929 × iqr / √n` (0.929 = 1.253/1.349), combined in quadrature.
+
+```
+band = max( FLOOR_WORKLOAD , 4 × se_pair , 2 × run_measured_across_job )
+```
+
+**The floor does the real work.** Measured: the dimensional fix *alone* is worse (15/47 false wins);
+with the per-workload floor it is **0/47**, against 6/47 for the old formula. The `se` term rarely
+binds — it is kept for the noisy-candidate case the IQR term was reaching for (the 7B candidate leg's
+own IQR was 0.533% against its reference's 0.049%).
+
+Floors live in `workloads/*.env` as `ACROSS_JOB_FLOOR_PCT`: **0.15%** at 7B, **0.5%** at 0.5B
+(the shipped default). Do not use the 7B value at 0.5B — 15 of those 37 known-null pairs then read
+as wins.
+
+**The cheapest lever is not the band, it is window length.** At 0.5B, pairs where *both* legs had
+≥29 steady steps have worst |Δ| **0.2544%**; pairs where either leg had 19 have **0.4966%**. About
+ten extra iterations nearly halves the noise floor, and unlike a band it costs nothing in
+sensitivity.
+
+Caveats, recorded rather than buried: pairs are non-independent (legs are reused), 7B rests on 5
+clean legs and 0.5B on 9, the 0.5B legs span several days while the 7B legs span two, and the
+noisy-candidate evidence is n=1.
+
 ## 5. A leg is not a measurement unless it is clean
 `status == "ok"`, no hang, and `occupancy_verdict == "clean"`. This node carries ~20 unrelated
 containers; a neighbour taking a GPU mid-leg drags one side down and the delta becomes fiction.
