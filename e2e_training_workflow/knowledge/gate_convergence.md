@@ -140,6 +140,41 @@ LOW quantile (p10: loss 0.31%, grad_norm 30.9%) of the per-step spread. Set to t
 grad_norm 152.3%) it swamps the envelope and even the ×3 grad_norm case passes; set to the old
 borrowed 0.05% constant it rejects everything including null controls. Both failures were observed.
 
+### L2 soak — specification (PRE-REGISTERED 2026-09-23, before any soak leg was run)
+
+Until now "L2 soak" was a name in this repo with no spec, no threshold and no tooling. Tooling is
+`scripts/l2_soak.sh`. The criteria below were written down **before** the first leg started, so that
+a soak cannot be turned into a story about whatever the data happened to show.
+
+**Design.** 5 legs at 300 steps (~1 epoch: 20000 samples / GBS 64 = 312.5 steps), run **interleaved**
+`ref1, cand, ref2, pos, ref3` so that node drift over ~5 h cannot masquerade as a candidate effect.
+A 30-step gate leg invokes the swapped kernel ~224 times; 300 steps invokes it ~19200 times.
+
+**The two controls decide whether the soak may speak at all.**
+* **Null control (leave-one-out):** treat each `ref` leg in turn as if it were the candidate, judged
+  against the other two. All four criteria must PASS. A criterion that rejects a *clean* leg is
+  measuring chaos, exactly as the L1 envelope did — if any fail, the soak is **advisory**.
+* **Positive control:** the `pos` leg runs the same overlay with a known-bad kernel (the
+  `× 1.004` multiplicative bias from `negtest/lmhead_ce_neg`). It **must FAIL** at least one
+  criterion. If a known-bad kernel passes, the soak has demonstrated no sensitivity and is
+  **advisory** — a passing candidate then means nothing.
+
+**Criteria.** `S` = the max pairwise value of the same statistic among the three `ref` legs, i.e. the
+spread of the thing when nothing changed. `K = 3`, the safety factor used elsewhere in this layer.
+
+| # | criterion | fails if |
+|---|---|---|
+| 1 | **Liveness** | leg does not reach 300 steps, or `status != ok`, or occupancy not clean, or a hang, or (cand/pos) engagement not proven forward AND backward on all 8 ranks with `fallback_fwd == 0` |
+| 2 | **Terminal loss level** — mean loss over the last 10% of steps | `\|mean_cand − mean_ref\| > K × S` |
+| 3 | **Δloss drift slope** — OLS slope of `loss_cand[i] − loss_ref[i]` over the steady window | `\|slope\| > K × S` — catches slow divergence a level test cannot see |
+| 4 | **Full-window sign balance** — fraction of steps with `loss_cand > loss_ref` | outside `0.5 ± K × (max ref-vs-ref deviation from 0.5)` — a one-directional bias that every magnitude test passes |
+
+**What a PASS does and does not mean.** It means: over one epoch, at this configuration, on this
+box, the accepted stack's loss trajectory is not distinguishable from the reference's by four
+pre-registered statistics whose sensitivity was demonstrated on a known-bad kernel. It does **not**
+mean the kernel is numerically correct (that is L0), nor that a longer run, a different dataset, a
+different parallel mapping, or multi-node would agree. One epoch is one epoch.
+
 **Still open:** the 0.2917% attention-backend pair has still not been separated into "pure numerics"
 versus "the flash path does not preserve packing isolation" (the separating test is
 packed-vs-unpacked per backend). That is a question about that pair, not about the envelope.
