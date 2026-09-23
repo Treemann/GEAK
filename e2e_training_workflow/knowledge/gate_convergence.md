@@ -103,6 +103,43 @@ Two causes, both now fixed in `trajectory_gate.py`:
 still reported, but they do not vote, and the blocking detectors remain the step-1 forward probe and
 the early-window sign balance. Covered by `scripts/tests/test_trajectory_gate.py`.
 
+### What L1 can and cannot actually detect (measured 2026-09-23, 7B/8GPU, 3 fresh legs)
+
+Injected perturbations into a real leg and re-ran the gate against a band calibrated from three
+identical legs (`envelope_discriminating: true`, null control passed on all 3 pairs):
+
+| perturbation | detected? | by what |
+|---|---|---|
+| step-1 loss +0.2%, kind `overlay` | **yes** | step-1 forward probe (limit 0.05%) |
+| step-1 loss +0.2%, kind `kernel_swap` | no | 2.0% limit is a deliberate upper bound |
+| step-1 loss +5%, either kind | **yes** | step-1 forward probe |
+| loss +25% across the whole STEADY window, step 1 clean | **NO** | nothing |
+| grad_norm ×1.5 across the steady window | no | nothing |
+| grad_norm ×3 across the steady window | **yes** | per-step envelope |
+
+Read that fourth row carefully. **The per-step envelope cannot see a 25% loss shift**, because by
+step 12–30 three *identical* legs already disagree by ~8.9% (median relative) and the envelope allows
+`safety × that`. This is chaotic divergence, not a defect: it is the same physics that made the
+scalar band useless (a 6.1 limit on a loss of 3). The envelope is a **coarse net for gross (≈3×)
+deviations only.**
+
+The discriminating detector is the **step-1 forward probe**, which has zero natural noise (these three
+legs agree to `step1_loss_rel_pct = 0.0`). A real numerics change moves step 1, which is why the
+fourth row is pessimistic about practice — it holds step 1 artificially clean.
+
+Two consequences:
+1. **Prefer `candidate_kind: overlay`** whenever the candidate is *supposed* to be numerics-neutral.
+   Its 0.05% limit is 40× tighter than `kernel_swap`'s 2.0%, and 2.0% is an acknowledged upper bound
+   inherited from an fp32 reference, not a measurement of what a swap costs.
+2. **L1 is not convergence evidence.** Nothing above can see slow convergence damage, so for a
+   `risk_class: backward` candidate the L2 soak is not optional decoration — it is the only
+   instrument that looks at the thing L1 is named after.
+
+A note on the floor, since it is easy to get backwards in both directions: `rel_floor_pct` must be a
+LOW quantile (p10: loss 0.31%, grad_norm 30.9%) of the per-step spread. Set to the MEDIAN (loss 8.93%,
+grad_norm 152.3%) it swamps the envelope and even the ×3 grad_norm case passes; set to the old
+borrowed 0.05% constant it rejects everything including null controls. Both failures were observed.
+
 **Still open:** the 0.2917% attention-backend pair has still not been separated into "pure numerics"
 versus "the flash path does not preserve packing isolation" (the separating test is
 packed-vs-unpacked per backend). That is a question about that pair, not about the envelope.

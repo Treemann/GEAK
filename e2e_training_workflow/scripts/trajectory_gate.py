@@ -170,9 +170,14 @@ def _rel_floor_pct(series, key, n):
     step -- a constant borrowed from step-1 loss, which is bit-reproducible in a healthy stack.
     grad_norm is not remotely that stable: three identical 0.5B runs gave 152.10 / 218.77 / 83.44 at
     step 2, so a 0.05% floor there is ~4 orders of magnitude too tight and every real run trips it.
-    Take the metric's own typical relative disagreement instead (median over steps, which ignores the
-    handful of steps where the legs crossed), so loss keeps a tight floor and grad_norm gets an
-    honest one.
+    Take the metric's own relative disagreement at a LOW QUANTILE (p10). The quantile matters as much
+    as the fix: the floor's only job is to cover the QUIETEST steps -- measured on three identical 7B
+    legs, loss has a step where all three agree to 0.0000% -- while the per-step envelope
+    (env[i] x safety) already scales everything else. Using the MEDIAN instead was tried and is a
+    different way of being wrong: it lifts the floor to the TYPICAL disagreement (loss 8.93%,
+    grad_norm 152.3%) and swamps the envelope, so the gate passed a +25% loss shift over the whole
+    steady window. p10 (loss 0.31%, grad_norm 30.9%) covers the degenerate steps and leaves the
+    envelope free to speak everywhere else.
     """
     rels = []
     for i in range(n):
@@ -182,7 +187,10 @@ def _rel_floor_pct(series, key, n):
         mid = statistics.median([abs(v) for v in vals])
         if mid:
             rels.append(100.0 * (max(vals) - min(vals)) / mid)
-    return round(statistics.median(rels), 6) if rels else None
+    if not rels:
+        return None
+    rels.sort()
+    return round(rels[int(0.10 * (len(rels) - 1))], 6)
 
 
 def _envelope_exceedances(rs, cs, band, key, n):

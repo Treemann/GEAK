@@ -88,6 +88,27 @@ def main():
         ok(fl["grad_norm"] > tg.STEP1_REL_FLOOR_PCT,
            "grad_norm's measured floor is wider than the borrowed step-1 loss constant it replaced")
 
+        # The floor must be a LOW quantile of the per-step spread, not a typical one. Setting it to
+        # the MEDIAN was tried on real 7B legs and is a different way of being wrong: it lifts the
+        # floor to loss 8.93% / grad_norm 152.3%, swamping the envelope so completely that a +25%
+        # loss shift across the whole steady window passed. The floor covers the degenerate steps
+        # (three identical 7B legs agree to 0.0000% on at least one of them); the envelope speaks
+        # everywhere else.
+        import statistics as _st
+        for key in ("loss", "grad_norm"):
+            rels = []
+            for i in range(min(len(s[key]) for s in [tg._series(d) for d in legs])):
+                vals = [tg._series(d)[key][i] for d in legs]
+                vals = [v for v in vals if v is not None]
+                if len(vals) >= 2:
+                    mid = _st.median([abs(v) for v in vals])
+                    if mid:
+                        rels.append(100.0 * (max(vals) - min(vals)) / mid)
+            if rels:
+                ok(fl[key] <= _st.median(rels),
+                   f"{key} floor ({fl[key]}%) is at or below the MEDIAN per-step spread "
+                   f"({_st.median(rels):.3f}%) — a floor at the typical disagreement disarms the envelope")
+
         # ---------------------------------------------------------------- 3. THE regression test
         # A band must not reject a pair that changed nothing. This is the exact defect both runs hit.
         ok(b5["null_control"]["pairs_tested"] == 10,
