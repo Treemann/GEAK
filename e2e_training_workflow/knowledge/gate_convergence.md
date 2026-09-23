@@ -266,6 +266,64 @@ positive control**, which must be rejected or v2 is advisory exactly as v1 was.
 Drift slope is demoted to reported-only: on v1 data it carried no signal (the positive control's
 slope was *smaller* in magnitude than the candidate's).
 
+### L2 soak v2 RESULT — and the finding that reframes the whole soak
+
+v2 (n=3 ref, m=4 cand, m=4 pos, 300 steps, ~10 h of 8-GPU time) **also failed its positive control**,
+for a different and more informative reason than v1.
+
+**The bias acts on DISPERSION, not location.** Terminal loss of the four positive-control legs:
+1.41330 / 1.42205 / 1.48753 / 1.48966 — bimodal, range 0.076 ≈ 5σ, while their *mean* (1.45314)
+lands almost exactly on the reference mean (1.45072), giving t = 0.109.
+
+| group | n | mean | sd | sd vs ref |
+|---|---|---|---|---|
+| ref | 3 | 1.45072 | 0.01495 | 1.00× |
+| cand | 4 | 1.42807 | 0.00916 | 0.61× |
+| pos | 4 | 1.45314 | **0.04111** | **2.75×** (variance ratio 7.6) |
+
+A mean-comparison test is structurally the wrong instrument for this. (It also corrects a reading
+made from the single v1 leg: "a 1.004 gradient scale acts like a higher learning rate and descends
+faster". With one leg it looked systematic; with four it is clearly dispersion.)
+
+**`step-1 grad_norm` is not a zero-noise probe.** Reference legs: 68.096 / 68.195 / 67.549 — they
+differ by up to **0.96%**, against a candidate offset of +0.38% and a positive-control offset of
++0.15%. Unlike step-1 *loss* (bit-reproducible, 0.0%), step-1 grad_norm cannot resolve this.
+
+**THE FINDING. The same ×1.004 gradient bias is caught by L0 in ~27 seconds:**
+
+```
+[L0] dgrad: scale_bias=+3.80e-03  -> FAIL SCALE-BIAS        (tolerance 2e-3)
+[L0] wgrad: scale_bias=+4.41e-03  -> FAIL magnitude SCALE-BIAS
+correct: false
+```
+
+while the accepted candidate passes the same gate cleanly (`scale_bias` −3.42e-04 / +3.70e-04).
+
+| instrument | cost | detects a 0.4% gradient bias? |
+|---|---|---|
+| **L0 op-level oracle** | **~27 s** | **YES, decisively** |
+| L1 per-step envelope | free | no |
+| L1 step-1 probes (loss, grad_norm) | free | no |
+| L2 soak v1 (5 legs × 300 steps) | ~5 h | no |
+| L2 soak v2 (10 legs × 300 steps) | ~10 h | no |
+
+**So the soak's positive control was the wrong class of defect.** Op-local numerics is precisely what
+L0 is for, and L0 is orders of magnitude more sensitive and five orders of magnitude cheaper. A soak
+will keep "failing" a control of that class while the system is in fact well defended against it.
+
+**What the soak should actually target**, and what a v3 control must therefore be: defects L0
+*cannot* see, because L0 evaluates one frozen microbatch in isolation — cross-step state corruption,
+accumulation error that only compounds over thousands of invocations, allocator/memory effects,
+non-determinism that averages out in one call but not over an epoch. Until a positive control of
+*that* class exists, **do not run another soak**: it costs ~10 h and cannot demonstrate its own
+sensitivity.
+
+**Status of the lmhead overlay.** Convergence evidence is L0 (clean, and the candidate is *more*
+accurate than the original on all four outputs) plus the bit-reproducible step-1 loss probe
+(8.2e-05% against a 2.0% limit). The soak neither adds nor subtracts. Both soak runs are reported as
+ADVISORY with their candidate PASS carrying no weight — but note this is a stronger safety position
+than it sounds, because the class of defect the soak failed to catch is the class L0 catches best.
+
 **Still open:** the 0.2917% attention-backend pair has still not been separated into "pure numerics"
 versus "the flash path does not preserve packing isolation" (the separating test is
 packed-vs-unpacked per backend). That is a question about that pair, not about the envelope.
