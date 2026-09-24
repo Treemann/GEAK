@@ -500,7 +500,10 @@ const INTEGRATE_SCHEMA = obj({ ref: { type: 'object' }, cand: { type: 'object' }
   comparison: { type: 'object' }, engagement: { type: 'object' },
   overlay_path: { type: 'string' } }, ['ref', 'cand', 'comparison']);
 const AUDIT_SCHEMA = obj({ l0: { type: 'object' }, l1: { type: 'object' },
-  l2_recommended: { type: 'boolean' }, risk_class: { type: 'string' } }, ['l0', 'l1']);
+  l2_recommended: { type: 'boolean' }, risk_class: { type: 'string' },
+  // Path of the KB card written back to the kernel layer on a reject, or null on a pass. Declared so
+  // the Auditor is asked for it; a rejection the KB never hears about is re-derived from zero next run.
+  kb_rejection_card: { type: ['string', 'null'] } }, ['l0', 'l1']);
 const FINALIZE_SCHEMA = obj({ overlay: { type: 'string' }, patch: { type: 'string' },
   launch: { type: 'string' }, engagement_recheck: { type: 'object' } }, []);
 const VALIDATE_SCHEMA = obj({ validation_status: { type: 'string' },
@@ -679,10 +682,29 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
       return null;
     }
     // The UNCHANGED kernel layer, called exactly as a hand-written kernel task would be.
+    // Carry SYSTEM-LEVEL rejections down as a starting constraint. The kernel layer gates on its own
+    // frozen unittest and its own latency, and it is right to -- but those cannot see a defect that
+    // only appears once the kernel is inside a real training step. Measured instance: the 7B
+    // attention candidate was ACCEPTED by the lane (and its KB card still says so) while the
+    // training layer rejected it for an 88.50% step-1 grad_norm collapse in the BACKWARD. Without
+    // this, the next lane on the same op starts from a card that says "accepted" and re-derives the
+    // rejection from zero -- or worse, does not.
+    const priorRejections = (wfReturn.rejected || [])
+      .filter((x) => x.head === h.short_name || x.head === h.kernel)
+      .map((x) => `- ${x.verdict.klass}: ${String(x.verdict.reason || '').slice(0, 400)}`);
+    const laneTask = priorRejections.length
+      ? 'CONSTRAINT FROM THE TRAINING LAYER. A previous candidate for this op passed the kernel-level '
+        + 'gate and was then REJECTED once it ran inside a real training step. The lane\'s unittest '
+        + 'cannot see this class of defect, so treat it as a requirement, not a hint:\n'
+        + priorRejections.join('\n')
+        + '\nThe system gates on step-1 loss AND step-1 grad_norm against the unmodified stack on '
+        + 'identical weights, so a backward that is fast and unittest-clean can still be refused.'
+      : '';
     const r = await workflow({ scriptPath: KERNEL_WF_SCRIPT }, {
       kernel_path: ext.task_dir, workflow_dir: KERNEL_WF_DIR,
       budget: parseInt(A.kernel_budget != null ? A.kernel_budget : 3, 10),
       gpu_ids: GPU_IDS.join(','),
+      ...(laneTask ? { task: laneTask } : {}),
     });
     return { ext, kernel: r };
   });

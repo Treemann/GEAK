@@ -40,9 +40,43 @@ Reading the result:
 Recommend it (do not run it by default) when the change touched backward, the optimizer, a reduction
 order, or precision/scaling.
 
+### On a REJECT, write the finding back to the kernel layer's knowledge base
+
+**Only when `l0.pass` or `l1.pass` is false.** The kernel layer gates on its own frozen unittest and
+its own latency, and it is right to — but neither can see a defect that appears only once the kernel
+runs inside a real training step. This has already cost a run: the 7B attention candidate was
+**accepted by the lane**, and its card in `_inbox` still says `"validation_status": "accepted"`, with
+its one technique card describing the dk/dv **backward** reduction — the exact area of the defect —
+while the training layer rejected it for an **88.50% step-1 grad_norm collapse**. Nothing in the KB
+records the rejection, so the next lane on that op starts from "accepted".
+
+Write `<kernel_workflow_dir>/knowledge/learned/_inbox/<op>-sysreject-<YYYYMMDD>.json`:
+
+```json
+{"run_id": "<op>-sysreject-<date>", "date": "YYYY-MM-DD",
+ "kernel_names": ["<op>"],
+ "validation_status": "rejected_by_training_layer",
+ "source_layer": "e2e_training_workflow",
+ "cards": [{
+   "name": "<short-kebab-name-of-the-failure-mode>",
+   "title": "...",
+   "description": "What was measured, with the numbers, and WHICH detector fired. State what the
+     lane's own gate DID say, so the contradiction is explicit and not something the next reader has
+     to notice. Name the confound you removed, if any.",
+   "actionable": "What a future candidate for this op must do differently or must prove."}]}
+```
+
+Two rules, because a wrong card is worse than none:
+- **Report the detector, not a guess at the cause.** "step-1 grad_norm fell 88.50% on identical
+  weights, forward clean at −0.1999% on a matched p=0 pair" is knowledge. "The backward is buggy" is
+  an inference the next engineer should be allowed to make for themselves.
+- **If you removed a confound to reach the verdict, the card must say how**, or the next run will
+  re-run a confounded experiment and reach a different answer.
+
 Return JSON:
 ```json
 {"l0": {"pass": true, "reason": "...", "sign_balance": 0.0},
  "l1": {"pass": true, "reason": "...", "checks": {...}},
- "l2_recommended": false, "risk_class": "low|backward|optimizer|reduction|precision"}
+ "l2_recommended": false, "risk_class": "low|backward|optimizer|reduction|precision",
+ "kb_rejection_card": "<path written, or null when the candidate passed>"}
 ```
