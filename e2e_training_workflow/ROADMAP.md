@@ -22,6 +22,132 @@ primarily this workflow rather than the kernel layer underneath it.
 
 ---
 
+## Where this is now — the design as built
+
+### The layered picture
+
+```
+  training_workflow.js          ← THIS layer: a system wrapper. Owns identity, bands, gates, budgets.
+    ├─ 6 agent roles            training_director · system_architect · profiler
+    │                           kernel_extractor · convergence_auditor · integrator
+    ├─ scripts/                 the deterministic half: probe, summarise, compare, gates, overlay
+    ├─ workloads/*.env          Seam 1 — the pinned workload descriptor (arch args, GBS/MBS/SEQ,
+    │                           and now the per-workload band floor)
+    ├─ scripts/adapters/<stack>.sh   Seam 2 — framework plug (megatron only, today)
+    └─ ../kernel_workflow/kernel_lane.js   the UNCHANGED single-kernel layer, called directly
+                                (the dispatcher would spend the one nesting level the runtime allows)
+```
+
+The division of labour is deliberate: **judgement is the agent's, control flow is the orchestrator's.**
+Roles return structured JSON; `training_workflow.js` applies every threshold. No agent can accept its
+own candidate.
+
+### How one run flows
+
+```
+Setup      Director measures the TRUE baseline ×3 → across-job band (R_cal) + L1 trajectory band
+Profile    Profiler decomposes the step across ranks into compute / exposed-comm / bubble /
+           straggler, emits Top-N, plus a READ-ONLY config diagnosis (fast mode's stand-in for
+           ConfigSweep, and simultaneously ConfigSweep's requirements list)
+Strategize Architect ranks heads by  cp_share × (1 − 1/attainable)  — critical-path share, NOT
+           %GPU time. Validated: predicted 3.94% on the lmhead head, measured +4.66%.
+KernelTrack  per head, until budget / gates / wall clock run out:
+             Extract   fwd+bwd oracle frozen from a live capture (never a replay)
+             ↓ kernel_lane (recursive, budget-limited)
+             L0        op-level numerics vs a frozen fp32 oracle — can only REJECT
+             Overlay   reversible rebind; engagement proven per rank, forward AND backward
+             L1        trajectory — can only REJECT
+             GATE      exclusive whole-box A/B; the ONLY thing that can ACCEPT
+             on accept: the candidate becomes the carried reference, and the run RE-PROFILES
+             (the bottleneck moves — confirmed: after accepting lmhead a new head appeared)
+Finalize   reversible bundle + SHA256SUMS + a launch.sh that verifies itself
+Report     architect report (out-of-repo)
+Validate   Director re-measures INDEPENDENTLY and arbitrates. This is the official number.
+```
+
+Budgets are three-fold and all three have fired in practice: `budget` (kernel tasks), `max_gates`
+(one A/B = two job launches and it blocks every lane), and a wall clock sourced from
+`args.t0_epoch_ms` plus an agent-read clock (the sandbox has none).
+
+### The gates, and what each can actually detect
+
+This table is the most important thing in the document, and every row is measured:
+
+| gate | can it ACCEPT? | null control | positive control | measured sensitivity |
+|---|---|---|---|---|
+| **Throughput** | **yes — the only one** | 0 false wins / 47 null pairs | fires on a known +4.66% | band 0.415% on that real pair (old formula: 0.914%) |
+| **L0** op numerics | no (reject only) | scores exactly 0 ref-vs-ref | **rejects ×1.004 bias** | `scale_bias` 2e-3 tol; ~40 ms per comparison |
+| **L1** step-1 probe | no | 0.0% (bit-reproducible) | rejects the attention backward | caught −88.5% grad_norm collapse |
+| **L1** per-step envelope | no | **FAILS out-of-sample 3/3** | — | **advisory; retires or is fixed in W1** |
+| **L2** soak | no | passes | **does NOT reject ×1.004** | underpowered; ~0.9% bias, not 0.4% |
+
+The through-line: **op-local defects belong to L0** (27 s), **forward-path changes to the step-1
+probe** (free), and the soak is left with only what neither can see. That is why W3 exists.
+
+### Identity, the anti-fiction spine
+
+`config_digest` (schema 3: 33 identity fields) answers "did these two legs measure the same thing?";
+`impl_digest` (content-hashed) answers "is this the implementation that was gated?"; `digest_schema`
+versions the definition, and v2↔v3 is deliberately **not** reconcilable — it demands a re-measure,
+because a v2 sidecar physically never recorded the fields v3 digests.
+
+---
+
+## Progress — what is built, and what is *verified*
+
+Built and **verified on real runs** (134 agents across three training runs, `agents_error: 0`):
+
+| area | state |
+|---|---|
+| Measurement layer | **solid.** `useful_tok_s_per_gpu`, warmup detection, occupancy guard, contamination retry, aligned `compare_legs.py`. The instrument that disproved a +7.85% "win". |
+| Six role prompts | all execute; the rejection path and the acceptance path have both been exercised end to end |
+| Throughput gate | recalibrated from 47 null pairs; **both controls demonstrated** |
+| L0 | both controls demonstrated; two new op oracles (attention varlen/GQA, lmhead+CE) validated numerically |
+| Extraction → kernel lane | works; produced 18.86× geomean on an isolated kernel → +4.66% end to end |
+| Overlay + engagement proof | 8 ranks, forward and backward counted separately, zero fallbacks |
+| Finalize bundle | self-verifying; `launch.sh` refuses on checksum mismatch |
+| Independent validation | the Director has overturned an upstream conclusion in **all three** runs |
+
+Built but **not yet trustworthy**:
+
+- **L1 per-step envelope** — falsified out of sample; advisory by default (W1 decides its fate)
+- **L2 soak** — tooling and a pre-registered spec exist; has never issued a verdict carrying weight
+
+**Not built:**
+
+- **ConfigSweep / `deep` mode** — refuses to run (W2)
+- **`mode=bakeoff` from this layer** — structurally unreachable, costs a nesting level the runtime
+  does not have; must be driven from the top
+- **Multi-node** — unverified, and the overlay mechanism explicitly does not survive it
+- **TP > 1** — now *refused* rather than silently wrong (the LM-head oracle would freeze a
+  shard-local logsumexp)
+- **Second stack adapter** — the seam exists with one implementation
+
+### Results to date
+
+| head | cp_share | result |
+|---|---|---|
+| `lmhead_ce_unmasked_gather` | 6.41% | **accepted, +4.66% independently validated** |
+| `attn_fmha_fwdbwd_gqa_d128_causal` | 18.68% | **rejected** — backward defect, step-1 grad_norm −88.50% |
+| `swiglu_fwd_bwd_fused` | 3.4% | not attempted (expected 1.13%) |
+| `mlp_gate_up_gemm_bf16_n37888` | 36.17% | not attempted (expected 1.05% — big share, little headroom) |
+| `rope_fused_fwd_bwd` | 1.3% | not attempted (expected 0.78%) |
+
+### What the first month of running actually produced
+
+Fourteen defects, and the distribution is the lesson: **every launch-blocking one was plumbing, none
+was in the measurement science.** Four stopped a run outright (a stray `export`; a clock the sandbox
+does not have; eight schemas declared and never passed; three nesting levels where one is allowed).
+Four were gates that issued verdicts they could not support. Three were identity/integrity holes
+(`config_digest` covering five fields; `impl_digest` hashing a path; two runs merged into one probe
+dir). Three were silent-wrong-default bugs (`--kind` ignored → a 40× tighter floor; a report written
+to the repo root; TP>1 uncovered).
+
+None of them were found by reading the code. All of them were found by running it and by insisting
+that each gate demonstrate, on a known input, that it can fail.
+
+---
+
 ## Month 1 — make the thing correct, complete, and fast enough to iterate
 
 ### Week 1 — close the open gate defects and the feedback loop
