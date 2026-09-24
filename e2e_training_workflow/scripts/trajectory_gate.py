@@ -260,7 +260,44 @@ def _null_control(series, dirs, band, n):
     }
 
 
-def calibrate(dirs, safety=3.0):
+def _out_of_sample_control(holdout_dir, series, dirs, band, n):
+    """The control the band CANNOT run on itself: a clean leg that is NOT in the calibration set.
+
+    Added 2026-09-24 after the in-sample control was falsified twice on one run. `_null_control`
+    tests calibration legs against each other, so the band has already been fitted to exactly those
+    legs and the test is self-fitting -- it scored 0 exceedances in-sample while a FRESH reference
+    leg (same kernels, same seed, same config_digest, step-1 loss delta exactly 0.0) failed against
+    all three band legs with 5/5/6 loss exceedances, worst ratios 2.332/1.999/2.200. A second,
+    independent instance the same day: two legs differing only by an already-ACCEPTED overlay failed
+    with worst 9.534x. So `envelope_discriminating: true` from the in-sample control was simply
+    wrong out of sample, and it is the flag that licenses the envelope to reject candidates.
+
+    Passing in-sample is necessary and NOT sufficient; only this function's verdict may license
+    BLOCKING.
+    """
+    hs = _series(holdout_dir)
+    failures, worst = [], {"loss": 0.0, "grad_norm": 0.0}
+    for i, s in enumerate(series):
+        for key in ("loss", "grad_norm"):
+            exceed, w = _envelope_exceedances(s, hs, band, key, n)
+            worst[key] = max(worst[key], w)
+            checked = min(n, len((band.get("envelope") or {}).get(key) or []))
+            if _exceedance_is_pattern(exceed, checked):
+                failures.append({"band_leg": os.path.basename(str(dirs[i]).rstrip("/")),
+                                 "metric": key, "exceeded_steps": exceed[:8],
+                                 "worst_ratio_to_limit": w})
+    return {
+        "holdout": os.path.basename(str(holdout_dir).rstrip("/")),
+        "passed": not failures,
+        "pairs_tested": len(series),
+        "worst_ratio_to_limit": {k: round(v, 3) for k, v in worst.items()},
+        "failures": failures[:6],
+        "note": ("A clean leg OUTSIDE the calibration set. Unlike the in-sample control this one is "
+                 "not fitted to the band, so only this verdict may license a blocking envelope."),
+    }
+
+
+def calibrate(dirs, safety=3.0, holdout=None):
     """Noise floor from >=2 INDEPENDENT baseline runs at identical config.
 
     Produces a STEP-INDEXED envelope, not a scalar: chaotic divergence means the tolerable delta at
@@ -307,11 +344,25 @@ def calibrate(dirs, safety=3.0):
     # The band must survive its own control before it may block anything. Computed here, stored here:
     # verdict() reads the flag rather than re-deriving it, so the two can never disagree.
     band["null_control"] = _null_control(series, dirs, band, n)
+    # An OUT-OF-SAMPLE control is now REQUIRED to license a blocking envelope. The in-sample one is
+    # still computed and reported -- it is cheap and it catches gross defects -- but it was
+    # falsified twice in one run (see _out_of_sample_control), so on its own it may only ever
+    # DEMOTE, never license.
+    band["out_of_sample_control"] = (
+        _out_of_sample_control(holdout, series, dirs, band, n) if holdout else None)
     band["envelope_discriminating"] = bool(
-        band["null_control"]["passed"] and len(series) >= MIN_BAND_LEGS)
+        band["null_control"]["passed"]
+        and band["out_of_sample_control"] and band["out_of_sample_control"]["passed"]
+        and len(series) >= MIN_BAND_LEGS)
     if not band["envelope_discriminating"]:
         why = ("only %d leg(s); %d is the measured minimum" % (len(series), MIN_BAND_LEGS)
-               if len(series) < MIN_BAND_LEGS else "it rejects a baseline-vs-baseline null control")
+               if len(series) < MIN_BAND_LEGS
+               else "no out-of-sample holdout leg was supplied, and an in-sample control is "
+                    "self-fitting (it scored 0 while a fresh clean leg failed 3/3)"
+               if not holdout
+               else "a clean leg OUTSIDE the calibration set fails it"
+               if not band["out_of_sample_control"]["passed"]
+               else "it rejects a baseline-vs-baseline null control")
         band["envelope_status"] = (
             "ADVISORY -- the per-step envelope is REPORTED BUT DOES NOT VOTE, because %s. The "
             "blocking detectors remain the step-1 forward probe and the early-window sign balance, "
@@ -533,19 +584,38 @@ if __name__ == "__main__":
             json.dump(band, open(sys.argv[sys.argv.index("-o") + 1], "w"), indent=2)
         print(json.dumps(band, indent=2))
     elif cmd == "calibrate":
+        KNOWN = {"-o", "--holdout"}
+        for tok in sys.argv[2:]:
+            if tok.startswith("-") and tok not in KNOWN:
+                sys.exit(f"unknown flag {tok!r}. Known for `calibrate`: {sorted(KNOWN)}.")
+        holdout = sys.argv[sys.argv.index("--holdout") + 1] if "--holdout" in sys.argv else None
         dirs = [a for a in sys.argv[2:] if not a.startswith("-")]
-        if "-o" in sys.argv:
-            dirs = [d for d in dirs if d != sys.argv[sys.argv.index("-o") + 1]]
-        b = calibrate(dirs)
+        for drop in ([sys.argv[sys.argv.index("-o") + 1]] if "-o" in sys.argv else []) + \
+                    ([holdout] if holdout else []):
+            dirs = [d for d in dirs if d != drop]
+        b = calibrate(dirs, holdout=holdout)
         out = None
         if "-o" in sys.argv:
             out = sys.argv[sys.argv.index("-o") + 1]
             json.dump(b, open(out, "w"), indent=2)
         print(json.dumps(b, indent=2))
     elif cmd == "compare":
+        # REFUSE unknown flags. The parsing below is positional + index lookups, so an unrecognised
+        # flag is silently DROPPED and its value silently becomes a directory argument. Measured
+        # consequence: `--candidate-kind kernel_swap` (the flag is `--kind`) fell through to the
+        # default "overlay", applying a 0.05% step-1 floor where 2.0% was intended -- 40x tighter,
+        # silently, on the gate that decides whether a candidate is numerically acceptable.
+        KNOWN = {"--band", "--kind"}
+        for i, tok in enumerate(sys.argv[2:], start=2):
+            if tok.startswith("--") and tok not in KNOWN:
+                sys.exit(f"unknown flag {tok!r}. Known flags for `compare`: {sorted(KNOWN)}. "
+                         f"Refusing rather than ignoring it: an ignored --kind silently applies the "
+                         f"40x tighter `overlay` floor instead of `kernel_swap`.")
         bandpath = sys.argv[sys.argv.index("--band") + 1] if "--band" in sys.argv else None
         band = json.load(open(bandpath)) if bandpath else {"limits": {}}
         kind = sys.argv[sys.argv.index("--kind") + 1] if "--kind" in sys.argv else "overlay"
+        if kind not in STEP1_FLOOR_PCT:
+            sys.exit(f"unknown --kind {kind!r}; known: {sorted(STEP1_FLOOR_PCT)}")
         print(json.dumps(verdict(sys.argv[2], sys.argv[3], band, kind), indent=2))
     else:
         sys.exit(_usage())

@@ -324,6 +324,36 @@ accurate than the original on all four outputs) plus the bit-reproducible step-1
 ADVISORY with their candidate PASS carrying no weight — but note this is a stronger safety position
 than it sounds, because the class of defect the soak failed to catch is the class L0 catches best.
 
+### The in-sample null control was FALSIFIED (2026-09-24) — a holdout leg is now required
+
+The control added above runs calibration legs against each other. The band has already been fitted
+to exactly those legs, so it is **self-fitting**, and the run of 2026-09-24 falsified it twice in
+one session:
+
+| control | result |
+|---|---|
+| in-sample (calibration legs vs each other) | **0 exceedances** → band self-declared `BLOCKING` |
+| out-of-sample: a **fresh** clean reference leg vs each of the 3 band legs | **all 3 FAIL** — 5/5/6 loss exceedances, worst ratios 2.332 / 1.999 / 2.200 |
+| out-of-sample: two legs differing only by an **already-accepted** overlay | **FAIL** — 6 loss / 4 grad_norm steps, worst 9.534× |
+
+Those out-of-sample pairs have a true delta of exactly zero (same kernels, same seed, same
+`config_digest`, step-1 loss delta 0.0). So `envelope_discriminating: true` was **wrong out of
+sample**, and it is the flag that licenses the envelope to reject candidates.
+
+**Fix:** `calibrate()` now takes `--holdout <clean leg not in the calibration set>` and only an
+out-of-sample control may license `BLOCKING`. Without a holdout the envelope is **advisory by
+default**. The in-sample control is still computed and reported — it is cheap and catches gross
+defects — but on its own it may only ever DEMOTE, never license. Passing in-sample is necessary and
+not sufficient; this is the second time that distinction has cost a run's worth of confusion.
+
+### `--kind` was silently ignored, applying a 40× tighter floor
+
+`trajectory_gate.py compare` parsed argv by index lookup, so any unrecognised `--flag` was **dropped
+silently**. An auditor typed `--candidate-kind kernel_swap`; the real flag is `--kind`, so the call
+fell through to the default `overlay` and applied a **0.05%** step-1 floor where **2.0%** was
+intended. Both `compare` and `calibrate` now refuse unknown flags, and `--kind` is validated against
+`STEP1_FLOOR_PCT`. A gate that silently applies the wrong threshold is worse than one that refuses.
+
 **Still open:** the 0.2917% attention-backend pair has still not been separated into "pure numerics"
 versus "the flash path does not preserve packing isolation" (the separating test is
 packed-vs-unpacked per backend). That is a question about that pair, not about the envelope.

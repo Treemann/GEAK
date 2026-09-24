@@ -77,8 +77,14 @@ def main():
         ok("ADVISORY" in b2["envelope_status"],
            "the 2-leg band SAYS it is advisory rather than looking identical to a good band")
 
-        b5 = tg.calibrate(legs)
-        ok(b5["n_legs"] == 5, "a 5-leg band records its own provenance (n_legs)")
+        # A blocking envelope now requires an OUT-OF-SAMPLE holdout: the in-sample control is
+        # self-fitting and was falsified twice on real 7B legs (it scored 0 while a fresh clean leg
+        # failed against all three band legs). Calibrate on 4 legs, hold the 5th out.
+        b5 = tg.calibrate(legs[:4], holdout=legs[4])
+        ok(b5["n_legs"] == 4 and b5.get("out_of_sample_control") is not None,
+           "a band records its provenance AND its out-of-sample control")
+        ok(tg.calibrate(legs[:4])["envelope_discriminating"] is False,
+           "without a holdout the envelope may NOT vote -- an in-sample control is self-fitting and was falsified on real legs")
 
         # ---------------------------------------------------------------- 2. the measured floor
         fl = b5["rel_floor_pct"]
@@ -111,8 +117,8 @@ def main():
 
         # ---------------------------------------------------------------- 3. THE regression test
         # A band must not reject a pair that changed nothing. This is the exact defect both runs hit.
-        ok(b5["null_control"]["pairs_tested"] == 10,
-           "the null control tests every baseline pair (C(5,2) = 10)")
+        ok(b5["null_control"]["pairs_tested"] == 6,
+           "the in-sample control still tests every calibration pair (C(4,2) = 6)")
         v_null = tg.verdict(legs[0], legs[1], b5)
         ok(v_null["pass"] is True,
            "a NULL CONTROL (two baseline legs, true delta zero) does NOT fail L1 -- "
