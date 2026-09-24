@@ -275,6 +275,18 @@ const leg = (o = {}) => Object.assign({
     ok(/An accepted change moves which kernels dominate/.test(src) &&
        /profileAndRoute\(curConfig, `after_/.test(src),
       're-profile after every accept: the bottleneck moves, so the queue must be rebuilt');
+
+  // skip_heads must be applied at BOTH queue-construction sites. The re-profile path rebuilds the
+  // queue from the Architect's fresh output, so a skip applied only at the initial build silently
+  // re-introduces a head whose verdict is already known -- and the run then spends a gate on it.
+  ok(/let headQueue = applySkips\(/.test(src),
+    'skip_heads is applied when the queue is first built');
+  ok(/headQueue = applySkips\(r\.strategy\.head_candidates/.test(src),
+    'AND when the re-profile rebuilds it — otherwise the first accept re-introduces a skipped head ' +
+    'and the run spends a gate on a verdict it already has');
+  ok(/wfReturn\.skipped_heads/.test(src),
+    'a filtered queue is recorded in the result — a silently shortened queue is indistinguishable ' +
+    'from one that legitimately had nothing else in it');
     ok(/engagement\.forward === false \|\| integ\.engagement\.backward === false/.test(src),
       'engagement must be proven for forward AND backward separately, or the result is refused');
     ok(/has_backward === false/.test(src),

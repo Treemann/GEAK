@@ -620,7 +620,21 @@ async function profileAndRoute(config, round) {
 }
 let { profile, strategy } = await profileAndRoute(curConfig, 'baseline');
 wfReturn.config_diagnosis = (profile && profile.config_diagnosis) || null;
-let headQueue = ((strategy && strategy.head_candidates) || []).slice();
+// Heads whose verdict is already known from a previous run. Without this every run re-profiles the
+// BARE stack, rebuilds the same queue, and spends its budget re-deriving decided answers: the 7B run
+// of 2026-09-24 stopped on the wall clock having done lmhead (re-accepted) and attention (rejected),
+// leaving the same 3 heads unexplored a second time. Skipping is by SHORT NAME and is logged, because
+// a silently shortened queue looks identical to a queue that legitimately had nothing else in it.
+const SKIP_HEADS = new Set(String(A.skip_heads || '').split(',').map((x) => x.trim()).filter(Boolean));
+const applySkips = (q) => {
+  if (!SKIP_HEADS.size) return q;
+  const kept = q.filter((h) => !SKIP_HEADS.has(h.short_name) && !SKIP_HEADS.has(h.kernel));
+  const dropped = q.length - kept.length;
+  if (dropped) log0(`skip_heads: ${dropped} head(s) removed from the queue by args.skip_heads ` +
+                    `[${[...SKIP_HEADS].join(', ')}] — their verdicts come from an earlier run, not this one`);
+  return kept;
+};
+let headQueue = applySkips(((strategy && strategy.head_candidates) || []).slice());
 log0(`heads queued: ${headQueue.length}${strategy && strategy.stop ? ' (architect says stop)' : ''}`);
 // The Architect's `stop` was PRINTED and then ignored: it could report that no head is worth a gate
 // and the loop would spend the whole budget regardless. A gate costs two job launches and blocks
@@ -755,7 +769,9 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
     // An accepted change moves which kernels dominate — re-profile, exactly as a config win would.
     const r = await profileAndRoute(curConfig, `after_${h.short_name}`);
     if (r.profile) profile = r.profile;
-    if (r.strategy && r.strategy.head_candidates) headQueue = r.strategy.head_candidates.slice();
+    // Re-apply the skips: a re-profile rebuilds the queue from scratch and would otherwise
+    // re-introduce a head whose verdict is already known.
+    if (r.strategy && r.strategy.head_candidates) headQueue = applySkips(r.strategy.head_candidates.slice());
   } else {
     if (v.klass === 'banked_memory') {
       bankedMemory.push({ head: record.head, pct: v.banked_memory_pct });
@@ -776,6 +792,7 @@ wfReturn.unexplored_heads = headQueue.map((h) => ({
   critical_path_share_pct: h.critical_path_share_pct,
   expected_gain_pct: +expectedGainPct(h).toFixed(2),
 }));
+wfReturn.skipped_heads = [...SKIP_HEADS];
 wfReturn.stop_reason = !headQueue.length ? 'queue_exhausted'
   : tasksUsed >= BUDGET ? 'task_budget'
   : gatesUsed >= MAX_GATES ? 'gate_budget'
