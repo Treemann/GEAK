@@ -1,7 +1,10 @@
 # e2e_training_workflow — 2-month roadmap (DRAFT)
 
-Status at the time of writing: `fast` mode runs end to end. Four real runs exist (0.5B/2GPU ×1,
-7B/8GPU ×3) plus 15 soak legs. One kernel is accepted and independently re-validated at **+4.66%**.
+> Chinese version: `ROADMAP.zh-CN.md`. Both are maintained together; the numbers here are
+> authoritative if the two ever drift.
+
+Status at the time of writing: `fast` mode runs end to end. Three real runs exist (0.5B/2GPU ×1,
+7B/8GPU ×2) plus 12 soak legs (11 usable; one crashed at step 1). One kernel is accepted and independently re-validated at **+4.66%**.
 Everything below is ordered by two constraints that were **measured this month**, not assumed:
 
 **Constraint A — a gate that cannot discriminate makes every later number fiction.** Three gates were
@@ -12,8 +15,8 @@ gradient bias. **Gate work therefore precedes optimization work in this plan** �
 but because optimization output is unfalsifiable until the gates are.
 
 **Constraint B — one run costs 8–10 h and yields ~2 heads.** The last 7B run: 69 agents, 1331 tool
-calls, 8 h 15 m, 2 of 4 queued heads, stopped on the wall clock. At that rate a month holds roughly
-60–80 runs of wall time *if the box were exclusive*, which it is not. **Iteration speed, not agent
+calls, 8 h 15 m, 2 of 4 queued heads, stopped on the wall clock. At that rate a calendar month holds ~70–90
+runs *if the box were exclusive*, which it is not — so plan on a fraction of that. **Iteration speed, not agent
 capability, is the binding constraint on everything in Month 2.**
 
 Assumptions (flag if wrong — they change the plan materially): one 8×MI308X node, shared;
@@ -76,12 +79,12 @@ This table is the most important thing in the document, and every row is measure
 | gate | can it ACCEPT? | null control | positive control | measured sensitivity |
 |---|---|---|---|---|
 | **Throughput** | **yes — the only one** | 0 false wins / 47 null pairs | fires on a known +4.66% | band 0.415% on that real pair (old formula: 0.914%) |
-| **L0** op numerics | no (reject only) | scores exactly 0 ref-vs-ref | **rejects ×1.004 bias** | `scale_bias` 2e-3 tol; ~40 ms per comparison |
+| **L0** op numerics | no (reject only) | scores exactly 0 ref-vs-ref | **rejects ×1.004 bias** | `scale_bias` 2e-3 tol; 11.5 s end to end, ~40 ms for the comparison |
 | **L1** step-1 probe | no | 0.0% (bit-reproducible) | rejects the attention backward | caught −88.5% grad_norm collapse |
 | **L1** per-step envelope | no | **FAILS out-of-sample 3/3** | — | **advisory; retires or is fixed in W1** |
 | **L2** soak | no | passes | **does NOT reject ×1.004** | underpowered; ~0.9% bias, not 0.4% |
 
-The through-line: **op-local defects belong to L0** (27 s), **forward-path changes to the step-1
+The through-line: **op-local defects belong to L0** (11.5 s end to end), **forward-path changes to the step-1
 probe** (free), and the soak is left with only what neither can see. That is why W3 exists.
 
 ### Identity, the anti-fiction spine
@@ -106,7 +109,7 @@ Built and **verified on real runs** (134 agents across three training runs, `age
 | Extraction → kernel lane | works; produced 18.86× geomean on an isolated kernel → +4.66% end to end |
 | Overlay + engagement proof | 8 ranks, forward and backward counted separately, zero fallbacks |
 | Finalize bundle | self-verifying; `launch.sh` refuses on checksum mismatch |
-| Independent validation | the Director has overturned an upstream conclusion in **all three** runs |
+| Independent validation | an independent role (Director or Auditor) has overturned an upstream conclusion in **all three** runs |
 
 Built but **not yet trustworthy**:
 
@@ -135,7 +138,8 @@ Built but **not yet trustworthy**:
 
 ### What the first month of running actually produced
 
-Fourteen defects, and the distribution is the lesson: **every launch-blocking one was plumbing, none
+Fourteen defects in four classes — not counting several smaller ones fixed in passing — and the
+distribution is the lesson: **every launch-blocking one was plumbing, none
 was in the measurement science.** Four stopped a run outright (a stray `export`; a clock the sandbox
 does not have; eight schemas declared and never passed; three nesting levels where one is allowed).
 Four were gates that issued verdicts they could not support. Three were identity/integrity holes
@@ -189,7 +193,7 @@ L2 is named in the docs, auto-triggers on `risk_class: backward`, and **has neve
 that carries weight**. Two runs (~15 h) both ended ADVISORY.
 
 The reframing from Week-0 evidence: **op-local numerics is L0's job** — L0 rejects the ×1.004 bias in
-~27 s while two 300-step soaks miss it entirely. So the soak's positive control must be a defect of a
+11.5 s end to end -- ~40 ms for the comparison itself -- while two 300-step soaks miss it entirely. So the soak's positive control must be a defect of a
 class L0 *structurally cannot see*, because L0 evaluates one frozen microbatch:
 
 - cross-step state corruption (the accepted lmhead kernel accumulates into `main_grad` — precisely

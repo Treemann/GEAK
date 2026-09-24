@@ -268,7 +268,8 @@ slope was *smaller* in magnitude than the candidate's).
 
 ### L2 soak v2 RESULT — and the finding that reframes the whole soak
 
-v2 (n=3 ref, m=4 cand, m=4 pos, 300 steps, ~10 h of 8-GPU time) **also failed its positive control**,
+v2 (n=3 ref reused, m=4 cand, m=4 pos, 300 steps; 6 NEW legs, ~6 h, ~11 h across v1+v2) **also
+failed its positive control**,
 for a different and more informative reason than v1.
 
 **The bias acts on DISPERSION, not location.** Terminal loss of the four positive-control legs:
@@ -289,7 +290,7 @@ faster". With one leg it looked systematic; with four it is clearly dispersion.)
 differ by up to **0.96%**, against a candidate offset of +0.38% and a positive-control offset of
 +0.15%. Unlike step-1 *loss* (bit-reproducible, 0.0%), step-1 grad_norm cannot resolve this.
 
-**THE FINDING. The same ×1.004 gradient bias is caught by L0 in ~27 seconds:**
+**THE FINDING. The same ×1.004 gradient bias is caught by L0 in 11.5 seconds end to end:**
 
 ```
 [L0] dgrad: scale_bias=+3.80e-03  -> FAIL SCALE-BIAS        (tolerance 2e-3)
@@ -301,7 +302,7 @@ while the accepted candidate passes the same gate cleanly (`scale_bias` −3.42e
 
 | instrument | cost | detects a 0.4% gradient bias? |
 |---|---|---|
-| **L0 op-level oracle** | **~27 s** | **YES, decisively** |
+| **L0 op-level oracle** | **11.5 s** (~40 ms for the comparison) | **YES, decisively** |
 | L1 per-step envelope | free | no |
 | L1 step-1 probes (loss, grad_norm) | free | no |
 | L2 soak v1 (5 legs × 300 steps) | ~5 h | no |
