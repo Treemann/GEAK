@@ -54,7 +54,7 @@ def _series(probe_dir, rank=0):
         if not cands:
             raise FileNotFoundError(f"no probe sidecars in {probe_dir}")
         path = os.path.join(probe_dir, sorted(cands)[0])
-    loss, gn, cfg = [], [], None
+    loss, gn, cfg, argv_hash = [], [], None, None
     with open(path) as f:
         for line in f:
             try:
@@ -63,10 +63,11 @@ def _series(probe_dir, rank=0):
                 continue
             if r.get("record") == "header":
                 cfg = r.get("config")
+                argv_hash = r.get("argv_hash")
             elif r.get("record") == "step":
                 loss.append(r.get("loss"))
                 gn.append(r.get("grad_norm"))
-    return {"loss": loss, "grad_norm": gn, "config": cfg}
+    return {"loss": loss, "grad_norm": gn, "config": cfg, "argv_hash": argv_hash}
 
 
 def _slope(ys):
@@ -336,6 +337,12 @@ def calibrate(dirs, safety=3.0, holdout=None):
         "step1_grad_norm_rel_pct": gn1_rel,
         "early_steps": EARLY_STEPS,
         "n_legs": len(series),
+        # WHAT THIS BAND APPLIES TO. A band is a per-step envelope fitted to legs of a particular
+        # argv and a particular length; applied to anything else it is measuring a different process.
+        # This was found by hand once: a band calibrated on argv_hash ed00d2f9 / 30 steps was used to
+        # judge legs of argv_hash 977d6aac / 60 steps, and its sole firing detector then rejected a
+        # true-zero-delta pair 2.5x harder than it rejected the candidate.
+        "calibrated_argv_hashes": sorted({s.get("argv_hash") for s in series if s.get("argv_hash")}),
         "note": ("envelope[i] is the widest baseline-vs-baseline disagreement AT STEP i; the gate "
                  "allows safety x that, floored by the metric's OWN measured relative dispersion "
                  "(rel_floor_pct). step1 loss is bit-reproducible in a healthy stack, so its "
@@ -430,6 +437,24 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay"):
     # Legacy bands (written before this field existed) have no control verdict; treat a MISSING flag
     # as advisory rather than assuming the band is sound.
     blocking = bool(band.get("envelope_discriminating"))
+    # APPLICABILITY. Even a band that earned BLOCKING may only vote on legs it was calibrated for.
+    # Checked here rather than left to the reader: the one time this was caught, it took an auditor
+    # running an out-of-sample null pair by hand to notice, and the detector had already returned a
+    # confident pass=false on a candidate it could not judge.
+    cal = band.get("calibrated_argv_hashes") or []
+    leg_hashes = [h for h in (rs.get("argv_hash"), cs.get("argv_hash")) if h]
+    out_of_scope = bool(cal and leg_hashes and any(h not in cal for h in leg_hashes))
+    res["checks"]["band_applicability"] = {
+        "calibrated_argv_hashes": cal, "leg_argv_hashes": leg_hashes,
+        "band_steps": band.get("steps"), "in_scope": not out_of_scope}
+    if out_of_scope:
+        blocking = False
+        res["checks"]["envelope_status"] = (
+            "ADVISORY -- this band was calibrated on argv_hash %s and these legs are %s. A per-step "
+            "envelope is fitted to a particular argv and leg length; applied to anything else it "
+            "describes a different process. Re-calibrate on >=3 clean legs of THIS config (with a "
+            "holdout) before the envelope may vote." % (cal, leg_hashes))
+        print("[trajectory_gate] WARNING: " + res["checks"]["envelope_status"], flush=True)
     res["checks"]["envelope_blocking"] = blocking
     res["checks"]["envelope_status"] = band.get(
         "envelope_status", "ADVISORY -- band predates the null-control self-test")

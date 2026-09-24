@@ -32,12 +32,12 @@ def ok(cond, msg):
         FAILED.append(msg)
 
 
-def make_leg(root, name, losses, grad_norms, config=None):
+def make_leg(root, name, losses, grad_norms, config=None, argv_hash="aaaa1111bbbb2222"):
     """Write a probe sidecar in the format _series() reads."""
     d = os.path.join(root, name, "probe")
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "probe_rank0.jsonl"), "w") as f:
-        f.write(json.dumps({"record": "header",
+        f.write(json.dumps({"record": "header", "argv_hash": argv_hash,
                             "config": config or {"micro-batch-size": "1", "seq-length": "4096"}}) + "\n")
         for i, (l, g) in enumerate(zip(losses, grad_norms)):
             f.write(json.dumps({"record": "step", "step": i + 1, "loss": l, "grad_norm": g}) + "\n")
@@ -144,6 +144,21 @@ def main():
            "a band that PASSED its null control does block on the same exceedance")
         ok(v_adv["checks"]["loss_envelope"]["worst_ratio_to_limit"] > 0,
            "the advisory numbers are real measurements, not zeroed out")
+
+        # ------------------------------------------------- 4b. the band may only judge its own config
+        # A band is fitted to legs of a particular argv and length. Applied to anything else it
+        # describes a different process -- found the hard way when a 30-step/ed00d2f9 band returned a
+        # confident pass=false on 60-step/977d6aac legs, and its sole firing detector then rejected a
+        # true-zero-delta pair 2.5x harder than the candidate.
+        oos_root = os.path.join(root, "otherconfig")
+        lo_o, gn_o = synth(2, cross_at=11)
+        other = make_leg(oos_root, "leg", lo_o, gn_o, argv_hash="deadbeefdeadbeef")
+        v_oos = tg.verdict(other, drift, b5)
+        ok(v_oos["checks"]["band_applicability"]["in_scope"] is False,
+           "a band refuses to claim scope over legs of a different argv_hash")
+        ok(v_oos["checks"]["envelope_blocking"] is False,
+           "and it may NOT cast a blocking envelope vote on them, even though it earned BLOCKING "
+           "on its own config")
 
         # ---------------------------------------------------------------- 5. legacy bands
         legacy = dict(b5)

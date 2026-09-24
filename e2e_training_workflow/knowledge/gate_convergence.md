@@ -355,6 +355,22 @@ fell through to the default `overlay` and applied a **0.05%** step-1 floor where
 intended. Both `compare` and `calibrate` now refuse unknown flags, and `--kind` is validated against
 `STEP1_FLOOR_PCT`. A gate that silently applies the wrong threshold is worse than one that refuses.
 
+### A band may only judge the config it was calibrated on (2026-09-24)
+
+Found by an auditor running an out-of-sample null pair by hand, after the gate had already returned
+a confident `pass=false`. The band was calibrated from 5 legs at `argv_hash ed00d2f999a555d9`, 30
+steps; the legs it judged were `argv_hash 977d6aac1123c555`, 60 steps. Its sole firing detector
+(`grad_norm`, 6 steps, worst ratio 7.107) then rejected a **true-zero-delta pair 2.5× harder** —
+4 steps, worst ratio **17.928** — than it rejected the candidate.
+
+A per-step envelope is fitted to legs of a particular argv **and a particular length**; applied to
+anything else it is describing a different process. `calibrate()` now records
+`calibrated_argv_hashes`, and `verdict()` demotes the envelope to advisory when either leg is out of
+scope — with the mismatch printed, so it cannot be discovered by hand a second time.
+
+Note the interaction with the holdout rule: a band that legitimately earned `BLOCKING` on its own
+config still may not vote outside it. Scope and discrimination are separate questions.
+
 **Still open:** the 0.2917% attention-backend pair has still not been separated into "pure numerics"
 versus "the flash path does not preserve packing isolation" (the separating test is
 packed-vs-unpacked per backend). That is a question about that pair, not about the envelope.

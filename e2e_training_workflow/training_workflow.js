@@ -750,6 +750,15 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
   const v = gateVerdict({ ref: integ.ref, cand: integ.cand, comparison: integ.comparison,
                           l0: audit && audit.l0, l1: audit && audit.l1,
                           mode: DEEP_MODE ? 'deep' : 'fast' });
+  // An unusable leg has a CAUSE, and the Integrator is the only thing that saw it. Flattening that
+  // to "leg status != ok" threw away the actual finding once already: the mlp_fc1_swiglu candidate
+  // died at iteration #2 with an inf gradient (reproduced twice, Megatron's rerun_state_machine
+  // caught it and exited), and the run recorded an opaque `unusable_cand`. A candidate that DIVERGES
+  // is a stronger result than one that is merely slow -- it must not read as a measurement failure.
+  if (!v.accepted && /unusable|incomparable|stale/.test(v.klass || '') && integ.notes) {
+    v.integrator_diagnosis = String(integ.notes).slice(0, 1200);
+    v.reason = `${v.reason} — Integrator: ${String(integ.notes).split('\n')[0].slice(0, 220)}`;
+  }
   log0(`  gate: ${v.klass} — ${v.reason}`);
   if (v.fatal) {
     // Retries are already exhausted inside bench_train.sh; continuing would spend the remaining
