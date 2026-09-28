@@ -371,6 +371,44 @@ scope — with the mismatch printed, so it cannot be discovered by hand a second
 Note the interaction with the holdout rule: a band that legitimately earned `BLOCKING` on its own
 config still may not vote outside it. Scope and discrimination are separate questions.
 
+### DECISION 2026-09-28 — the per-step envelope is RETIRED from voting
+
+Roadmap W1 asked for a decision rather than a fifth patch: *"either an envelope that passes an
+out-of-sample control on ≥3 workloads, or the envelope is formally retired. Do not leave it
+half-alive."* The evidence decides it.
+
+**Every time it fired in a real run, a control falsified it. Four for four:**
+
+| run | what the envelope said | what the control said |
+|---|---|---|
+| 0.5B | fired → rejected the attention candidate | band came from a same-kernel pair, which over-rejects a legitimate swap; the auditor refused to treat it as load-bearing and the **sign test** carried the rejection |
+| 7B #2 | fired, 8 loss / 10 grad_norm steps | null control failed **8/10**, worst **36.27×** against the candidate's 37.36× — indistinguishable |
+| 7B #3 | fired | a **fresh** clean leg failed **3/3** (5/5/6 steps); separately, two legs differing only by an **already-accepted** overlay failed at worst **9.534×** |
+| 7B #4 | fired, 6 steps, worst **7.107** | a **true-zero-delta pair** was rejected **2.5× harder** — worst **17.928** |
+
+**Its ceiling is structural, not a tuning problem.** Measured by injection into a real leg: a **+25%
+loss shift across the entire steady window** is invisible to it, and so is `grad_norm ×1.5`. Only a
+gross ~3× deviation registers — because by step 12 three *identical* legs already disagree by ~8.9%
+and the envelope allows `safety ×` that. The noise floor is chaos, and chaos is not something more
+legs or a better statistic can buy down *within* a run.
+
+**It was patched four times** — `MIN_BAND_LEGS ≥ 3`, a p10 floor instead of a borrowed 0.05%
+constant, a required out-of-sample holdout, an argv/length scope check. **Every patch fixed a real
+defect.** None produced a verdict anyone could rely on. A detector that has never been right does not
+get a fifth attempt at voting.
+
+**What changes:** `blocking` is hard-wired `False` in `verdict()` and is not reachable by
+configuration. **What does not:** the envelope is still computed and reported — the numbers are real
+measurements — and the null / out-of-sample controls still run, now answering *"is this band worth
+reading at all?"* rather than *"may it vote?"*.
+
+**What still votes**, and what each has actually caught:
+
+| detector | natural noise | caught, in a real run |
+|---|---|---|
+| step-1 forward probe | **0.0%** (bit-reproducible) | the attention backward defect (grad_norm −88.50%); the 0.5B attention swap (step-1 loss 0.4274%) |
+| early-window sign balance | ~0.25–0.75 spread | carried the 0.5B attention rejection when the envelope was discounted |
+
 **Still open:** the 0.2917% attention-backend pair has still not been separated into "pure numerics"
 versus "the flash path does not preserve packing isolation" (the separating test is
 packed-vs-unpacked per backend). That is a question about that pair, not about the envelope.

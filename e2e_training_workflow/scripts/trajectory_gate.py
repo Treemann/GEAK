@@ -436,7 +436,32 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay"):
     # trains the reader to override L1, which is the habit that lets a real rejection through.
     # Legacy bands (written before this field existed) have no control verdict; treat a MISSING flag
     # as advisory rather than assuming the band is sound.
-    blocking = bool(band.get("envelope_discriminating"))
+    # RETIRED FROM VOTING, 2026-09-28. The per-step envelope NEVER blocks. This is a decision taken
+    # on evidence, not a temporary demotion, and it is deliberately not reachable by configuration.
+    #
+    # Across four real runs it fired every time and was a load-bearing detector zero times:
+    #   0.5B run   fired -> the auditor discounted it (band from a same-kernel pair over-rejects a
+    #              legitimate swap); the sign test carried that rejection.
+    #   7B run 2   fired 8 loss / 10 grad_norm; the NULL control failed 8/10 at worst 36.27x against
+    #              the candidate's 37.36x -- statistically indistinguishable.
+    #   7B run 3   fired; an out-of-sample clean leg failed 3/3 (5/5/6 steps), and a second pair
+    #              differing only by an ALREADY-ACCEPTED overlay failed at worst 9.534x.
+    #   7B run 4   fired 6 steps at worst 7.107; a TRUE-ZERO-DELTA pair was rejected 2.5x HARDER
+    #              (worst 17.928).
+    # And its ceiling is structural, measured by injection: a +25% loss shift across the whole steady
+    # window is invisible to it, as is grad_norm x1.5. Only a gross ~3x deviation registers -- because
+    # by step 12 three IDENTICAL legs already disagree by ~8.9% and the envelope allows safety x that.
+    #
+    # It was patched four times (>=3 legs, a p10 floor, an out-of-sample holdout, an argv/length scope
+    # check). Every patch fixed a real defect. None of them produced a verdict anyone could rely on.
+    # A detector that has never been right, and whose noise floor is set by chaos rather than by
+    # anything we can buy, does not get a fifth attempt at voting.
+    #
+    # What still votes: the step-1 forward probe (zero natural noise; it caught the attention backward
+    # defect at -88.50% grad_norm and the 0.5B attention swap at 0.4274% step-1 loss) and the
+    # early-window sign balance. The envelope's numbers are still COMPUTED and REPORTED -- they are
+    # real measurements and occasionally interesting -- they simply carry no verdict.
+    blocking = False
     # APPLICABILITY. Even a band that earned BLOCKING may only vote on legs it was calibrated for.
     # Checked here rather than left to the reader: the one time this was caught, it took an auditor
     # running an out-of-sample null pair by hand to notice, and the detector had already returned a

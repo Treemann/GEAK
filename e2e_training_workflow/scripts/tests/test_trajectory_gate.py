@@ -139,9 +139,16 @@ def main():
         ok(not any("envelope" in f for f in v_adv["reason"].split(";")),
            "...but the exceedance does NOT enter the advisory band's verdict")
 
+        # RETIRED 2026-09-28: the envelope never blocks, whatever its controls say. Four runs, four
+        # firings, zero times load-bearing -- and every firing falsified by a control, most sharply
+        # when a true-zero-delta pair was rejected 2.5x harder than the candidate. This assertion is
+        # inverted from what it used to be, deliberately: the old one pinned the licensing path that
+        # no longer exists.
         v_blk = tg.verdict(legs[0], drift, b5)
-        ok("envelope" in v_blk["reason"] and v_blk["pass"] is False,
-           "a band that PASSED its null control does block on the same exceedance")
+        ok(v_blk["checks"]["envelope_blocking"] is False,
+           "even a band that passed BOTH controls may not block on an envelope exceedance")
+        ok(any("envelope" in a for a in v_blk.get("advisories", [])),
+           "...and the exceedance is still reported as an advisory, not silently dropped")
         ok(v_adv["checks"]["loss_envelope"]["worst_ratio_to_limit"] > 0,
            "the advisory numbers are real measurements, not zeroed out")
 
