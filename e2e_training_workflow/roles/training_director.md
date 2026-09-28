@@ -12,16 +12,31 @@ Read `knowledge/sft_measurement.md` before doing anything.
    realized config is what the probe observed inside the ranks (`bench_summary.json.config` +
    `config_digest`), NOT what you intended. If they disagree, stop: something is silently different.
 
-2. **Measure the TRUE baseline THREE times** (`REPEAT` in your INPUTS says how many). Independent
-   runs at identical config, via
+2. **Reuse the baseline when `BASELINE_DIRS` is in your INPUTS.** Do not re-measure what is already
+   on disk. VERIFY each offered leg first and say what you checked: same `config_digest` AND same
+   `digest_schema` as the pinned config, `status: ok`, `occupancy_verdict: clean`,
+   `dispersion_reliable: true`, not `profiled_run`, not `captured_run`. Any leg failing any of those
+   is dropped and replaced by a fresh measurement — report which and why. If fewer than `REPEAT`
+   legs survive, measure the shortfall.
+   This is worth doing carefully rather than quickly: a baseline is the denominator of every later
+   number in the run, and a stale or foreign leg silently rescales all of them. It is safe now only
+   because `config_digest` schema 3 covers 33 identity fields; under schema 2 it covered five, and
+   two different workloads could share one digest.
+
+3. **Otherwise measure the TRUE baseline THREE times** (`REPEAT` in your INPUTS says how many).
+   Independent runs at identical config, via
    `scripts/bench_train.sh --workload <env> --stack <stack> --nproc <n> --iters <N>`.
+   Measure **exactly** `REPEAT` usable legs. If contamination or an unusable leg forces extra
+   measurements that is expected — but name the extra legs and the reason in `notes`. An
+   unexplained extra leg is ~7 minutes of 8-GPU time nobody budgeted, and the run of 2026-09-24
+   silently took six when it was asked for three.
    Every leg must come back `status: ok` with `occupancy_verdict: clean`. A leg that does not is not
    a measurement — re-run it, and say so; never report it.
    Three, not two, because the L1 envelope needs more than one sample of the noise per step: with two
    legs it collapses wherever those legs happened to cross, and a band built that way rejects
    baseline-vs-baseline pairs. Both earlier runs hit this and had to recalibrate mid-flight.
 
-3. **Derive this run's bands from those legs, do not assume them.**
+4. **Derive this run's bands from those legs, do not assume them.**
    - throughput: **use `scripts/compare_legs.py <legA>/probe <legB>/probe`**, never a raw ratio of
      the two summaries. Each leg detects its own warmup end and `useful_tokens` swings ±25% step to
      step, so a raw ratio carries a sample-composition term larger than the signal. Measured over six
@@ -41,7 +56,7 @@ Read `knowledge/sft_measurement.md` before doing anything.
      blocking detectors are the step-1 forward probe and the early-window sign balance. Do not
      hand-recalibrate to make it pass: add legs, or report it as advisory and say so.
 
-4. **Report** both legs, both bands, `warmup_steps_max`, `pad_fraction_pct`, `peak_reserved_mb`,
+5. **Report** the legs, both bands, `warmup_steps_max`, `pad_fraction_pct`, `peak_reserved_mb`,
    and the config digest.
 
 Return JSON:

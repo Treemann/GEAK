@@ -572,9 +572,23 @@ phase('Setup');
 // trajectory_gate.MIN_BAND_LEGS is 3: below it the envelope is reported but may not vote. The cost
 // is one extra baseline leg per run; the legs also feed the across-job throughput band, so it is not
 // wasted. If the band's null control still fails at 3, raise this to 5 -- the band now SAYS so.
+// REUSING a baseline is the single biggest speed lever available, and schema 3 is what makes it
+// safe: before it, config_digest covered five fields and two different workloads could share one.
+// Measured on the 2026-09-24 run, Setup cost 0.7h of a 10.6h run -- and it measured SIX legs when
+// asked for three, so the real saving is larger than the nominal one. The Director still VALIDATES
+// every reused leg (digest, schema, occupancy, dispersion); it just does not re-measure it.
+const BASELINE_DIRS = String(A.baseline_dirs || '').split(',').map((x) => x.trim()).filter(Boolean);
+if (BASELINE_DIRS.length) {
+  log0(`baseline reuse: ${BASELINE_DIRS.length} leg(s) offered — the Director must verify identity ` +
+       `and cleanliness before accepting them, and re-measure if any is unusable`);
+}
 const setup = await safeAgentStub('training_director', 'setup',
-  { ...benchInputs(curConfig, 'baseline'), REPEAT: 3 },
+  { ...benchInputs(curConfig, 'baseline'), REPEAT: 3,
+    ...(BASELINE_DIRS.length ? { BASELINE_DIRS } : {}) },
   'Pin the config IR, measure the TRUE baseline THREE times, and derive both bands from those legs. ' +
+  'Measure EXACTLY REPEAT usable legs — if you take more, the extra legs must be named in notes with ' +
+  'the reason, because an unexplained extra leg is 7 minutes of 8-GPU time nobody budgeted. ' +
+  'If BASELINE_DIRS is given, verify and REUSE those legs instead of measuring. ' +
   'The L1 band MUST pass its own null control; if it does not, say so rather than using it.');
 if (!setup || !(setup.baseline_legs || []).length) {
   throw new Error('Setup produced no baseline. Every later number is a ratio against it, so there ' +

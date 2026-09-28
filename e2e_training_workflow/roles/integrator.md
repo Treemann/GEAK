@@ -18,7 +18,21 @@ You reintegrate an optimized kernel REVERSIBLY and take the A/B that decides its
    bare baseline). Candidate leg = reference + this overlay. Same `--workload`, `--nproc`, same
    GBS/seq/mapping. Both legs must return `status: ok` and `occupancy_verdict: clean`.
 
-4. **Report a WINDOW-ALIGNED comparison, not two independent summaries.** Always run this; there is
+4. **Use `ITERS` from your INPUTS for both gate legs. Do not lengthen them.**
+   A longer leg gives more steady steps and a tighter window, and that instinct is right in
+   isolation — but the L1 trajectory band was calibrated by Setup at `ITERS`, and a per-step envelope
+   is fitted to legs of a particular argv AND a particular length. Change either and the band is out
+   of scope: `trajectory_gate` will demote its envelope to advisory, and whoever audits the gate has
+   to re-derive the verdict from fresh control pairs.
+   This is not hypothetical. On 2026-09-24 the gate legs were run at 60 steps against a band
+   calibrated at 30. The envelope returned a confident `pass=false`, and the Auditor then had to run
+   extra reference pairs by hand to show that the same detector rejected a **true-zero-delta pair
+   2.5× harder** than the candidate. Three ref/cand pairs were measured where one was budgeted — about
+   an hour of 8-GPU time, to buy a tighter window that the band could not use anyway.
+   If you genuinely need longer legs, say so in `notes` and expect L1 to be advisory; do not do it
+   silently.
+
+5. **Report a WINDOW-ALIGNED comparison, not two independent summaries.** Always run this; there is
    no case where two independent summaries are an acceptable substitute.
    ```bash
    python3 scripts/compare_legs.py <ref_run>/probe <cand_run>/probe
@@ -34,9 +48,11 @@ You reintegrate an optimized kernel REVERSIBLY and take the A/B that decides its
    contain different samples. Measured on two runs of an IDENTICAL configuration: unaligned +0.3294%
    (a "win" against a 0.3% band) versus aligned +0.0235% (correctly nothing) — 93% of the apparent
    delta was window placement. If `dispersion_reliable` is false, the legs are too short to carry a
-   noise band: re-run with more iters rather than reporting them.
+   noise band — but do NOT silently lengthen them (see step 4): the L1 band is calibrated at the same
+   `ITERS`, so lengthening fixes one gate by voiding another. Report it and say the run needs a
+   larger `ITERS` for BOTH Setup and the gate.
 
-5. **Report the numbers; do not decide.** The orchestrator applies the gate: delta vs the measured
+6. **Report the numbers; do not decide.** The orchestrator applies the gate: delta vs the measured
    band, L0, L1, and the memory rule. Your job is to make both legs honest.
    - A throughput-neutral, memory-saving result is **banked, not a win** — in `fast` there is no
      config knob to convert it with. Report `peak_reserved_mb` for both legs so it can be banked.

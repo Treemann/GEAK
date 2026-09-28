@@ -47,6 +47,36 @@ ungateable; under the recalibrated band (floor 0.15% for this workload, `2×R_ca
 
 A follow-up run now records this itself: `wfReturn.unexplored_heads` and `wfReturn.stop_reason`.
 
+## Making a follow-up run cheaper
+
+Measured on the 2026-09-24 run (10.6 h, 2 heads), the time went:
+
+| block | cost | share |
+|---|---|---|
+| kernel_lane (the actual optimisation) | 4.9 h | 46% |
+| gate legs | 1.6 h | 15% |
+| profile / re-profile (5×) | 1.2 h | 11% |
+| Setup baseline legs | 0.7 h | 7% |
+| finalize + validate | 0.6 h | 6% |
+
+Two of those are avoidable on a follow-up run, and neither is the 46%:
+
+**`baseline_dirs`** — pass clean legs of the same identity and Setup reuses them instead of
+re-measuring. The Director still verifies each one (`config_digest`, `digest_schema`, occupancy,
+dispersion, not profiled/captured) and re-measures any that fails. Safe only since schema 3: under
+schema 2 the digest covered five fields and two different workloads could share one.
+
+**`skip_heads`** — comma-separated head short-names whose verdict is already known. Applied at both
+queue-construction sites, so a re-profile after an accept cannot re-introduce them. Without it, every
+run re-profiles the bare stack, rebuilds the same queue, and spends the budget re-deriving decided
+answers — which is what happened twice before it existed.
+
+One trap that is *not* a knob: do **not** raise `iters` just for the gate legs. The L1 band is
+calibrated at `iters`, and a per-step envelope is fitted to a particular argv *and* leg length.
+Running 60-step gate legs against a 30-step band cost about an hour of extra control pairs on
+2026-09-24 and produced a `pass=false` that the Auditor had to disprove by hand. If the legs are too
+short, raise `iters` for the whole run.
+
 ## Before you spend hours
 
 ```bash
