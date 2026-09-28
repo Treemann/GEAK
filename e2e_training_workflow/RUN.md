@@ -25,27 +25,36 @@ re-measurement contradicts; quote `validated_delta_pct` when it is true. The ban
 or was demoted to advisory. `unexplored_heads` and `stop_reason` say what the run never got to —
 Stage 2 stopped on the wall clock with 3 of 4 heads untried, and nothing used to record that.
 
-## The 7B run's unexplored heads (Stage 2 stopped on the wall clock)
+## The 7B queue as of 2026-09-24 (four runs in)
 
-Stage 2 gated 1 of 4 queued heads and stopped at `3.38h of a 3.00h lane deadline`. The Architect's
-own numbers, with expected gain computed the way the orchestrator does it
-(`cp_share × (1 − 1/attainable)` — validated on head 1: predicted 3.94%, measured **+4.54%**):
+Expected gain is computed the way the orchestrator does it, `cp_share × (1 − 1/attainable)`, which
+has now been validated twice: predicted 3.94% → measured **+4.66%** (lmhead), and the fc2 head
+predicted from a 36.17%-share GEMM that the Architect correctly ranked *below* smaller heads with
+more headroom.
 
-| # | head | cp_share | attainable | expected gain | status |
-|---|---|---|---|---|---|
-| 1 | `lmhead_ce_unmasked_gather` | 6.41% | 2.6× | 3.94% | **accepted, +4.54%** |
-| 2 | `attn_fmha_fwdbwd_gqa_d128_causal` | **18.2%** | 1.25× | **3.64%** | not attempted |
-| 3 | `swiglu_fwd_bwd_fused` | 3.47% | 1.5× | 1.16% | not attempted |
-| 4 | `rope_fused_fwd_bwd` | 1.89% | 2.5× | 1.13% | not attempted |
+**Decided:**
 
-Two things make this list more actionable than it looks. Head 2 is the largest single item on the
-critical path by a wide margin — but note the 0.5B run rejected an attention candidate on L1
-(step-1 loss 0.4274% against a 0.05% overlay limit), so budget for a rejection there. Heads 3 and 4
-are worth ~1.1% each, which under the **old** band (0.914% at 7B) would have been marginal-to-
-ungateable; under the recalibrated band (floor 0.15% for this workload, `2×R_cal` measured at
-0.259%) they are comfortably gateable. The band fix is what makes the tail of this list worth running.
+| head | result |
+|---|---|
+| `lmhead_ce_unmasked_gather` | **accepted, +4.66% validated** |
+| `mlp_fc2_down` | **accepted, +7.34% validated** — wgrad 13× closer to fp32 than the original |
+| `attn_fmha_fwdbwd_gqa_d128_causal` | **rejected** — backward defect, step-1 grad_norm −88.50% |
+| `mlp_fc1_swiglu` | **rejected** — inf gradient at iteration #2, reproduced twice |
 
-A follow-up run now records this itself: `wfReturn.unexplored_heads` and `wfReturn.stop_reason`.
+**Open**, from the re-profile after `mlp_fc2_down` was accepted:
+
+| head | cp_share | expected gain |
+|---|---|---|
+| `mlp_fc1_swiglu_rowslice` | 17.45% | **5.82%** |
+| `attn_outproj_rowslice` | 16.34% | 3.57% |
+| `lmhead_ce_gather_restack` | 4.4% | 2.93% |
+| `attn_fmha_bwd_retry` | 19.35% | 2.52% |
+| `qkv_lnlinear_rowslice` | 3.97% | 0.87% |
+
+Two of those are retries informed by a rejection: `mlp_fc1_swiglu_rowslice` follows the inf-gradient
+candidate, and `attn_fmha_bwd_retry` carries the backward diagnostic forward. Note also that the two
+accepted heads were measured against the BARE stack in separate runs, so their deltas do **not**
+simply add — a run that carries both is what would settle the combined figure.
 
 ## Making a follow-up run cheaper
 
