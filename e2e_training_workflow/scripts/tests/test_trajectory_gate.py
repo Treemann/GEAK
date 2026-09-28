@@ -167,6 +167,24 @@ def main():
            "and it may NOT cast a blocking envelope vote on them, even though it earned BLOCKING "
            "on its own config")
 
+        # ------------------------------------------- 4c. sign balance is held to a MEASURED range
+        # A detector may only reject a candidate for doing something clean pairs do not do. Measured
+        # 2026-09-28: a true-zero-delta pair scored sign balance 0.0 on loss while another scored
+        # 0.75, and the old `sb in (0.0, 1.0)` rule would have rejected a leg for being identical to
+        # itself. It DID reject a real candidate that L0 called strictly more accurate than the
+        # incumbent.
+        ok("sign_balance_null_range" in b5,
+           "the band records what sign balance its own clean pairs produced")
+        rng = b5["sign_balance_null_range"].get("loss") or {}
+        ok(rng.get("pairs", 0) >= 2,
+           f"...over {rng.get('pairs')} pairs, so it is a range and not a single sample")
+        # a candidate sitting inside the clean range must not be blocked on this detector
+        v_in = tg.verdict(legs[0], legs[1], b5)
+        lsb = v_in["checks"].get("loss_sign_balance_early") or {}
+        if "blocking" in lsb:
+            ok(lsb["blocking"] is False,
+               "a clean pair's own sign balance does not fire the detector calibrated from it")
+
         # ---------------------------------------------------------------- 5. legacy bands
         legacy = dict(b5)
         legacy.pop("envelope_discriminating", None)

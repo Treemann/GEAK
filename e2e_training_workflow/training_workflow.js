@@ -595,7 +595,34 @@ if (!setup || !(setup.baseline_legs || []).length) {
     'is nothing to continue with — a run that proceeds here reports deltas against nothing.');
 }
 const baselineLegs = setup.baseline_legs;
-const baseline = baselineLegs[0];
+// PICK THE QUIETEST LEG, do not take [0]. The baseline becomes `refLeg`, so its dispersion enters
+// the 4*se_pair term of EVERY later band. Measured on 2026-09-28: a reused leg with
+// worst_iqr_spread_pct 1.842% -- against 0.05-0.11% for its two siblings -- priced the gate band at
+// 2.467%, and a candidate measuring +1.147% was recorded as `no_win`. The Director had already
+// flagged that leg ("NOISY LEG ... do NOT use legA as the gate reference leg") and the orchestrator
+// took it anyway, because it took the first one. A warning nothing consumes is not a warning.
+const byQuiet = baselineLegs
+  .filter((l) => legUsable(l).ok)
+  .sort((a, b) => (Number(a.worst_iqr_spread_pct) || Infinity) - (Number(b.worst_iqr_spread_pct) || Infinity)
+                  || (Number(b.min_steady_steps) || 0) - (Number(a.min_steady_steps) || 0));
+const baseline = byQuiet[0] || baselineLegs[0];
+if (baselineLegs.length > 1) {
+  log0('baseline legs by dispersion: ' + baselineLegs
+    .map((l) => `${(l.dir || l.leg || '?').split('/').pop()}=${l.worst_iqr_spread_pct}%`).join(' ') +
+    ` -> reference is ${(baseline.dir || baseline.leg || '?').split('/').pop()}`);
+  // A leg far noisier than its siblings is usually a symptom (host stall, contention), not a property
+  // of the workload. Say so: it stays usable, but the operator should know the band it would imply.
+  const iqrs = baselineLegs.map((l) => Number(l.worst_iqr_spread_pct)).filter((x) => isFinite(x) && x > 0);
+  const med = iqrs.slice().sort((a, b) => a - b)[Math.floor(iqrs.length / 2)];
+  for (const l of baselineLegs) {
+    const q = Number(l.worst_iqr_spread_pct);
+    if (isFinite(q) && med > 0 && q > 5 * med) {
+      log0(`WARNING: baseline leg ${(l.dir || l.leg || '?').split('/').pop()} has IQR ${q}%, ` +
+           `${(q / med).toFixed(0)}x the median of its own set (${med}%) — it is not the reference, ` +
+           `but treat any band that uses it as inflated`);
+    }
+  }
+}
 curConfig = { digest: setup.config_digest || (baseline && baseline.config_digest) || null,
               descriptor: WORKLOAD };
 // The measured floor REPLACES the default when it is wider; a box noisier than the default must not

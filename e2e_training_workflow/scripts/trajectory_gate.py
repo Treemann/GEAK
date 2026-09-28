@@ -350,6 +350,24 @@ def calibrate(dirs, safety=3.0, holdout=None):
     }
     # The band must survive its own control before it may block anything. Computed here, stored here:
     # verdict() reads the flag rather than re-deriving it, so the two can never disagree.
+    # What sign balance do CLEAN pairs produce on this workload? Without this the gate treats 0.0 as
+    # proof of a one-sided bias -- and on 2026-09-28 a true-zero-delta pair scored exactly 0.0 while
+    # another scored 0.75. With n = EARLY_STEPS (8), a clean pair reaching 0.0 by chance is not rare:
+    # trajectories separate early and stay separated, so the 8 samples are serially correlated and
+    # nothing like 8 independent coin flips.
+    sb_null = {}
+    for key in ("loss", "grad_norm"):
+        vals = []
+        for a in range(len(series)):
+            for b in range(a + 1, len(series)):
+                d = [series[b][key][i] - series[a][key][i] for i in range(min(n, EARLY_STEPS))
+                     if series[a][key][i] is not None and series[b][key][i] is not None]
+                if len(d) >= 5:
+                    vals.append(sum(1 for v in d if v > 0) / len(d))
+        if vals:
+            sb_null[key] = {"min": round(min(vals), 4), "max": round(max(vals), 4),
+                            "pairs": len(vals), "values": [round(v, 4) for v in vals]}
+    band["sign_balance_null_range"] = sb_null
     band["null_control"] = _null_control(series, dirs, band, n)
     # An OUT-OF-SAMPLE control is now REQUIRED to license a blocking envelope. The in-sample one is
     # still computed and reported -- it is cheap and it catches gross defects -- but it was
@@ -505,9 +523,33 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay"):
         if len(d) >= 5:
             sb = sum(1 for v in d if v > 0) / len(d)
             res["checks"][f"{key}_sign_balance_early"] = {"value": round(sb, 4), "n": len(d)}
-            if sb in (0.0, 1.0):
+            # A detector may only reject a candidate for doing something CLEAN PAIRS DO NOT DO.
+            # `sb in (0.0, 1.0)` was an assumption about what noise looks like, and the assumption is
+            # false on this workload: measured 2026-09-28, a pair with a true delta of exactly zero
+            # scored 0.0 on loss while another scored 0.75. Firing on 0.0 there would have rejected a
+            # leg for being identical to itself. So the bar is the observed clean range, when the band
+            # carries one -- the same discipline the per-step envelope was held to, and failed.
+            null_rng = (band.get("sign_balance_null_range") or {}).get(key)
+            if null_rng and null_rng.get("pairs", 0) >= 2:
+                inside = null_rng["min"] <= sb <= null_rng["max"]
+                res["checks"][f"{key}_sign_balance_early"]["null_range"] = [null_rng["min"], null_rng["max"]]
+                res["checks"][f"{key}_sign_balance_early"]["blocking"] = not inside
+                if not inside:
+                    failures.append(
+                        f"{key} early sign balance {sb:.3f} lies OUTSIDE the {null_rng['min']}-"
+                        f"{null_rng['max']} range that {null_rng['pairs']} clean baseline pairs of "
+                        f"this workload produced: a one-sided move noise here does not make")
+                elif sb in (0.0, 1.0):
+                    advisories.append(
+                        f"{key} moved one way on all {len(d)} early steps (sign balance {sb:.3f}) -- "
+                        f"reported, NOT blocking, because clean pairs of this workload reached "
+                        f"{null_rng['min']}-{null_rng['max']} themselves")
+            elif sb in (0.0, 1.0):
+                # No calibrated range: fall back to the old rule, but say that it is uncalibrated.
                 failures.append(f"{key} moved the SAME direction on all {len(d)} early steps: a "
-                                f"systematic bias, not noise (every magnitude check can still pass)")
+                                f"systematic bias, not noise (every magnitude check can still pass). "
+                                f"NOTE: no clean-pair sign-balance range in this band, so this "
+                                f"threshold is assumed rather than measured")
 
     res["implementation_delta"] = impl_delta
     res["pass"] = not failures

@@ -409,6 +409,41 @@ reading at all?"* rather than *"may it vote?"*.
 | step-1 forward probe | **0.0%** (bit-reproducible) | the attention backward defect (grad_norm −88.50%); the 0.5B attention swap (step-1 loss 0.4274%) |
 | early-window sign balance | ~0.25–0.75 spread | carried the 0.5B attention rejection when the envelope was discounted |
 
+### The sign test was falsified the same way (2026-09-28) — now held to a MEASURED range
+
+Retiring the envelope left L1 with two voting detectors. Within one run, the second one failed the
+same test the first one did.
+
+`attn_fmha_bwd_retry` was rejected on **early-window loss sign balance = 0.000** — explicitly "the
+only voting detector that fired"; the step-1 probe passed at 0.19988% against a 2.0% limit. In the
+*same* run, on a different head, the auditor measured what clean pairs score:
+
+| pair | true delta | loss sign balance |
+|---|---|---|
+| `tdop0928_cand` vs `tdop0928_cand2` | **exactly zero** | **0.000** ← would be rejected |
+| `tdop0928_ref` vs `tdop0928_ref2` | exactly zero | 0.750 |
+
+So `sb ∈ {0.0, 1.0} ⇒ systematic bias` was an **assumption about what noise looks like**, and it is
+false here. With `EARLY_STEPS = 8` the samples are serially correlated — trajectories separate early
+and stay separated — so they are nothing like 8 independent coin flips, and a clean pair reaching
+0.0 is not rare.
+
+**Fix, and it is the same discipline the envelope was held to:** `calibrate()` now records the sign
+balance its **own clean pairs** produce (`sign_balance_null_range`), and `verdict()` fires only when
+the candidate falls **outside** that observed range. Inside it, the one-sided move is reported as an
+advisory. With no calibrated range the old rule still applies, and says of itself that it is assumed
+rather than measured.
+
+**An unresolved disagreement between layers, recorded rather than smoothed over.** For this
+candidate L0 says it is *strictly more accurate than the incumbent on all four outputs*, and that it
+satisfies an analytic first-row `dq` invariant **the incumbent fails by 1355.79×**. The auditor was
+explicit that the detector "cannot separate *a real correctness fix that makes the model descend
+faster* from *a systematic bias that points downhill*, because a one-directional delta toward lower
+loss is the signature of both". That is a genuine limit of a sign test, not a tuning problem: the
+statistic is blind to whether "downhill" is deserved. **A candidate that fixes a bug currently looks
+to L1 exactly like one that introduces one.** Until that is resolved, an L1 sign-test rejection on a
+candidate L0 rates as *more* accurate should be read as investigate-and-report.
+
 **Still open:** the 0.2917% attention-backend pair has still not been separated into "pure numerics"
 versus "the flash path does not preserve packing isolation" (the separating test is
 packed-vs-unpacked per backend). That is a question about that pair, not about the envelope.
