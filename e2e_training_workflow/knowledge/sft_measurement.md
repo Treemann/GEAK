@@ -127,6 +127,37 @@ L0 and L1 judged each kernel when it was accepted — but it **does** re-prove e
 because a stack that silently drops one reports a smaller number and looks like an honest
 disappointment.
 
+**MEASURED 2026-09-29: the combined stack is +12.36%, and the savings COMPOUND.**
+
+| pairing | aligned | unaligned | window artifact |
+|---|---|---|---|
+| ref1 vs cand1 | **+12.3746%** | +12.9547% | 0.5801% |
+| ref2 vs cand2 | **+12.2809%** | +7.3874% | **4.8935%** |
+| ref1 vs cand2 | **+12.3664%** | +9.6050% | 2.7614% |
+| ref2 vs cand1 | **+12.3985%** | +10.6693% | 1.7292% |
+
+Four pairings, spread **0.12 points**. Null control `ref1 vs ref2` = **+0.0706%**. Window-immune
+cross-check on `step_median_ms`: −10.972% ⇒ **+12.324%**, agreeing with the aligned figure to 0.05
+points. Engagement proved per overlay on all 8 ranks (`fwd == bwd`, zero fallbacks).
+
+Against the two hypotheses:
+
+```
+adding      4.66 + 7.34                 = +12.00%   off by 0.36 points
+compounding 1.0466 x 1.0734 - 1         = +12.34%   off by 0.013 points
+measured                                  +12.36%
+```
+
+**They compound, which means they do not overlap on the critical path** — each shortens a distinct
+part of the step, consistent with them being different ops (the LM head and the FC2 down-projection).
+That is an empirical fact about this step, not a general rule: two kernels contending for the same
+stretch of the critical path would sub-add, and nothing here predicts which case a future pair falls
+into. Measure it.
+
+Note also what the unaligned column does: on identical data it ranges **+7.39% to +12.95%**, a
+**5.5-point** spread, with the artifact reaching 4.89%. The same four legs would support almost any
+story if the windows were not aligned.
+
 ## 5. A leg is not a measurement unless it is clean
 `status == "ok"`, no hang, and `occupancy_verdict == "clean"`. This node carries ~20 unrelated
 containers; a neighbour taking a GPU mid-leg drags one side down and the delta becomes fiction.
