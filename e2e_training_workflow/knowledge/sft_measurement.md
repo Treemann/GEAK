@@ -100,6 +100,33 @@ constant was mis-specified rather than merely cautious. Note the same pair's raw
 **3.19%** window artifact, so it is also a live demonstration of why an unaligned delta may never
 accept.
 
+### 4d. Per-candidate deltas do NOT add, and the combined number has to be measured
+
+Each candidate is gated against **the stack carried at that moment**, and a fresh run carries the
+bare stack. So two kernels accepted in two runs were both measured against bare:
+
+| kernel | measured | against |
+|---|---|---|
+| `lmhead_ce_unmasked_gather` | +4.66% | bare stack |
+| `mlp_fc2_down` | +7.34% | bare stack |
+
+**Neither +12.0% (adding) nor +12.4% (compounding) is a measurement.** Both kernels shorten the same
+step, and whether they overlap depends on where their time sits on the critical path — the lmhead
+head was 6.41% of it, fc2's ancestor 36.17% with little headroom. The answer is an empirical
+question about one step, not an arithmetic one.
+
+Until `GEAK_OVERLAY` took a list this was not merely unmeasured but **unmeasurable**: the two
+overlays rebind different symbols (`GPTModel._postprocess`, `transformer_engine…linear:_Linear`) and
+only one manifest could be installed. A workflow that can accept N candidates and deliver none of
+them as a stack has a hole where its deliverable should be.
+
+`scripts/measure_stack.sh` closes it: it verifies each bundle's bytes against its own
+`SHA256SUMS.overlay`, installs every overlay with its own engagement file, and takes **interleaved**
+ref/cand pairs so node drift cannot align with condition. It deliberately does **not** re-gate —
+L0 and L1 judged each kernel when it was accepted — but it **does** re-prove engagement per overlay,
+because a stack that silently drops one reports a smaller number and looks like an honest
+disappointment.
+
 ## 5. A leg is not a measurement unless it is clean
 `status == "ok"`, no hang, and `occupancy_verdict == "clean"`. This node carries ~20 unrelated
 containers; a neighbour taking a GPU mid-leg drags one side down and the delta becomes fiction.
