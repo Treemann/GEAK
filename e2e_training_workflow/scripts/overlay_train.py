@@ -34,11 +34,25 @@ try:
 except ImportError:  # pragma: no cover - reader-side use
     torch = None
 
-_MANIFEST = os.environ.get("GEAK_OVERLAY", "")
-ENABLED = bool(_MANIFEST)
+# GEAK_OVERLAY takes ONE manifest or a COMMA-SEPARATED LIST, installed left to right.
+#
+# Why a list. Accepted kernels rebind different symbols -- the LM-head candidate targets
+# GPTModel._postprocess, the FC2 one targets transformer_engine...linear:_Linear -- and with a single
+# manifest there was no way to run two accepted kernels TOGETHER. The workflow could accept N
+# candidates and then deliver none of them as a stack, which makes the combined figure (the only one
+# a user actually cares about) unmeasurable. Stacking on the SAME symbol still has to be handled
+# inside one overlay's impl.py by delegating the other call site; this list is for distinct symbols.
+#
+# Each manifest keeps its OWN counters and its OWN engagement_out. That is not tidiness: a shared
+# counter cannot distinguish "both overlays engaged" from "one engaged twice", which is the same
+# distinction the forward/backward split exists to make.
+_MANIFESTS = [m.strip() for m in os.environ.get("GEAK_OVERLAY", "").split(",") if m.strip()]
+_MANIFEST = _MANIFESTS[0] if _MANIFESTS else ""      # kept for back-compat with single-overlay reads
+ENABLED = bool(_MANIFESTS)
 
-COUNTS = {"forward": 0, "backward": 0}
-_cfg = {}
+COUNTS = {"forward": 0, "backward": 0}   # aggregate across overlays; per-overlay counts live in _SLOTS
+_SLOTS = []                              # [{"cfg": {...}, "counts": {...}}]
+_cfg = {}                                # first slot's cfg, for back-compat
 
 
 def _resolve(spec):
@@ -59,19 +73,25 @@ def _load_replacement(spec):
     return getattr(mod, attr)
 
 
-def _flush():
-    out = _cfg.get("engagement_out")
+def _flush_slot(slot):
+    cfg, counts = slot["cfg"], slot["counts"]
+    out = cfg.get("engagement_out")
     if not out:
         return
     try:
         rank = int(os.environ.get("RANK", "0"))
         tmp = f"{out}.rank{rank}.partial"
         with open(tmp, "w") as f:
-            json.dump({"rank": rank, "target": _cfg.get("target"),
-                       "replacement": _cfg.get("replacement"), **COUNTS}, f)
+            json.dump({"rank": rank, "target": cfg.get("target"),
+                       "replacement": cfg.get("replacement"), **counts}, f)
         os.replace(tmp, f"{out}.rank{rank}")
     except Exception as e:
         print(f"[geak-overlay] could not write engagement proof: {e!r}", flush=True)
+
+
+def _flush():
+    for slot in _SLOTS:
+        _flush_slot(slot)
 
 
 if torch is not None:
@@ -82,33 +102,38 @@ if torch is not None:
         matters when an overlay binds one half and leaves the other on the original path."""
 
         @staticmethod
-        def forward(ctx, x):
+        def forward(ctx, x, slot):
+            ctx.slot = slot
+            slot["counts"]["forward"] += 1
             COUNTS["forward"] += 1
             return x
 
         @staticmethod
         def backward(ctx, g):
+            c = ctx.slot["counts"]
+            c["backward"] += 1
             COUNTS["backward"] += 1
             # Flush early (so a crashed run still carries proof) and then periodically, so the
             # recorded counts describe the whole run rather than a snapshot at an arbitrary point.
-            if COUNTS["backward"] < 8 or COUNTS["backward"] % 32 == 0:
-                _flush()
-            return g
+            if c["backward"] < 8 or c["backward"] % 32 == 0:
+                _flush_slot(ctx.slot)
+            return g, None
 
 
-def install():
-    if not ENABLED:
-        return False
+def _install_one(manifest_path):
+    """Install ONE manifest. Returns True on success; prints and returns False on failure."""
+    cfg = {}
     try:
-        with open(_MANIFEST) as f:
-            _cfg.update(json.load(f))
-        owner, name, orig = _resolve(_cfg["target"])
+        with open(manifest_path) as f:
+            cfg.update(json.load(f))
+        slot = {"cfg": cfg, "counts": {"forward": 0, "backward": 0}}
+        owner, name, orig = _resolve(cfg["target"])
         # Test the RESOLVED TARGET, not its owner. Getting this backwards replaces the class itself
         # with a plain function, and the next `_LayerNormLinear.apply(...)` inside the stack dies with
         # "'function' object has no attribute 'apply'" -- which is what happened the first time.
         if isinstance(orig, type) and issubclass(orig, torch.autograd.Function):
             owner, name, orig = orig, "apply", orig.apply
-        impl = _load_replacement(_cfg["replacement"]) if _cfg.get("replacement") else None
+        impl = _load_replacement(cfg["replacement"]) if cfg.get("replacement") else None
         call = (impl.apply if isinstance(impl, type) and issubclass(impl, torch.autograd.Function)
                 else impl) if impl is not None else orig
 
@@ -116,28 +141,61 @@ def install():
             out = call(*a, **kw)
             tgt = out[0] if isinstance(out, (list, tuple)) and torch.is_tensor(out[0]) else out
             if torch.is_tensor(tgt) and tgt.requires_grad:
-                tagged = _Counter.apply(tgt)
+                tagged = _Counter.apply(tgt, slot)
                 if isinstance(out, tuple):
                     return (tagged,) + tuple(out[1:])
                 if isinstance(out, list):
                     return [tagged] + list(out[1:])
                 return tagged
-            COUNTS["forward"] += 1      # inference-mode call: no backward will ever come
+            slot["counts"]["forward"] += 1   # inference-mode call: no backward will ever come
+            COUNTS["forward"] += 1
             return out
 
         if name == "apply" and isinstance(owner, type):
             setattr(owner, name, staticmethod(wrapped))
         else:
             setattr(owner, name, wrapped)
-        mode = "identity rebind (counters only)" if impl is None else f"-> {_cfg['replacement']}"
-        print(f"[geak-overlay] {_cfg['target']} {mode}", flush=True)
+        _SLOTS.append(slot)
+        if len(_SLOTS) == 1:
+            _cfg.update(cfg)             # back-compat: _cfg mirrors the first overlay
+        mode = "identity rebind (counters only)" if impl is None else f"-> {cfg['replacement']}"
+        print(f"[geak-overlay] {cfg['target']} {mode}", flush=True)
         return True
     except Exception as e:
         # An overlay that fails to install must SAY SO. Falling through silently would leave the run
         # measuring the original implementation while the report claims a candidate was tested.
-        print(f"[geak-overlay] INSTALL FAILED ({e!r}) — the run is measuring the ORIGINAL "
-              f"implementation; do not report it as a candidate leg.", flush=True)
+        print(f"[geak-overlay] INSTALL FAILED for {manifest_path!r} ({e!r}) — the run is measuring "
+              f"the ORIGINAL implementation for this target; do not report it as a candidate leg.",
+              flush=True)
         return False
+
+
+def install():
+    """Install every manifest in GEAK_OVERLAY, left to right.
+
+    ALL-OR-NOTHING by design. A partially installed stack is the worst possible state: the run looks
+    like a candidate leg, carries engagement proof for the overlays that did load, and silently
+    measures the original implementation for the one that did not. The combined number would then be
+    attributed to a stack that never existed.
+    """
+    if not ENABLED:
+        return False
+    if torch is None:
+        # torch is soft-imported so verdict() can be read from outside the container. Installing
+        # without it would rebind the target to a wrapper whose first line calls torch.is_tensor,
+        # i.e. it would replace a working op with one that raises on the first call.
+        print("[geak-overlay] REFUSING to install: torch is not importable here. The rebind would "
+              "replace a working op with a wrapper that raises on its first call.", flush=True)
+        return False
+    ok = [_install_one(m) for m in _MANIFESTS]
+    if all(ok):
+        if len(_MANIFESTS) > 1:
+            print(f"[geak-overlay] STACK of {len(_MANIFESTS)} overlays installed: "
+                  f"{[s['cfg'].get('target') for s in _SLOTS]}", flush=True)
+        return True
+    print(f"[geak-overlay] STACK INCOMPLETE: {sum(ok)}/{len(_MANIFESTS)} overlays installed. "
+          f"This leg is NOT a measurement of the intended stack — discard it.", flush=True)
+    return False
 
 
 def verdict(engagement_dir_or_prefix):
