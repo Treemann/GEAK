@@ -31,7 +31,7 @@ done
 
 IFS=',' read -ra BLIST <<< "$BUNDLES"
 STAMP="$(date +%m%d_%H%M%S)"
-MANIFESTS=""
+SPECS=()
 
 # ---- install every overlay, verifying the bytes that were gated --------------------------------
 for B in "${BLIST[@]}"; do
@@ -48,17 +48,15 @@ for B in "${BLIST[@]}"; do
   # Re-point the replacement at THIS run's copy: the bundle's path names its own install location.
   REPL_FILE="${REPL%%:*}"; REPL_ATTR="${REPL##*:}"
   REPL_NEW="/work/overlays/stack_${STAMP}_${NAME}/$(basename "$REPL_FILE"):${REPL_ATTR}"
-  MFILE="$OVL_HOST/manifest.json"
-  cat > "$MFILE" <<EOF
-{"target": "$TARGET",
- "replacement": "$REPL_NEW",
- "engagement_out": "/work/runs/$(basename "$OUT_PREFIX")_cand/engagement_${NAME}.json"}
-EOF
   echo ">>> $NAME : $TARGET -> $REPL_NEW"
-  MCTR="/work/overlays/stack_${STAMP}_${NAME}/manifest.json"
-  MANIFESTS="${MANIFESTS:+$MANIFESTS,}$MCTR"
+  # Record what this overlay needs; the MANIFEST ITSELF is written per leg below, because
+  # engagement_out must name the leg that is about to run. A manifest generated once, outside the
+  # loop, writes every leg's proof into one directory -- or, as happened on the first attempt here,
+  # into a directory that does not exist, and 3528 silent "could not write engagement proof" lines
+  # later the stack has no proof at all. The bundle's own launch.sh already warns about exactly this.
+  SPECS+=("$NAME|$TARGET|$REPL_NEW|$OVL_HOST")
 done
-echo ">>> GEAK_OVERLAY=$MANIFESTS"
+
 
 # ---- paired legs, interleaved ------------------------------------------------------------------
 # ref, cand, ref, cand ... so node drift cannot align with condition. The pairing is what the
@@ -69,7 +67,25 @@ for i in $(seq 1 "$REPS"); do
     [ -e "$OUT" ] && { echo "!!! $OUT exists -- need a fresh dir" >&2; exit 3; }
     unset GEAK_OVERLAY
     EXTRA=""
-    [ "$MODE" = cand ] && EXTRA="GEAK_OVERLAY=$MANIFESTS"
+    if [ "$MODE" = cand ]; then
+      mkdir -p "$OUT"
+      MANIFESTS=""
+      for SPEC in "${SPECS[@]}"; do
+        IFS='|' read -r NAME TARGET REPL_NEW OVL_HOST <<< "$SPEC"
+        MFILE="$OVL_HOST/manifest_${MODE}${i}.json"
+        cat > "$MFILE" <<EOF
+{"target": "$TARGET",
+ "replacement": "$REPL_NEW",
+ "engagement_out": "/work/runs/$(basename "$OUT")/engagement_${NAME}.json"}
+EOF
+      done
+      # Container paths, in bundle order. Built from SPECS rather than accumulated above so there is
+      # exactly one place that decides what GEAK_OVERLAY says.
+      MANIFESTS="$(for SPEC in "${SPECS[@]}"; do IFS='|' read -r N T R O <<< "$SPEC"; \
+        printf '%s,' "/work/overlays/$(basename "$O")/manifest_${MODE}${i}.json"; done | sed 's/,$//')"
+      echo ">>> GEAK_OVERLAY=$MANIFESTS"
+      EXTRA="GEAK_OVERLAY=$MANIFESTS"
+    fi
     echo ">>> leg $MODE$i -> $OUT"
     "$GEAK_ROOT/scripts/bench_train.sh" \
       --workload "$GEAK_ROOT/workloads/qwen2_5_math_7b.env" \

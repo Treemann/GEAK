@@ -306,9 +306,14 @@ def _config_snapshot():
     # Without it two legs differing only by an overlay look byte-identical in the record, and the
     # report cannot say what was actually swapped.
     if os.environ.get("GEAK_OVERLAY"):
-        out["GEAK_OVERLAY"] = os.path.basename(os.environ["GEAK_OVERLAY"])
+        # GEAK_OVERLAY may name ONE manifest or a comma-separated STACK. Hash each and join, so a
+        # stacked run has an identity too: before this, a stack made every manifest path unreadable
+        # as a single filename and impl_digest silently recorded UNREADABLE_MANIFEST -- i.e. the run
+        # that most needs provenance was the one that had none.
+        manifests = [m.strip() for m in os.environ["GEAK_OVERLAY"].split(",") if m.strip()]
+        out["GEAK_OVERLAY"] = ",".join(os.path.basename(m) for m in manifests)
         # The basename is a LABEL. This is the identity: it moves iff the bytes that will run move.
-        out["GEAK_OVERLAY_SHA"] = _overlay_content_hash(os.environ["GEAK_OVERLAY"])
+        out["GEAK_OVERLAY_SHA"] = "+".join(_overlay_content_hash(m) for m in manifests)
     return out
 
 
