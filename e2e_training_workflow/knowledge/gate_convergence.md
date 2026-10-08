@@ -579,33 +579,76 @@ scaling does it deliberately.
 **Why v1 could not have worked, arithmetically.** With sigma = 0.01495 (the measured between-leg sd
 of terminal loss) the minimum detectable effect is `t_crit * sigma * sqrt(1/n + 1/m)`:
 
-| cand n | ref m | df | t_crit | MDE | detects the 0.03742 bias? |
+| cand n | ref m | df | t_crit | MDE | vs. the bias's apparent single-leg 0.0374 |
 |---|---|---|---|---|---|
-| **1** | **4** | 3 | 3.182 | **0.0532** | **no — this was v1** |
+| **1** | **3** | 2 | 4.303 | **0.0742** | **no — this was v1, and see below** |
 | 2 | 4 | 4 | 2.776 | 0.0359 | barely |
-| **3** | **3** | **4** | **2.776** | **0.0339** | yes — **the v3 design** |
-| 3 | 4 | 5 | 2.571 | 0.0294 | yes |
+| 3 | 3 | 4 | 2.776 | 0.0339 | yes — but its null control is vacuous, see below |
+| **3** | **4** | **5** | **2.571** | **0.0294** | yes — **the v3 design** |
 | 5 | 5 | 8 | 2.306 | 0.0218 | yes |
 
-v1 was not mis-thresholded. It was **underpowered by 42%** with a single candidate leg, and no
-threshold choice could have rescued it. This table is the thing to consult before spending GPU
-hours on any future soak.
+v1 was not mis-thresholded. It was underpowered with a single candidate leg, and no threshold
+choice could have rescued it. This table is the thing to consult before spending GPU hours on any
+future soak.
 
-**The v3 design, and its cost.** Reference group m=3 is FREE: `l2soak_0923_ref{1,2,3}` are already
-measured, overlay off, 300 steps, `snapshot_keys: v3`, all at `config_digest d1548a7a764bdada` —
-checked, not assumed, because reusing out-of-scope legs is an error this layer has already made
-once. Only the n=3 positive legs are new, so v3 costs ~3 GPU-hours rather than ~7.
+**And the effect it was chasing is itself probably zero (measured 2026-10-08).** Re-running the
+analyzer over the legs on disk:
+
+| group | legs | terminal loss vs reference mean |
+|---|---|---|
+| v1 positive (`l2soak_0923_pos2`) | n=1 | **−0.03742** (2.50 sigma) — the number quoted in DECISIONS 3.6b |
+| v2 positive (`l2soak_v2_pos{2,3,4}`) | n=3 | **+0.01570** (1.05 sigma), Welch t = 0.659 vs crit 3.180 |
+
+**The sign flips between generations**, and the v1 figure is a single draw from a population with
+sigma = 0.01495 — exactly what a 2.5-sigma noise draw looks like at n=1. So the honest statement is
+that the x1.004 bias has **no demonstrated location effect on terminal loss at all**, and 0.03742
+was never an effect size; it was one leg. Note the direction too: the "known-bad" leg trained to a
+*lower* loss than the references.
+
+This strengthens DECISIONS 3.6c rather than weakening it. The soak did not merely lack the power to
+see this defect — there was most likely nothing in terminal-loss location to see, because the
+defect is op-local and L0 is where it is visible (`dgrad scale_bias +3.80e-03`, 11.5 s). It also
+means **the v3 control's effect must itself be measured, not assumed**: if the stale control shows
+no location effect either, that is a finding about this defect class, not a licence to loosen a
+threshold.
+
+The analyzer now refuses to pretend otherwise: with one positive leg it prints the delta, says
+`NO TEST POSSIBLE -- no within-group variance`, and tells the reader to quote it as a single draw.
+It also refuses to run at all when any leg is short or empty — pointed at a truncated leg it used
+to report a terminal loss of 0.00000 for every leg and an MDE of 0.00000 before dying in a later
+division, every one of those numbers looking like a measurement.
+
+**The v3 design, and its cost.** `l2soak_0923_ref{1,2,3}` are reusable: already measured, overlay
+off, 300 steps, `snapshot_keys: v3`, all at `config_digest d1548a7a764bdada` — checked, not assumed,
+because reusing out-of-scope legs is an error this layer has already made once.
+
+**AMENDED the same day, before any v3 leg ran.** The design was first written as n=3 vs m=3, using
+only the free reference legs. That design has a **vacuous null control** and would have shipped one:
+with m=3 the held-out split is 1-vs-2, df=1, t_crit=12.71, and nothing the data could do would make
+it fire. That is the same defect as the withdrawn `sign_balance` criterion, whose K=3 limit of
+0.6146 could not be exceeded by a statistic bounded at 0.5. A control that cannot fire is not a
+control, and it is worse than none because it reads as one.
+
+So v3 is **n=3 positive vs m=4 reference**: the three free legs plus ONE new reference leg, which
+buys 2-vs-2 holdout splits (df=2, t_crit=4.303 — weak, but able to fire) and tightens the MDE to
+0.0294. Cost is 4 new legs, ~4 GPU-hours instead of ~3. The new reference leg must be verified at
+`config_digest d1548a7a764bdada` with the overlay off before it joins the group; a 0923 group and a
+1008 leg are only the same reference if the identity says so.
+
+Amending a design before the data exists is the process working. Amending a THRESHOLD after seeing
+the data is the thing that is forbidden, and nothing below has moved.
 
 **Pre-registered criteria.** Fixed now, before any v3 leg exists:
 
-1. **Location.** Pooled t on terminal loss, n=3 vs m=3, df=4. Reject at |t| > 2.776, i.e.
-   |delta| >= 0.0339. This is the primary criterion.
+1. **Location.** Welch t on terminal loss, n=3 vs m=4. Reject at |t| > t_crit(df, 0.05);
+   for the pooled df=5 case that is 2.571, i.e. |delta| >= 0.0294. This is the primary criterion.
 2. **Dispersion.** F = s2_pos / s2_ref on terminal loss, df (2,2), reject at F > 19.0.
    **Declared weaker on purpose:** this criterion was motivated by watching the v2 bias control,
    which shifted dispersion (sd ratio 2.75, variance ratio 7.6) while the means coincided. It is
    therefore NOT independent evidence if it is the only thing that fires — say so in the result.
-3. **Null control.** Hold out `ref3`; criteria 1-2 applied to it against `ref{1,2}` must NOT reject.
-   An in-sample null control was falsified on 2026-09-24 and a holdout has been mandatory since.
+3. **Null control.** All 2-vs-2 holdout splits of the four reference legs; criteria 1-2 must reject
+   none of them. An in-sample null control was falsified on 2026-09-24 and a holdout has been
+   mandatory since. This is the criterion the m=3 design could not have delivered.
 
 **Verdict rule, also fixed now.** The soak is licensed as a gate only if the stale control at some
 alpha is REJECTED and the held-out clean leg is NOT. A pass on the candidate alone licenses nothing;
