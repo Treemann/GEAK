@@ -731,6 +731,23 @@ never came close to reaching. If the soak cannot separate alpha = 0.25 either, t
 retired rather than repaired. That outcome is as useful as the other and the thresholds stay fixed
 either way.
 
+**AMENDED AGAIN 2026-10-08, still before any v3 positive leg existed.** The design compared stale
+legs (overlay **ON** plus the patch) against reference legs (overlay **OFF**), so the overlay itself
+sat inside the comparison. The overlay was separately shown not to shift terminal loss detectably
+(v2 candidate vs reference, t = −1.99 against crit 2.78), so this was probably harmless — but
+"probably harmless" is not a reason to leave a known confound in a 4-hour experiment when removing
+it is free.
+
+Four clean **overlay-ON** 300-step legs are already on disk at the same overlay sha `308fc0247b`:
+`l2soak_0923_cand1` and `l2soak_v2_cand{2,3,4}`. They are the correct reference group — identical to
+the stale legs in every respect except the patch — and m=4 still gives the 2-vs-2 holdout null
+control. So no new reference leg is needed at all, and the hour it would have cost buys a **fourth
+positive leg** instead: n=4 vs m=4, df=6, t_crit 2.447, **MDE 0.0259**.
+
+Final v3 design: **4 stale legs at alpha=0.25 vs 4 clean overlay-ON legs, MDE 0.0259, ~4 GPU-h.**
+The three overlay-OFF legs stay available as a secondary, cross-checking report. Criteria below are
+unchanged; only the groups and n moved, and they moved before any v3 leg finished.
+
 **Cheap checks that run BEFORE the 3 hours**, because a control that fails to install reads as a
 pass and that has happened here before (`measure_stack.sh` wrote 3528 silent engagement failures):
 
@@ -793,3 +810,30 @@ reduction order, or precision/scaling. Not in the default per-candidate path.
 L0 and L1 can **only reject**. Acceptance requires a throughput delta above the measured band. A
 throughput-neutral, memory-saving change is **banked, not accepted** — memory is a currency that only
 ConfigSweep (deep mode) can spend.
+
+## A token-aligned trajectory comparator exists, and needs 300 steps to say anything
+
+`scripts/trajectory_tokens.py` implements the Class-B instrument designed above: interpolate
+`loss(cumulative_useful_tokens)` onto a common grid, so two legs are compared after consuming the
+same useful work rather than at the same step index.
+
+**Null control, measured on three clean 300-step reference pairs:**
+
+| pair | median | p90 abs | max abs | sign balance |
+|---|---|---|---|---|
+| ref1 vs ref2 | +0.45% | 7.61% | 40.7% | 0.60 |
+| ref1 vs ref3 | −0.54% | 8.90% | 103.5% | 0.36 |
+| ref2 vs ref3 | −0.90% | 9.29% | 91.2% | 0.30 |
+
+Median under 1%, sign balance in 0.30–0.60, and a tail that reaches **103%** on two clean legs. The
+median is the usable statistic; the max is chaos and must never be quoted as a bound.
+
+**At 30 steps the instrument has no sensitivity, and the check that shows it is worth keeping.** A
+clean 30-step pair gives median **+9.49%** with sign balance 0.96, while the known-bad alpha = 1.0
+leg gives **−7.58%** with sign balance 0.06. The clean pair deviates *more* than the defective one.
+Both are one-sided, so the sign statistic does not rescue it either. Any 30-step verdict from this
+comparator would be noise wearing a number, and the tool is therefore **300 steps or nothing**.
+
+It still owes a positive control at 300 steps. The four v3 stale legs supply one for free, which is
+why the same legs serve P4 and this instrument. Until that is measured it is not a gate, and
+`roles/config_tuner.md` keeps refusing Class B.
