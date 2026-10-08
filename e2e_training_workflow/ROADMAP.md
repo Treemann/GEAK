@@ -127,8 +127,8 @@ Built and **verified on real runs** (~260 agents across five training runs, `age
 | `mlp_fc2_down` | **accepted, +7.34%** — wgrad 13× closer to fp32 than the original |
 | `attn_fmha_fwdbwd_gqa_d128_causal` | rejected — backward defect, step-1 grad_norm −88.50% |
 | `mlp_fc1_swiglu` | rejected — inf gradient at iteration #2, reproduced twice |
-| `attn_dense_wgrad_rowslice` | `no_win` at **+1.147%** vs a band of 2.467% — **recoverable, see below** |
-| `attn_fmha_bwd_retry` | rejected by a detector since shown non-discriminating — **unresolved** |
+| `attn_dense_wgrad_rowslice` | **+1.147% on top of fc2** — confirmed by an independent re-measurement (fc2+attn is +8.46% vs bare ⇒ +1.043% increment, 0.10 points apart). `inconclusive_noise`: real but below a band its own 2.2–2.9% IQR produces |
+| `attn_fmha_bwd_retry` | **unblocked**: sb 0.000 is inside the range clean pairs produce, so the detector that rejected it cannot. Needs a throughput gate, not a verdict |
 
 **Built but not trustworthy, and the picture got worse rather than better:**
 
@@ -143,18 +143,21 @@ Built and **verified on real runs** (~260 agents across five training runs, `age
 **Not built:** ConfigSweep / `deep` mode · `mode=bakeoff` from this layer (structurally unreachable)
 · multi-node · TP > 1 (refused, not supported) · a second stack adapter.
 
-### Recoverable value sitting on disk
+### What is actually open on these two
 
-Two candidates were *measured* and then lost to instrument defects that are now fixed. Re-gating them
-costs ~1 h each, against ~3 h to decide a fresh head:
+Both were "lost to instrument defects" in the first draft of this plan. Checking each before acting
+changed both stories, and neither in the direction expected:
 
-- **`attn_dense_wgrad_rowslice`, +1.147%.** Rejected because a reused noisy baseline leg (IQR 1.842%
-  against 0.05–0.11% for its siblings) inflated the band to 2.467%. The reference is now the
-  *quietest* leg, which would price that pair near 0.5%. The overlay already passed L0.
-- **`attn_fmha_bwd_retry`.** Rejected solely on the sign test that was falsified days later, while
-  L0 rates it strictly more accurate than the incumbent — which fails an analytic `dq` invariant by
-  **1355.79×**. This one needs a decision, not just a re-run: it is the concrete case where L0 and L1
-  disagree and the framework has no rule for it.
+- **`attn_dense_wgrad_rowslice` is real but small.** Its +1.147% was *correct*, not corrupted — an
+  independent re-measurement against a bare reference gives fc2+attn = +8.46%, implying a +1.043%
+  increment, 0.10 points from the original. What blocked it is that its own step time is
+  **data-dependent by construction** (runtime row-slice, `n_live/M` spanning 0–100%), so its legs
+  carry 2.2–2.9% IQR and produce a band wider than the signal. Accepting it needs either many more
+  legs or a statistic that is not the median of a data-dependent step — not a re-run.
+- **`attn_fmha_bwd_retry` is unblocked but undecided.** Sign balance 0.000 sits *inside* the range
+  clean pairs produce, so the detector that rejected it cannot legitimately do so. What it has never
+  had is a **throughput** number: it was rejected before the gate measured one. It needs an A/B, not
+  an argument.
 
 ## What this plan got wrong
 
@@ -210,7 +213,7 @@ are paying off.
 So P1 is a re-measurement, not a recomputation: one A/B pair on quiet legs. The overlay is on disk
 and already passed L0.
 
-### P2 — Rule the L0/L1 disagreement, then re-decide `attn_fmha_bwd_retry`
+### P2 — DONE (2026-10-08): the L0/L1 rule is written, and narrower than it looked
 
 This is a **framework** gap, not a candidate problem, and it will recur. L0 says a candidate is
 strictly more accurate than the incumbent on every output; L1's sign test rejects it for descending

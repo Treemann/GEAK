@@ -25,7 +25,7 @@ re-measurement contradicts; quote `validated_delta_pct` when it is true. The ban
 or was demoted to advisory. `unexplored_heads` and `stop_reason` say what the run never got to —
 Stage 2 stopped on the wall clock with 3 of 4 heads untried, and nothing used to record that.
 
-## The 7B queue as of 2026-09-24 (four runs in)
+## The 7B queue as of 2026-10-08 (five runs in)
 
 Expected gain is computed the way the orchestrator does it, `cp_share × (1 − 1/attainable)`, which
 has now been validated twice: predicted 3.94% → measured **+4.66%** (lmhead), and the fc2 head
@@ -40,6 +40,12 @@ more headroom.
 | `mlp_fc2_down` | **accepted, +7.34% validated** — wgrad 13× closer to fp32 than the original |
 | `attn_fmha_fwdbwd_gqa_d128_causal` | **rejected** — backward defect, step-1 grad_norm −88.50% |
 | `mlp_fc1_swiglu` | **rejected** — inf gradient at iteration #2, reproduced twice |
+| `attn_dense_wgrad_rowslice` | **+1.147% on top of fc2, real** — `inconclusive_noise`, not a no_win: its own runtime row-slice makes step time data-dependent (IQR 2.2–2.9%), so its band exceeds its signal |
+| `attn_fmha_bwd_retry` | **unblocked, undecided** — the sign test that rejected it fires inside the clean-pair range; it has never had a throughput number |
+
+**Combined, measured** (not derived — `lmhead + mlp_fc2_down` via `measure_stack.sh`): **+12.36%**,
+four pairings spanning 0.12 points, null control +0.0706%, `step_median_ms` cross-check +12.324%.
+The two **compound** rather than add.
 
 **Open**, from the re-profile after `mlp_fc2_down` was accepted:
 
