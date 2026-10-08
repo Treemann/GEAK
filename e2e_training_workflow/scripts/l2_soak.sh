@@ -15,20 +15,37 @@
 # asks one question: does the accepted stack train the same way as the reference over a long run?
 #
 # Usage:
-#   l2_soak.sh --mode ref|cand|pos --bundle <bundle> --steps N --out <dir> [--pos-bias 1.004]
+#   l2_soak.sh --mode ref|cand|pos --bundle <bundle> --steps N --out <dir>
+#              [--control bias|stale] [--pos-bias 1.004] [--alpha 1.0]
 #
 #     ref   reference leg, overlay OFF. >=3 of these: they calibrate the criteria AND supply the
 #           null control (hold one out; if the criteria reject a held-out CLEAN leg, they are junk).
 #     cand  the accepted stack, overlay ON, bytes verified against the bundle's SHA256SUMS.overlay.
-#     pos   POSITIVE CONTROL: the same overlay with a deliberate multiplicative bias injected into
-#           the GRADIENT it returns (--pos-bias, default 1.004). If the soak does not reject this,
-#           the soak proves nothing about the candidate. A negative test is worth more than a
-#           passing one -- that doctrine is what produced scale_bias (DECISIONS 3.2).
+#     pos   POSITIVE CONTROL. If the soak does not reject this, the soak proves nothing about the
+#           candidate. A negative test is worth more than a passing one -- that doctrine is what
+#           produced scale_bias (DECISIONS 3.2).
+#
+#           THE CLASS IS NOW EXPLICIT (--control), because the first one was the wrong class and
+#           nothing in the interface said so. Two soaks, ~10 h, failed to reject `bias` -- and
+#           DECISIONS 3.6c then measured WHY: L0 rejects that same defect in 11.5 s, so it never
+#           reaches the soak at all. Naming the class at the call site makes "which control did this
+#           soak actually run?" answerable from the command line instead of from the source.
+#
+#             bias   x1.004 on the returned GRADIENT, every invocation. OP-LOCAL NUMERICS.
+#                    Kept for the record, and it is the one that must NOT be used to license the
+#                    soak: L0 owns this class. Running it answers a question already answered.
+#             stale  cross-step staleness -- blend in the PREVIOUS invocation's gscale (--alpha).
+#                    L0 CANNOT SEE THIS BY CONSTRUCTION: it evaluates one frozen microbatch in one
+#                    call, where there is no previous invocation and a repeated identical input
+#                    makes the blend bit-exactly the identity for every alpha. This is the class
+#                    DECISIONS 3.6c reserves for the soak -- cross-step state accumulating over
+#                    ~19 200 invocations. See scripts/controls/stale_state_control.py.
 set -euo pipefail
 
 GEAK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_HOST="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
 MODE="" ; BUNDLE="" ; STEPS=300 ; OUT_HOST="" ; POS_KERNEL="" ; BIAS=""
+CONTROL="stale" ; ALPHA="1.0"   # default to the class L0 cannot see; `bias` must be asked for
 while [ $# -gt 0 ]; do
   case "$1" in
     --mode) MODE="$2"; shift 2;;
@@ -36,6 +53,8 @@ while [ $# -gt 0 ]; do
     --steps) STEPS="$2"; shift 2;;
     --out) OUT_HOST="$2"; shift 2;;
     --pos-bias|--pos-kernel) POS_KERNEL="$2"; shift 2;;
+    --control) CONTROL="$2"; shift 2;;
+    --alpha) ALPHA="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -78,8 +97,17 @@ if [ "$MODE" = cand ] || [ "$MODE" = pos ]; then
     # checksum check is deliberately SKIPPED and the patch printed -- this leg is SUPPOSED to differ
     # from the gated bytes, and hiding that would make the control indistinguishable from the
     # candidate.
-    BIAS="${POS_KERNEL:-1.004}"
-    python3 - "$OVL_HOST/impl.py" "$BIAS" <<'PY'
+    case "$CONTROL" in
+      stale)
+        # The class the soak exists for. Invisibility to L0 is algebraic; the self-test proves it.
+        python3 "$GEAK_ROOT/scripts/controls/stale_state_control.py" "$OVL_HOST/impl.py" "$ALPHA"
+        ;;
+      bias)
+        echo ">>> WARNING: --control bias is OP-LOCAL NUMERICS, which L0 rejects in 11.5 s." >&2
+        echo ">>> Two soaks (~10 h) failed to reject it for that reason (DECISIONS 3.6c)." >&2
+        echo ">>> A soak licensed by this control demonstrates nothing. Use --control stale." >&2
+        BIAS="${POS_KERNEL:-1.004}"
+        python3 - "$OVL_HOST/impl.py" "$BIAS" <<'PY'
 import re, sys
 p, bias = sys.argv[1], sys.argv[2]
 src = open(p).read()
@@ -92,6 +120,9 @@ src = src.replace(old, f"gscale = (g_f.index_select(0, idx) * mg * {bias}).conti
 open(p, "w").write(src)
 print(f">>> POSITIVE CONTROL: gradient scaled by {bias} in impl.py backward")
 PY
+        ;;
+      *) echo "unknown --control $CONTROL (known: stale, bias)" >&2; exit 2;;
+    esac
     grep -n "POSITIVE CONTROL" "$OVL_HOST/impl.py" | head -2
     echo ">>> impl.py sha256 $(sha256sum "$OVL_HOST/impl.py" | cut -d' ' -f1) (differs from gated, by design)"
   fi

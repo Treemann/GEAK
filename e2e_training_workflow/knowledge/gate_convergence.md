@@ -555,6 +555,73 @@ changes, and requiring them to match refuses every config-level candidate withou
 trajectory. `config_digest` covers identity; `impl_digest` covers implementation; the verdict reports
 `implementation_delta`.
 
+### L2 soak spec v3 — PRE-REGISTERED 2026-10-08, before any v3 leg ran
+
+v1 and v2 both failed their positive control. The diagnosis in DECISIONS 3.6c is that the control
+was the **wrong class**: a x1.004 gradient bias is op-local numerics, which L0 rejects in 11.5 s, so
+it never reaches the soak. v3 changes the control, and the power arithmetic that should have been
+done before v1.
+
+**The control.** `scripts/controls/stale_state_control.py` — cross-step staleness. The overlay keeps
+the previous invocation's `gscale` and blends it into the current one:
+
+    gscale_eff[n] = gscale[n] + alpha * (gscale[n-1] - gscale[n])
+
+This is invisible to L0 **by construction, not by luck**. L0 evaluates one frozen microbatch in one
+call (`l0_gate.py:8,273`): there is no previous invocation, and on any repeat of the same input the
+difference is exactly 0.0, so the blend returns its operand bit-identically — for every alpha,
+including 1.0. (The lerp form is load-bearing; `(1-a)*cur + a*prev` leaves ~1 ulp and the claim
+would have been false as written. The self-test caught that.) In training, consecutive steps hold
+different batches, so from step 2 the optimizer is fed a partly stale gradient, ~19 200 times a leg.
+It is also a real bug class, not a straw man: uncleared workspace reuse, and fp8 amax-history
+scaling does it deliberately.
+
+**Why v1 could not have worked, arithmetically.** With sigma = 0.01495 (the measured between-leg sd
+of terminal loss) the minimum detectable effect is `t_crit * sigma * sqrt(1/n + 1/m)`:
+
+| cand n | ref m | df | t_crit | MDE | detects the 0.03742 bias? |
+|---|---|---|---|---|---|
+| **1** | **4** | 3 | 3.182 | **0.0532** | **no — this was v1** |
+| 2 | 4 | 4 | 2.776 | 0.0359 | barely |
+| **3** | **3** | **4** | **2.776** | **0.0339** | yes — **the v3 design** |
+| 3 | 4 | 5 | 2.571 | 0.0294 | yes |
+| 5 | 5 | 8 | 2.306 | 0.0218 | yes |
+
+v1 was not mis-thresholded. It was **underpowered by 42%** with a single candidate leg, and no
+threshold choice could have rescued it. This table is the thing to consult before spending GPU
+hours on any future soak.
+
+**The v3 design, and its cost.** Reference group m=3 is FREE: `l2soak_0923_ref{1,2,3}` are already
+measured, overlay off, 300 steps, `snapshot_keys: v3`, all at `config_digest d1548a7a764bdada` —
+checked, not assumed, because reusing out-of-scope legs is an error this layer has already made
+once. Only the n=3 positive legs are new, so v3 costs ~3 GPU-hours rather than ~7.
+
+**Pre-registered criteria.** Fixed now, before any v3 leg exists:
+
+1. **Location.** Pooled t on terminal loss, n=3 vs m=3, df=4. Reject at |t| > 2.776, i.e.
+   |delta| >= 0.0339. This is the primary criterion.
+2. **Dispersion.** F = s2_pos / s2_ref on terminal loss, df (2,2), reject at F > 19.0.
+   **Declared weaker on purpose:** this criterion was motivated by watching the v2 bias control,
+   which shifted dispersion (sd ratio 2.75, variance ratio 7.6) while the means coincided. It is
+   therefore NOT independent evidence if it is the only thing that fires — say so in the result.
+3. **Null control.** Hold out `ref3`; criteria 1-2 applied to it against `ref{1,2}` must NOT reject.
+   An in-sample null control was falsified on 2026-09-24 and a holdout has been mandatory since.
+
+**Verdict rule, also fixed now.** The soak is licensed as a gate only if the stale control at some
+alpha is REJECTED and the held-out clean leg is NOT. A pass on the candidate alone licenses nothing;
+that was the v1 mistake. If alpha = 1.0 is not rejected, the honest report is "the soak has no
+demonstrated sensitivity to cross-step staleness at 300 steps / 3 legs", and the soak stays
+unlicensed — the thresholds above are **not** to be retuned to make it fire.
+
+**Cheap checks that run BEFORE the 3 hours**, because a control that fails to install reads as a
+pass and that has happened here before (`measure_stack.sh` wrote 3528 silent engagement failures):
+
+* `stale_state_control.py --self-test` — the invisibility claim, as arithmetic, no GPU.
+* L0 on the patched overlay — must PASS, confirming invisibility end to end and not just on paper.
+* one 30-step leg at alpha = 1.0 — confirms the control engages, and tells us whether L1 already
+  catches it. If L1 does, the control is still valid but it is no longer *soak-only*, and the
+  result must say which.
+
 ## L2 — soak
 Opt-in, plus auto-triggered for high-risk classes: anything touching backward, the optimizer, a
 reduction order, or precision/scaling. Not in the default per-candidate path.

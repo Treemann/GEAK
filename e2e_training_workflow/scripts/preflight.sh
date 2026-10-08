@@ -144,6 +144,12 @@ python3 "$WF/scripts/tests/test_parse_train_profile.py" >/dev/null 2>&1 \
   && ok "profile-decomposition tests pass" || bad "profile tests FAIL"
 python3 "$WF/scripts/tests/test_trajectory_gate.py" >/dev/null 2>&1 \
   && ok "L1 band/envelope tests pass (incl. the null control)" || bad "trajectory-gate tests FAIL"
+# The L2 positive control's claim is that L0 cannot see it BY CONSTRUCTION. That claim is algebraic,
+# so it is checkable here in milliseconds without a GPU -- and it must be, because the claim is what
+# licenses spending 3 GPU-hours on a soak. See knowledge/gate_convergence.md, "L2 soak spec v3".
+python3 "$WF/scripts/controls/stale_state_control.py" --self-test >/dev/null 2>&1 \
+  && ok "L2 positive control: L0-invisibility holds (bit-exact at every alpha)" \
+  || bad "L2 positive control self-test FAILS — do not run a soak licensed by it"
 
 sec "7. Disk"
 AVAIL=$(df -BG --output=avail "$WORK" 2>/dev/null | tail -1 | tr -dc '0-9')
