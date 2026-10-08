@@ -96,8 +96,22 @@ def compare(ref_probe, cand_probe, key="loss", points=50):
     rb, warm_b = _series(cand_probe)
     warm = max(warm_a, warm_b)
     ca, cb = _curve(ra, warm, key), _curve(rb, warm, key)
-    if len(ca) < 5 or len(cb) < 5:
-        return {"error": f"too few usable steps ({len(ca)} / {len(cb)}) for key {key!r}"}
+    # REFUSE a short window rather than return a number from it. MEASURED, not guessed: on a clean
+    # 30-step pair this comparator reports median +9.49% with sign balance 0.96, while a leg carrying
+    # a known defect (cross-step staleness, alpha = 1.0) reports -7.58% with 0.06. The CLEAN pair
+    # deviates more than the broken one, and both are one-sided, so the sign statistic does not
+    # rescue it either. At 300 steps the same comparator puts three clean pairs at medians of +0.45,
+    # -0.54 and -0.90%. Anything in between has not been characterised, so the threshold sits where
+    # the evidence does.
+    #
+    # A number returned here would be indistinguishable from a measurement, which is exactly how the
+    # soak analyzer came to report a terminal loss of 0.00000 for every leg off a truncated run.
+    MIN_STEPS = 200
+    if len(ca) < MIN_STEPS or len(cb) < MIN_STEPS:
+        return {"error": (f"refusing to compare: {len(ca)} / {len(cb)} steady steps, minimum "
+                          f"{MIN_STEPS}. This comparator has NO demonstrated sensitivity on short "
+                          "windows -- at 30 steps a clean pair separates further than a known-bad "
+                          "one. Do not lower this to get an answer; the answer would be noise.")}
 
     # The grid spans only the tokens BOTH legs consumed, so nothing is extrapolated.
     lo = max(ca[0][0], cb[0][0])
