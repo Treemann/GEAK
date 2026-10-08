@@ -622,6 +622,50 @@ pass and that has happened here before (`measure_stack.sh` wrote 3528 silent eng
   catches it. If L1 does, the control is still valid but it is no longer *soak-only*, and the
   result must say which.
 
+### A Class-B trajectory gate is possible: align loss on TOKENS, not steps (designed 2026-10-08)
+
+`roles/config_tuner.md` ships Class A only, and the stated reason is that a Class-B change -- one
+that alters WHAT a step contains -- has **no trajectory gate at all**: step i is not the same batch
+on both legs, so the step-1 probe and the per-step envelope compare unlike things, and L0 does not
+apply either because no kernel changed. That remains true of the instruments as built. It is not an
+argument that no instrument exists.
+
+**The idea.** Loss has a second natural abscissa. Both legs read the same dataset in the same order,
+so after consuming the same number of **useful (non-pad, loss-unmasked) tokens** they have seen the
+same samples, whatever the step boundaries did in between. `loss(cumulative_useful_tokens)` is
+therefore defined on both legs and comparable by interpolation onto a common token grid -- exactly
+the move `compare_legs_tokens.py` already makes for throughput, applied to the trajectory instead.
+
+**Where it is valid, and where it is not.** The two legs must be doing the same *optimization*, not
+merely reading the same data. That splits Class B again:
+
+| change | same samples per optimizer update? | token-aligned loss comparable? |
+|---|---|---|
+| **packing / padding removal** | yes -- the same samples, regrouped into fewer sequences | **yes**, up to attention cross-contamination between packed segments and a partial sample at the window edge |
+| **sequence length** | yes, if samples are not truncated differently | **yes**, with the same caveats |
+| **GBS / MBS** | **no** -- a different number of updates over the same tokens | **no.** A different update count is a different optimizer trajectory and it is *supposed* to differ |
+
+So the instrument covers the lever actually worth the most here -- 70.1% of tokens on this workload
+are padding -- and does not cover batch-size changes, which is honest rather than unfortunate: for
+those the trajectory difference is the intended effect, not an artifact.
+
+**Why Megatron's packing really is Class B**, so this is needed: `--global-batch-size` counts
+SEQUENCES (`scripts/adapters/megatron.sh:54`). Pack four short samples into one buffer and a step of
+64 sequences now holds ~256 original samples. Step i is genuinely a different batch.
+
+**What it would have to prove before it counts as a gate**, by the rule that has held here all
+month -- both controls, and no exceptions for an instrument its author likes:
+
+* a **null control** it must pass: two clean legs at the same config, token-aligned, must not be
+  separated. The band for that is a new measurement, not a reuse of the step-aligned band -- the
+  interpolation adds its own error, and a band used out of its calibration scope is an error already
+  made here once.
+* a **positive control** it must fail: a known-bad run token-aligned must be rejected.
+
+Until both exist this is a design, not a gate, and `config_tuner` keeps refusing Class B. Recording
+it because the current refusal reads as "Class B is ungateable", which is a stronger claim than the
+evidence supports and would discourage the work that closes it.
+
 ## L2 — soak
 Opt-in, plus auto-triggered for high-risk classes: anything touching backward, the optimizer, a
 reduction order, or precision/scaling. Not in the default per-candidate path.

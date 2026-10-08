@@ -338,6 +338,36 @@ running the identical kernel look like different implementations).
 The profiler window perturbs the steps it traces. `bench_summary.json.profiled_run == true` forces
 `status: unusable`, so a profiled run can never be used as a gate leg.
 
+### `config_digest` records INTENT, not what the framework realized (designed 2026-10-08)
+
+`train_probe._config_snapshot()` reads `sys.argv`. So two legs share a `config_digest` when the same
+flags were *requested*, which is not the same as the same config being *run*. Megatron's
+`validate_args` clamps, defaults and silently drops flags -- `--recompute-granularity` without a
+`--recompute-method` is the standard example -- and this layer has already been bitten by exactly
+that shape once, when `--kind` was silently ignored and applied a 40x tighter floor for a day.
+
+The realized config is available: inside the training process `megatron.training.get_args()` returns
+the namespace *after* validation, which is what actually ran.
+
+**The fix is additive, and deliberately so.** The obvious move -- have `config_digest` hash the
+realized namespace -- bumps the identity schema to v4, and v3-to-v4 requires RE-MEASURE, not
+re-summarise. That would invalidate every leg now on disk, including the three 0923 reference legs
+the L2 v3 design depends on and the baselines a run is using today. The cost is real and the benefit
+does not require paying it. So:
+
+* keep `config_digest` as it is, at schema 3, argv-derived. Old and new legs stay comparable.
+* add `realized_config` and `realized_digest` as NEW fields, captured from `get_args()` when the
+  framework exposes it and absent otherwise.
+* have the comparison report an argv-vs-realized MISMATCH as a finding. That is where the safety
+  actually lives: the question worth answering is not "what is the realized hash" but "was the flag
+  I passed honoured?", and a mismatch answers it directly.
+* move to schema 4 later, as a deliberate re-measure, once enough legs carry both.
+
+**Not implemented yet, and the reason is scheduling, not doubt:** every new leg re-reads
+`scripts/train_probe.py` at launch, so editing it while a run is measuring would make legs from
+before and after the edit incomparable inside one run.
+
+
 ## Operational hazards found the hard way
 - **Never edit a shell script while it is executing.** bash reads scripts lazily by byte offset; an
   in-place edit shifts the remaining bytes and the running process starts parsing garbage. This
