@@ -57,6 +57,23 @@ You reintegrate an optimized kernel REVERSIBLY and take the A/B that decides its
    - A throughput-neutral, memory-saving result is **banked, not a win** — in `fast` there is no
      config knob to convert it with. Report `peak_reserved_mb` for both legs so it can be banked.
 
+### The bundle's launch script must survive a SECOND invocation
+
+Install the overlay into a **per-invocation directory** (`.../overlay_$STAMP/`), never into one fixed
+path that the script clears with `rm -rf` first.
+
+This is not hypothetical and it is not cosmetic. The fc2 bundle's `launch.sh` did
+`rm -rf "$WORK_HOST/overlays/bundle_fc2_0924"` before re-installing. That works exactly **once**: the
+training container runs as root and leaves a root-owned `__pycache__/` behind, so the second
+invocation dies with `rm: cannot remove ... Permission denied` and the candidate leg never starts.
+The reference leg (`--ref`) keeps working, because it installs nothing — so the bundle appears half
+healthy and the failure looks like a candidate problem rather than a script problem.
+
+It survived every check we had because the bundle had only ever been run **once**, by the Integrator
+that produced it. A cold start found it in twenty minutes. `l2_soak.sh` and `measure_stack.sh` both
+hit the identical trap earlier and both solved it the same way: a fresh directory per run, and no
+`rm -rf` of anything the container may own.
+
 Return JSON:
 ```json
 {"ref": {...bench_summary...}, "cand": {...bench_summary...},

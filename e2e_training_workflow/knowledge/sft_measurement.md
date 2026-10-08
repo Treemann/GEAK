@@ -195,6 +195,44 @@ reason: a 2.467% band genuinely cannot resolve a +1.147% signal, so "we could no
 honest verdict. What does not survive is the justification added with it — the delta was never
 corrupted.
 
+### 4f. The deliverable had never been cold-started (2026-10-08)
+
+Five runs produced bundles and four `bundle_recheck_*` legs re-ran them — but always **from the
+Integrator that had just built them**, never from a cold start through the documented entry points.
+Doing that once, in twenty minutes, found two defects in series.
+
+**Defect 1: the candidate entry point worked exactly once.** `launch.sh` cleared a fixed install
+directory with `rm -rf` before copying the overlay in. The training container runs as **root** and
+leaves a root-owned `__pycache__/`, so the second invocation died with `Permission denied` and the
+candidate leg never started. `--ref` kept working, because it installs nothing — so the bundle looked
+*half* healthy and the failure read as a candidate problem rather than a script problem.
+
+**Defect 2, introduced by the fix, and this is the instructive one.** Moving the install to a
+per-invocation directory left the manifest's `replacement` pointing at the **hardcoded** old
+container path. The resulting leg was flawless on every surface check — `status: ok`, 48 steady
+steps, IQR 0.075% — and measured **−0.0242%**. It ran the *original* implementation. A leg like that
+does not look like a bug; it looks like an honest disappointment, and would have been read as "this
+kernel does not actually help".
+
+What caught it was `launch.sh`'s own engagement check: `0 ranks wrote a proof, expected 8 — PARTIAL
+ENGAGEMENT`, `rc=1`. That is DECISIONS 4.7 earning its place — an overlay bound on only one half
+produces a plausible number and a plausible loss curve; **zero** binding produces the most plausible
+number of all.
+
+After pairing the container path to the install directory, the third cold start agrees with every
+earlier measurement of this kernel:
+
+| source | delta |
+|---|---|
+| gate, during the run | +7.52% |
+| Director's independent re-measurement | +7.34% |
+| **cold start through `./launch.sh`** | **+7.4348%** |
+
+The rule that prevents the first defect is now in `roles/integrator.md`: install into a
+per-invocation directory and never `rm -rf` a path the container may own. `l2_soak.sh` and
+`measure_stack.sh` had both hit the identical trap and solved it the same way; the bundle generator
+simply never learned it.
+
 ## 5. A leg is not a measurement unless it is clean
 `status == "ok"`, no hang, and `occupancy_verdict == "clean"`. This node carries ~20 unrelated
 containers; a neighbour taking a GPU mid-leg drags one side down and the delta becomes fiction.
