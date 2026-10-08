@@ -698,6 +698,39 @@ against +4.41e-03 — the small difference is the different site, and is reporte
 over). Same file, same line, same gate: one defect class is caught decisively and the other is
 invisible. **The soak now has a control that is its own to catch.**
 
+**MEASURED 2026-10-08 — the control engages, and L1 catches it at full staleness.** A 30-step leg
+at alpha = 1.0: engagement `fwd=224 bwd=224 fallback_fwd=0` on all 8 ranks, training survives, and
+
+| check | alpha = 1.0 | alpha = 0.25 |
+|---|---|---|
+| L1 verdict | **FAIL** | **pass** |
+| `grad_norm` early sign balance | **0.750**, outside the measured null range 0.5–0.625 | 0.625, at the boundary |
+| `step1_loss_rel_pct` | 8.2e-05 | 8.2e-05 |
+
+Two consequences, and they point in opposite directions.
+
+**Good for L1.** The sign test has been carried as "cannot tell a fix from a bug" since it was held
+to a measured range. It now has a demonstrated positive control **of a class L0 cannot see**, which
+is the first one it has ever had. Read the margin honestly though: with n=8 the statistic moves in
+steps of 0.125, so 0.750 clears the range by exactly one unit.
+
+`step1_loss_rel_pct` stays at 8.2e-05 — effectively zero — at BOTH alphas, and that is correct
+rather than a miss: the staleness is injected in the backward, and the step-1 probe is a forward on
+identical weights. The probe is blind to this class by construction, as it should be.
+
+**Awkward for the soak.** At alpha = 1.0 the defect is NOT soak-only, so a soak that rejected it
+would demonstrate nothing L1 had not already done for free. The pre-registration said this case had
+to be declared, and it is. The soak's niche, if it has one, is the regime where L1 is silent —
+**alpha = 0.25 is the largest staleness L1 does not catch**, so that is where the soak must prove
+itself, and the four legs are run there and nowhere else.
+
+A possibility worth stating before the data rather than after: that niche may be **empty**. L1 goes
+silent at 0.25, and the soak's MDE on terminal loss is 0.0294, which the far cruder x1.004 bias
+never came close to reaching. If the soak cannot separate alpha = 0.25 either, the finding is not
+"tune it" — it is that a ~10 h instrument has no region of its own at 300 steps, and should be
+retired rather than repaired. That outcome is as useful as the other and the thresholds stay fixed
+either way.
+
 **Cheap checks that run BEFORE the 3 hours**, because a control that fails to install reads as a
 pass and that has happened here before (`measure_stack.sh` wrote 3528 silent engagement failures):
 
