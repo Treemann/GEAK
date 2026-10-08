@@ -119,7 +119,7 @@ Validate   Director 独立复测并仲裁。**这才是官方数字。**
 | `attn_fmha_fwdbwd_gqa_d128_causal` | 拒绝 —— backward 缺陷，step-1 grad_norm −88.50% |
 | `mlp_fc1_swiglu` | 拒绝 —— 第 2 个 iteration 产生 inf 梯度，复现两次 |
 | `attn_dense_wgrad_rowslice` | **在 fc2 之上 +1.147%** —— 经独立重测印证（fc2+attn 对裸栈 +8.46% ⇒ 增量 +1.043%，相差 0.10 个点）。属 `inconclusive_noise`：真实存在，但低于它自身 2.2–2.9% IQR 产生的 band |
-| `attn_fmha_bwd_retry` | **已解除阻断**：sb 0.000 落在干净配对自身范围内，拒绝它的检测器本就无权这么做。它缺的是一个吞吐 gate，不是一个裁决 |
+| `attn_fmha_bwd_retry` | **已决断：+0.31%**，而非预期的 2.52%。delta 可信（4 组配对极差 0.014 点；两个零对照均 0.0000%；步时校验差 0.003 点）。它的价值在**正确性**而非速度 |
 
 **已建成但不可信，而且情况比之前更糟：**
 

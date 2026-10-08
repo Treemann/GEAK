@@ -128,7 +128,7 @@ Built and **verified on real runs** (~260 agents across five training runs, `age
 | `attn_fmha_fwdbwd_gqa_d128_causal` | rejected — backward defect, step-1 grad_norm −88.50% |
 | `mlp_fc1_swiglu` | rejected — inf gradient at iteration #2, reproduced twice |
 | `attn_dense_wgrad_rowslice` | **+1.147% on top of fc2** — confirmed by an independent re-measurement (fc2+attn is +8.46% vs bare ⇒ +1.043% increment, 0.10 points apart). `inconclusive_noise`: real but below a band its own 2.2–2.9% IQR produces |
-| `attn_fmha_bwd_retry` | **unblocked**: sb 0.000 is inside the range clean pairs produce, so the detector that rejected it cannot. Needs a throughput gate, not a verdict |
+| `attn_fmha_bwd_retry` | **decided: +0.31%**, not the 2.52% predicted. Delta is trustworthy (4 pairings, spread 0.014 pts; both null controls 0.0000%; step-median agrees to 0.003 pts). Worth keeping for **correctness**, not speed |
 
 **Built but not trustworthy, and the picture got worse rather than better:**
 

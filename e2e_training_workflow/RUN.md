@@ -41,7 +41,7 @@ more headroom.
 | `attn_fmha_fwdbwd_gqa_d128_causal` | **rejected** — backward defect, step-1 grad_norm −88.50% |
 | `mlp_fc1_swiglu` | **rejected** — inf gradient at iteration #2, reproduced twice |
 | `attn_dense_wgrad_rowslice` | **+1.147% on top of fc2, real** — `inconclusive_noise`, not a no_win: its own runtime row-slice makes step time data-dependent (IQR 2.2–2.9%), so its band exceeds its signal |
-| `attn_fmha_bwd_retry` | **unblocked, undecided** — the sign test that rejected it fires inside the clean-pair range; it has never had a throughput number |
+| `attn_fmha_bwd_retry` | **+0.31%** (2026-10-08, four pairings spanning 0.014 pts, both null controls exactly 0.0000%, step-median cross-check +0.304%). `inconclusive_noise` only because the *identity-rebind reference* legs carried 2.9–3.1% IQR. Its value is correctness, not speed: L0 rates it strictly more accurate, the incumbent failing an analytic `dq` invariant by 1355.79× |
 
 **Combined, measured** (not derived — `lmhead + mlp_fc2_down` via `measure_stack.sh`): **+12.36%**,
 four pairings spanning 0.12 points, null control +0.0706%, `step_median_ms` cross-check +12.324%.
