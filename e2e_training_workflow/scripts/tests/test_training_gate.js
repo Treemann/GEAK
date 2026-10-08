@@ -313,8 +313,33 @@ const leg = (o = {}) => Object.assign({
       'engagement must be proven for forward AND backward separately, or the result is refused');
     ok(/has_backward === false/.test(src),
       'a task with no backward is refused: a forward-only task can call a slower kernel a win');
-    ok(/ConfigSweep is not implemented yet/.test(src) && /fast-mode result under a/.test(src),
-      'deep mode REFUSES rather than silently running the fast pipeline under a deep label');
+    // ConfigSweep now exists. What must be pinned is the line it may not cross: a CLASS B lever
+    // changes what a step contains, so step i is not the same batch on both legs -- the step-1
+    // probe and the step-aligned delta are both invalid, and L0 does not apply because no kernel
+    // changed. Such a change would rest on throughput ALONE. The refusal lives in the ORCHESTRATOR,
+    // not only in the role card: a rule only a prompt knows is a rule the next prompt can forget.
+    ok(/CLASS_B_LEVERS/.test(src) && /function classOfLever/.test(src),
+      'ConfigSweep classifies levers in code, not only in the role prompt');
+    for (const lever of ['packing', 'global-batch-size', 'micro-batch-size', 'seq-length']) {
+      ok(new RegExp(`'${lever}'`).test(src),
+        `'${lever}' is named as Class B — it changes what a step contains`);
+    }
+    ok(/refused: true/.test(src) && /rest on throughput/.test(src),
+      'a Class B proposal is REFUSED and says why, rather than being silently downgraded');
+    // Behaviour, not just presence: extract the classifier and run it.
+    const { classOfLever } = load(['classOfLever'], 'const CLASS_B_LEVERS = ' +
+      (src.match(/const CLASS_B_LEVERS = \[[\s\S]*?\];/) || [''])[0].replace('const CLASS_B_LEVERS = ', '') + ';');
+    ok(classOfLever(['--overlap-grad-reduce']).cls === 'A',
+      'comm overlap classifies as A — it changes HOW a step is computed');
+    ok(classOfLever(['--recompute-granularity', 'selective']).cls === 'A',
+      'recompute granularity classifies as A, which is why it can be the memory converter');
+    ok(classOfLever(['--global-batch-size', '128']).cls === 'B',
+      'GBS classifies as B — it changes what a step contains');
+    ok(classOfLever(['--sft-packing']).cls === 'B',
+      'packing classifies as B even when the flag is spelled differently');
+    ok(/identity difference IS the experiment/.test(src),
+      'a config change is EXPECTED to move config_digest, so the digest check is reported rather ' +
+      'than enforced — the opposite of the rule for a kernel candidate');
     ok(/noImprove >= 2/.test(src), 'two consecutive non-wins stop the kernel track');
     ok(/if \(v\.fatal\)/.test(src) && /STOPPING: the box is not quiet enough/.test(src),
       'a fatal verdict STOPS the run rather than spending the rest of the gate budget on a busy node');

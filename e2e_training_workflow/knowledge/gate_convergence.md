@@ -518,6 +518,33 @@ step i, so a Class-B config change has **no trajectory gate at all**. That is a 
 wherever such a result is reported, not to discover afterwards. L0 does not apply either — no kernel
 changed. A packing result would rest on throughput alone.
 
+### ConfigSweep ships Class A only, and the refusal is in code (2026-10-08)
+
+`deep` mode now runs. What it may propose is bounded by the class split above, and the bound is
+enforced in `training_workflow.js` (`CLASS_B_LEVERS`, `classOfLever`), not only in
+`roles/config_tuner.md` — **a rule only a prompt knows is a rule the next prompt can forget.**
+
+A Class-B proposal is **refused with its reason**, never silently downgraded, because a Class-B
+result looks exactly like a Class-A one once it is a number in a table.
+
+**The Tier-0 pack, each lever with a ceiling read from the diagnosis rather than guessed:**
+
+| lever | flags | ceiling | source |
+|---|---|---|---|
+| comm overlap | `--overlap-grad-reduce`, `--overlap-param-gather` | **2.27%** | `exposed_comm_pct`, with `comm_overlap_pct` measured at **0.0** — none of it is currently recovered |
+| recompute granularity | `--recompute-granularity` | memory ↔ compute | also **the memory converter**: the knob `fast` banks memory for and cannot spend |
+| attention backend | `--attention-backend` | — | a proven-comparable pair (step-1 delta 0.2917% between backends) |
+
+**One deliberate inversion of the kernel rule.** A kernel candidate must keep `config_digest`
+identical, and `comparable()` refuses it otherwise. A config candidate is *expected* to move the
+digest — that is what makes it a config change — so for this phase the digest difference is
+**reported rather than enforced**, and the Tuner must name exactly which key moved. If anything other
+than the proposed lever moved, the two legs are not a controlled comparison and the delta is not
+attributable.
+
+Everything else is unchanged: same `bench_train.sh`, same window-aligned comparison, same
+`gateVerdict`, same `no_aligned_delta` refusal. A config win is gated exactly as a kernel win is.
+
 **Still open:** the 0.2917% attention-backend pair has still not been separated into "pure numerics"
 versus "the flash path does not preserve packing isolation" (the separating test is
 packed-vs-unpacked per backend). That is a question about that pair, not about the envelope.

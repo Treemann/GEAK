@@ -28,6 +28,7 @@ const log0 = (m) => log(`[training] ${m}`);
 const IMPLEMENTED_ROLES = new Set([
   'training_director', 'system_architect', 'profiler',
   'kernel_extractor', 'convergence_auditor', 'integrator',
+  'config_tuner',
 ]);
 
 function requireRole(role) {
@@ -553,6 +554,7 @@ const PHASE_SCHEMA = {
   setup: SETUP_SCHEMA, profile: PROFILE_SCHEMA, reprofile: PROFILE_SCHEMA,
   strategize: STRATEGY_SCHEMA, extract: EXTRACT_SCHEMA, integrate: INTEGRATE_SCHEMA,
   gate: AUDIT_SCHEMA, finalize: FINALIZE_SCHEMA, validate: VALIDATE_SCHEMA,
+  config: CONFIG_SCHEMA,
 };
 
 const T0 = A.t0_epoch_ms != null ? parseInt(A.t0_epoch_ms, 10) : null;
@@ -561,6 +563,12 @@ if (T0 == null || !isFinite(T0)) {
        `budget is NOT enforced this run. The lane loop is still bounded by budget=${BUDGET} tasks ` +
        `and max_gates=${MAX_GATES}. Pass t0_epoch_ms (epoch ms at launch) to enforce it.`);
 }
+const CONFIG_SCHEMA = obj({ lever: { type: 'string' }, flags_added: { type: 'array' },
+  ceiling_pct: { type: 'number' }, ref: { type: 'object' }, cand: { type: 'object' },
+  comparison: { type: 'object' }, config_digest_delta: { type: 'object' },
+  peak_reserved_mb: { type: 'object' }, memory_conversion: { type: 'object' } },
+  ['lever', 'ref', 'cand', 'comparison']);
+
 const CLOCK_SCHEMA = obj({ epoch_ms: { type: 'number' } }, ['epoch_ms']);
 let clockFailed = false;
 const outOfTime = async () => {
@@ -718,11 +726,69 @@ if (strategy && strategy.stop) {
 // ---------------------------------------------------------------------------
 // ConfigSweep — deep only. Refuses rather than silently skipping.
 // ---------------------------------------------------------------------------
+// CLASS B levers change WHAT a step contains, so step i is not the same batch on both legs and BOTH
+// trajectory instruments (the step-1 probe and the step-aligned delta) become invalid. L0 does not
+// apply either -- no kernel changed. Such a change would rest on throughput ALONE, and this layer
+// does not accept a number with no correctness gate behind it. Enforced here rather than left to the
+// role card: a rule only a prompt knows is a rule the next prompt can forget.
+const CLASS_B_LEVERS = [
+  'packing', 'pack', 'global-batch-size', 'micro-batch-size', 'seq-length', 'seq_length',
+  'gbs', 'mbs', 'sequence-length',
+];
+function classOfLever(flags) {
+  const txt = (flags || []).join(' ').toLowerCase();
+  const hit = CLASS_B_LEVERS.find((k) => txt.includes(k));
+  return hit ? { cls: 'B', key: hit } : { cls: 'A', key: null };
+}
+
 if (want('config')) {
   phase('ConfigSweep');
-  throw new Error('ConfigSweep is not implemented yet (deep mode). The six seam hooks exist in fast ' +
-    'mode, but the sweep itself does not: running deep now would report a fast-mode result under a ' +
-    'deep label. Use fast_mode, or implement ConfigSweep.');
+  const sweep = await safeAgentStub('config_tuner', 'config',
+    { ...benchInputs(curConfig, 'config'), DIAGNOSIS: wfReturn.config_diagnosis,
+      BANDS: wfReturn.bands, CARRIED_OVERLAY: curOverlay },
+    'Propose ONE Class-A lever from the Tier-0 pack, state its ceiling from the diagnosis, and ' +
+    'measure it exactly as a kernel candidate is measured.');
+  if (!sweep) {
+    log0('ConfigSweep produced nothing; continuing to the kernel track.');
+  } else {
+    const kind = classOfLever(sweep.flags_added);
+    if (kind.cls === 'B') {
+      // Refuse, do not silently downgrade: a Class-B result looks exactly like a Class-A one.
+      wfReturn.config_sweep = { refused: true, lever: sweep.lever, reason:
+        `flags_added names a CLASS B lever (${kind.key}): it changes what a step contains, so step i ` +
+        `is not the same batch on both legs. The step-1 probe and the step-aligned delta are both ` +
+        `invalid, and L0 does not apply because no kernel changed — this would rest on throughput ` +
+        `alone. scripts/compare_legs_tokens.py supplies a comparison basis for that class; it is ` +
+        `not a gate.` };
+      log0(`ConfigSweep REFUSED: ${wfReturn.config_sweep.reason}`);
+    } else {
+      gatesUsed += 1;
+      const cv = gateVerdict({ ref: sweep.ref, cand: sweep.cand, comparison: sweep.comparison,
+                               mode: 'deep' });
+      // A config change is EXPECTED to move config_digest -- that is what makes it a config change.
+      // comparable() refuses that as "different workload", correctly, for a KERNEL candidate. Here
+      // the identity difference is the subject of the experiment, so the digest check is reported
+      // rather than enforced, and the Tuner must have named exactly which key moved.
+      if (cv.klass === 'incomparable' && sweep.config_digest_delta) {
+        log0(`ConfigSweep: digest moved as expected (${JSON.stringify(sweep.config_digest_delta)}) — ` +
+             're-gating on the delta alone, since identity difference IS the experiment');
+        const band = noiseBandPct(sweep.ref, sweep.cand, true);
+        const d = alignedDelta({ comparison: sweep.comparison });
+        cv.klass = d && d.delta_pct > band ? 'win' : 'no_win';
+        cv.accepted = cv.klass === 'win';
+        cv.delta_pct = d ? d.delta_pct : null;
+        cv.band_pct = +band.toFixed(3);
+        cv.delta_source = d ? 'window-aligned' : 'raw ratio (NOT window-aligned)';
+      }
+      wfReturn.config_sweep = { lever: sweep.lever, flags_added: sweep.flags_added,
+        ceiling_pct: sweep.ceiling_pct, verdict: cv,
+        config_digest_delta: sweep.config_digest_delta || null,
+        memory_conversion: sweep.memory_conversion || null };
+      log0(`ConfigSweep ${sweep.lever}: ${cv.klass} (${cv.delta_pct}% vs band ${cv.band_pct}%, ` +
+           `ceiling was ${sweep.ceiling_pct}%)`);
+      if (cv.accepted) curConfig = { ...curConfig, config_flags: sweep.flags_added };
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

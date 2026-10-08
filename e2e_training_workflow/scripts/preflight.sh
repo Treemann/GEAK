@@ -77,10 +77,10 @@ for f in training_workflow.js scripts/bench_train.sh scripts/adapters/megatron.s
 done
 [ "$FAIL" -eq 0 ] && ok "all scripts present"
 MISSING_ROLES=""
-for r in training_director system_architect profiler kernel_extractor convergence_auditor integrator; do
+for r in training_director system_architect profiler kernel_extractor convergence_auditor integrator config_tuner; do
   [ -f "$WF/roles/$r.md" ] || MISSING_ROLES="$MISSING_ROLES $r"
 done
-[ -z "$MISSING_ROLES" ] && ok "all 6 role prompts present" || bad "missing roles:$MISSING_ROLES"
+[ -z "$MISSING_ROLES" ] && ok "all 7 role prompts present" || bad "missing roles:$MISSING_ROLES"
 
 sec "5. The kernel layer (the recursive callee)"
 KWF="${GEAK_KERNEL_WF:-$REPO/kernel_workflow}"
