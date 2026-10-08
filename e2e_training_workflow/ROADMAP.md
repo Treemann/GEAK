@@ -265,28 +265,37 @@ change, with the memory-conversion path exercised.
 **Sequencing note:** do P3 *after* P2. A config change moves `config_digest` by design, so every
 sweep leg is a new identity; starting that while a gate rule is unsettled compounds two unknowns.
 
-### P4 — L2 soak — **unblocked 2026-10-08, and the answer may be to retire it**
+### P4 — L2 soak — **DONE 2026-10-08: the answer was to RETIRE it**
 
-The control exists and is demonstrated: `scripts/controls/stale_state_control.py` injects cross-step
-staleness, `g[n] + alpha*(g[n-1] - g[n])`. Three arms at the **same line** of the kernel L0 actually
-runs: unpatched `correct: true`, stale at alpha = 1.0 `correct: true` **with every number bit-identical
-to unpatched**, x1.004 bias `correct: false`. L0 is blind to this class by construction, not by luck.
+The control was built and is demonstrated invisible to L0 **by construction** — cross-step
+staleness, L0's output bit-identical at alpha = 1.0, at the same line where a x1.004 bias is
+rejected decisively. Then it was run exactly as pre-registered: 4 positive legs at alpha = 0.25
+against 4 clean overlay-matched legs, with engagement verified first at 19 200 fwd + 19 200 bwd per
+leg.
 
-Two measurements then reshaped the task, both of them before any soak leg ran:
+**Null control silent. Positive control NOT rejected** — Welch t = 0.375 against crit 2.780, delta
++0.00576 (0.63 sigma). Positive terminal losses 1.4226 / 1.4172 / **1.4777** / 1.4179: dispersion,
+not location, for the third positive control running.
 
-1. **L1 catches it at alpha = 1.0** (grad_norm sign balance 0.750 against a measured null range of
-   0.5–0.625). Good news for L1, which now has its first positive control of a class L0 cannot see.
-   But it means alpha = 1.0 is not soak-only, so the soak must prove itself at **alpha = 0.25**, the
-   largest staleness L1 misses.
-2. **The effect the first two soaks chased was noise.** The quoted 0.03742 is one leg, and its sign
-   is negative; three legs give +0.0157. v1 was also underpowered — MDE 0.0742 at n=1 vs m=3.
+The disposition was committed to in writing before the data, so it can be acted on without
+arguing. **The soak is retired as a gate** — the Convergence Auditor now always reports
+`l2_recommended: false`. The arithmetic:
 
-So v3 runs 3 positive legs at alpha = 0.25 against 4 reference legs (MDE 0.0294, ~4 GPU-h), with
-criteria pre-registered. **And the possible finding is that the soak's niche is empty**: L1 goes
-silent at 0.25, and the soak could not reach a far cruder defect. If it cannot separate alpha = 0.25
-either, the conclusion is not to tune it — it is that a ~10 h instrument has no region of its own at
-300 steps and should be **retired**, as the per-step envelope already was. Thresholds stay fixed
-either way.
+* at alpha = 1.0, L1's sign test rejects this defect **for free**, in a leg that was running anyway;
+* at alpha = 0.25 where L1 is silent, closing the gap from 0.00576 to an MDE of 0.01587 needs
+  ~7.6x more legs — **n = m ≈ 30, about 30 GPU-hours** — for a class L1 catches one notch up;
+* the op-local class the soak was first built for is **L0's**, at 11.5 s.
+
+Three control generations, ~17 GPU-hours, zero rejections. Between L0 and L1 there is no band of
+defects that 300 steps and a handful of legs can resolve.
+
+**The control is not wasted**: it becomes L1's positive control — the first one L1 has ever had of a
+class L0 cannot see, which closes the "L1 is thin" item as well.
+
+**The token-aligned Class-B comparator fails the same control on the same legs** (positive medians
+all inside the null range; one *clean* pair separates further than any defective leg), so it is not
+promoted to a gate and `config_tuner` keeps refusing Class B. `scripts/trajectory_tokens.py` stays
+as a characterised instrument — 300 steps or nothing, median is the usable statistic.
 
 ### P5 — Close the KB gap found in W1 — **DONE**
 

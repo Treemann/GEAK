@@ -36,9 +36,28 @@ Reading the result:
   pair runs identical kernels. On a legitimate kernel swap, treat a marginal step-1 failure as
   "investigate and report", not as proof of a bug. Say which it is.
 
-### L2 — soak
-Recommend it (do not run it by default) when the change touched backward, the optimizer, a reduction
-order, or precision/scaling.
+### L2 — soak: **RETIRED 2026-10-08. Always report `l2_recommended: false`.**
+
+Do not recommend it. The rule used to be "recommend when the change touched backward, the optimizer,
+a reduction order, or precision/scaling", and three generations of positive control over ~17
+GPU-hours never produced a rejection.
+
+The reason is not bad luck, and you should know it so you do not re-propose the soak under another
+name. Its intended territory is squeezed from both sides by instruments that are free or nearly so:
+
+* **op-local numerics is L0's**, decided in 11.5 s (a x1.004 gradient bias: `dgrad scale_bias`
+  +3.80e-03 against a 2e-3 tolerance);
+* **cross-step state is L1's**, free, and now demonstrated — the stale-gradient control at
+  alpha = 1.0 is rejected by the grad_norm sign test (0.750 against a measured null range of
+  0.5-0.625);
+* in the only gap left, alpha = 0.25 where L1 goes silent, the soak's own measured effect is 0.00576
+  against an MDE of 0.01587. Closing that needs ~30 legs, about 30 GPU-hours, for a defect class
+  L1 already catches one notch up.
+
+If you believe you have found a defect class that is genuinely invisible to both L0 and L1, say so
+explicitly and say what makes it so — do not reach for the soak by default. `scripts/l2_soak.sh`
+still works and the pre-registered spec is still in `knowledge/gate_convergence.md`; what is retired
+is the habit of recommending ~10 GPU-hours that has never once changed a verdict.
 
 ### On a REJECT, write the finding back to the kernel layer's knowledge base
 

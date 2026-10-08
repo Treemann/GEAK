@@ -837,3 +837,62 @@ comparator would be noise wearing a number, and the tool is therefore **300 step
 It still owes a positive control at 300 steps. The four v3 stale legs supply one for free, which is
 why the same legs serve P4 and this instrument. Until that is measured it is not a gate, and
 `roles/config_tuner.md` keeps refusing Class B.
+
+## L2 soak v3 RESULT — the soak is RETIRED (2026-10-08)
+
+Four positive legs at alpha = 0.25 against four clean overlay-ON legs, criteria exactly as
+pre-registered above. Engagement verified on every leg first: **19 200 forward and 19 200 backward
+invocations per leg**, 8 ranks, 0 fallbacks, `status: ok`, occupancy clean, the alpha=0.25 patch
+present in each overlay. The control ran, at the scale the soak exists to cover.
+
+| criterion | result |
+|---|---|
+| **null control** (2-vs-2 holdout splits of the 4 references) | **silent** — the criteria do not reject clean legs |
+| **positive control** (location) | **NOT REJECTED.** Welch t = 0.375 against crit 2.780; delta +0.00576 (0.63 sigma) |
+| dispersion (declared weaker) | F = 10.25 against crit 15.44 — silent |
+
+Terminal loss per positive leg: 1.42260, 1.41718, **1.47767**, 1.41786. Three clustered low and one
+far out — **dispersion, not location, for the third positive control running**. The same signature
+as v2's bias, and the same reason the location test cannot see it: the outlier inflates the
+positive group's own variance, which is what the t statistic divides by.
+
+**The token-aligned trajectory comparator fails the same control, on the same legs.** Positive
+medians −0.438, −1.346, +0.088, −0.493%; null medians (clean pairs) −0.021, −1.358, +0.231%. Every
+positive sits inside the null range, and one CLEAN pair separates further than any defective leg.
+So `trajectory_tokens.py` does not get promoted to a gate either, and `config_tuner` keeps refusing
+Class B.
+
+### The decision, and the arithmetic behind it
+
+The pre-registration committed to this disposition before the data: *"if the soak cannot separate
+alpha = 0.25 either, the conclusion is not to tune it — it is that a ~10 h instrument has no region
+of its own at 300 steps and should be retired."* The data says exactly that, so:
+
+**The L2 soak is retired as a gate.** Not deleted — `l2_soak.sh` and the analyzer stay, and the
+pre-registered spec stays — but the Convergence Auditor no longer recommends it, and no run should
+spend GPU hours on it.
+
+The arithmetic that makes this a decision rather than a preference:
+
+* at **alpha = 1.0**, L1's sign test rejects the defect **for free**, in a 30-step gate leg that was
+  going to run anyway;
+* at **alpha = 0.25**, where L1 is silent, the observed effect is 0.00576 against an MDE of 0.01587.
+  Closing that gap needs `(0.01587/0.00576)^2` ≈ **7.6x more legs — n = m ≈ 30, about 30 GPU-hours**
+  — to detect a defect whose class L1 already catches one notch up in severity;
+* and the op-local class the soak was first built against is **L0's**, at 11.5 s.
+
+Three generations of positive control and roughly 17 GPU-hours produced no rejection. The honest
+reading is not that the controls were unlucky three times. It is that between L0 (op-local, 11.5 s)
+and L1 (cross-step, free, demonstrated) there is no band of defects left that 300 steps and a
+handful of legs can resolve. **Chaos is the floor, and the soak buys no power against it** — the one
+thing it could buy, replicate legs, costs an order of magnitude more than the gap it would close.
+
+### What this does NOT say
+
+* Not that long-run convergence damage is impossible. It says this *instrument*, at this length and
+  this leg count, cannot demonstrate sensitivity to any defect we have been able to build.
+* Not that the stale control is wasted. It is now **L1's** positive control, the first one L1 has had
+  of a class L0 cannot see, and it stays in the tree for that.
+* Not that the criteria were wrong. The null control passed every time; the thresholds were never
+  retuned; and the v3 run is the first to state its own MDE before its results — which is what made
+  the retirement decision arithmetic rather than a judgement call.
