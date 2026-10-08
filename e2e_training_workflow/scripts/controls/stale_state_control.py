@@ -65,40 +65,64 @@ import sys
 # dlogits -> dh -> dgrad AND wgrad, so it is what the optimizer actually sees. Biasing the forward
 # loss instead would shift the REPORTED number while training proceeded identically -- a cosmetic
 # control that looks like it works. See the long comment in l2_soak.sh for the two wrong choices.
-SITE = "gscale = (g_f.index_select(0, idx) * mg).contiguous()"
+# TWO injection sites, because the control has to reach BOTH instruments or the claim is circular.
+#
+# The soak runs the overlay (`impl.py`, the GPTModel._postprocess replacement). L0 runs the extracted
+# task's candidate (`kernel_src/kernel.py`), whose `target_callable` in meta.json is that SAME
+# `GPTModel._postprocess` -- so L0 really does execute this part of the computation, and the claim
+# "L0 cannot see this" is a claim about L0's one-call STRUCTURE rather than about coverage.
+#
+# That distinction is the whole argument and it nearly shipped unchecked. Patching only impl.py would
+# have made L0 pass for the uninteresting reason that it never ran the patched bytes -- a reference
+# mismatch, the same error already made once here when an attention overlay was compared against a
+# chain it did not belong to. The two files name the same quantity differently; nothing but reading
+# both would have shown that they are the same line.
+SITES = {
+    # impl.py -- what the soak legs run
+    "gscale = (g_f.index_select(0, idx) * mg).contiguous()": ("gscale", "        "),
+    # kernel_src/kernel.py -- what L0 runs
+    "coef[:n] = g_flat.index_select(0, idx) * mg": ("coef", "        "),
+}
 
-PATCH = '''gscale = (g_f.index_select(0, idx) * mg).contiguous()
-        # ---- POSITIVE CONTROL: cross-step staleness, alpha={alpha} -------------------------
-        # Blend in the PREVIOUS invocation's gscale, emulating a workspace buffer that is reused
-        # without being cleared. Invisible to L0 by construction: with one frozen input there is no
-        # previous call, and with a repeated identical input the blend is an algebraic identity.
-        _prev = globals().get("_GEAK_STALE_PREV")
-        _a = {alpha}
-        if _prev is not None and _prev.dtype == gscale.dtype:
-            # Shapes differ step to step (the unmasked-token count varies), so blend over the common
-            # prefix and leave the tail current -- which is what reusing a fixed buffer really does.
-            _k = min(_prev.numel(), gscale.numel())
-            if _k > 0:
-                gscale = gscale.clone()
-                # lerp form, NOT (1-a)*cur + a*prev: when prev == cur the difference is exactly 0.0,
-                # so this is bit-identical for every alpha. The other form leaves ~1 ulp behind.
-                gscale[:_k] = gscale[:_k] + _a * (_prev[:_k].to(gscale.device) - gscale[:_k])
-        globals()["_GEAK_STALE_PREV"] = gscale.detach().clone()
-        # ---- end positive control ----------------------------------------------------------
-'''
+PATCH = """{site_line}
+{ind}# ---- POSITIVE CONTROL: cross-step staleness, alpha={alpha} -------------------------
+{ind}# Blend in the PREVIOUS invocation's value, emulating a workspace buffer that is reused
+{ind}# without being cleared. Invisible to L0 by construction: with one frozen input there is no
+{ind}# previous call, and with a repeated identical input the blend is bit-exactly the identity.
+{ind}_prev = globals().get("_GEAK_STALE_PREV")
+{ind}_a = {alpha}
+{ind}if _prev is not None and _prev.dtype == {var}.dtype:
+{ind}    # Shapes differ step to step (the unmasked-token count varies), so blend over the common
+{ind}    # prefix and leave the tail current -- which is what reusing a fixed buffer really does.
+{ind}    _k = min(_prev.numel(), {var}.numel())
+{ind}    if _k > 0:
+{ind}        {var} = {var}.clone()
+{ind}        # lerp form, NOT (1-a)*cur + a*prev: when prev == cur the difference is exactly 0.0,
+{ind}        # so this is bit-identical for every alpha. The other form leaves ~1 ulp behind.
+{ind}        {var}[:_k] = {var}[:_k] + _a * (_prev[:_k].to({var}.device) - {var}[:_k])
+{ind}globals()["_GEAK_STALE_PREV"] = {var}.detach().clone()
+{ind}# ---- end positive control ----------------------------------------------------------
+"""
 
 
 def patch(path: str, alpha: float) -> None:
     src = open(path).read()
-    if SITE not in src:
-        # Same refusal as the x1.004 control: a control that silently fails to install is a second
-        # candidate leg wearing a control's name, and it would read as "the soak passed".
-        sys.exit("POSITIVE CONTROL: gradient injection point not found in impl.py -- refusing to "
-                 "run a control that would silently be a second candidate leg")
     if "_GEAK_STALE_PREV" in src:
         sys.exit("POSITIVE CONTROL: already patched -- refusing to stack two controls")
-    open(path, "w").write(src.replace(SITE, PATCH.format(alpha=alpha).rstrip(), 1))
-    print(f">>> POSITIVE CONTROL: cross-step staleness alpha={alpha} injected at gscale")
+    found = [k for k in SITES if k in src]
+    if not found:
+        # Same refusal as the x1.004 control: a control that silently fails to install is a second
+        # candidate leg wearing a control's name, and it would read as "the soak passed".
+        sys.exit(f"POSITIVE CONTROL: no known injection point in {path} -- refusing to run a "
+                 "control that would silently be a second candidate leg. Known sites:\n  " +
+                 "\n  ".join(SITES))
+    if len(found) > 1:
+        sys.exit(f"POSITIVE CONTROL: {len(found)} injection points in {path}; refusing to guess")
+    line = found[0]
+    var, ind = SITES[line]
+    open(path, "w").write(src.replace(
+        line, PATCH.format(site_line=line, var=var, ind=ind, alpha=alpha).rstrip(), 1))
+    print(f">>> POSITIVE CONTROL: cross-step staleness alpha={alpha} injected at `{var}` in {path}")
     print(">>> class: cross-step state. L0 cannot see this one -- see --self-test for the proof.")
 
 
@@ -134,7 +158,8 @@ def self_test() -> int:
         ok(blend(h, g, a) != h or a == 0, f"alpha={a}: a DIFFERENT batch is corrupted (training)")
 
     # The defect must survive to the optimizer, not just exist. gscale feeds dgrad and wgrad both.
-    ok(SITE.startswith("gscale ="), "the hook is on gscale, which reaches dgrad and wgrad")
+    # Both instruments must be reachable, or "L0 passed" would only mean "L0 never ran it".
+    ok(len(SITES) == 2, "two injection sites: the soak's impl.py AND the kernel L0 actually runs")
     print()
     if fails:
         print(f"{fails} check(s) FAILED")

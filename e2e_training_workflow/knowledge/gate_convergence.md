@@ -656,11 +656,32 @@ that was the v1 mistake. If alpha = 1.0 is not rejected, the honest report is "t
 demonstrated sensitivity to cross-step staleness at 300 steps / 3 legs", and the soak stays
 unlicensed — the thresholds above are **not** to be retuned to make it fire.
 
+**The control must reach BOTH instruments, or "L0 passed" means nothing.** This nearly shipped
+wrong. The control was first written to patch only `impl.py`, which is what the soak legs run. L0
+runs the extracted task's candidate, `kernel_src/kernel.py`. Had it stayed that way, L0 would have
+passed for the uninteresting reason that **it never executed the patched bytes** — coverage, not
+structure — and the entire argument would have been circular.
+
+Checking rather than assuming showed the claim is in fact sound, for a reason only reading both
+files reveals: the L0 task's `target_callable` in `meta.json` is `GPTModel._postprocess`, the very
+hook the overlay replaces, and `kernel.py` carries the same line under a different name —
+
+```
+impl.py    gscale    = (g_f.index_select(0, idx) * mg).contiguous()
+kernel.py  coef[:n]  =  g_flat.index_select(0, idx) * mg
+```
+
+So L0 really does execute this computation, with `num_cases: 1`. "L0 cannot see it" is therefore a
+statement about L0's one-call **structure**, which is what makes it interesting. The control now
+recognises both sites and refuses a file containing neither. This is the same error — comparing
+against a path the change does not lie on — that produced the retracted +8.46% attention figure.
+
 **Cheap checks that run BEFORE the 3 hours**, because a control that fails to install reads as a
 pass and that has happened here before (`measure_stack.sh` wrote 3528 silent engagement failures):
 
 * `stale_state_control.py --self-test` — the invisibility claim, as arithmetic, no GPU.
-* L0 on the patched overlay — must PASS, confirming invisibility end to end and not just on paper.
+* L0 on the patched **`kernel_src/kernel.py`** — must PASS. On the overlay it would prove
+  nothing; see above.
 * one 30-step leg at alpha = 1.0 — confirms the control engages, and tells us whether L1 already
   catches it. If L1 does, the control is still valid but it is no longer *soak-only*, and the
   result must say which.
