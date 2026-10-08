@@ -185,6 +185,54 @@ def main():
             ok(lsb["blocking"] is False,
                "a clean pair's own sign balance does not fire the detector calibrated from it")
 
+        # ----------------------------------------------- 4d. the L0/L1 rule, all four combinations
+        # A sign test cannot tell a correctness fix from a bias. The rule waives a one-sided move
+        # TOWARD LOWER LOSS when L0 rates the candidate strictly more accurate. The asymmetry is the
+        # safety argument, so every combination is pinned -- not just the one that passes.
+        # grad_norm is given an ALTERNATING perturbation in both candidates so its own sign test
+        # lands mid-range. Without it an untouched grad_norm has delta exactly 0 everywhere, which
+        # scores sign balance 0.0 and blocks for a reason that has nothing to do with the loss rule
+        # under test -- a test artifact, not a property of the gate.
+        def alt(gn):
+            return [g + (0.5 if i % 2 else -0.5) for i, g in enumerate(gn)]
+        lo_lo, gn_lo = synth(1, cross_at=11)
+        for i in range(0, 8):
+            lo_lo[i] -= 0.05                      # one-sided TOWARD LOWER loss over the early window
+        lower = make_leg(root, "cand_lower", lo_lo, alt(gn_lo))
+        lo_hi, gn_hi = synth(1, cross_at=11)
+        for i in range(0, 8):
+            lo_hi[i] += 0.05                      # one-sided toward HIGHER loss
+        higher = make_leg(root, "cand_higher", lo_hi, alt(gn_hi))
+
+        # The null-range rule already makes sb=0.0 unblockable when CLEAN PAIRS THEMSELVES reach
+        # 0.0 -- which they do here (6 pairs: 0.125 0.25 0.25 0.125 0.125 0.0) and did on the real
+        # 7B legs too (0.0 and 0.75 both observed). So on that data the simpler fix alone already
+        # resolves `attn_fmha_bwd_retry`; the L0 rule is a SECOND, independent reason, and it matters
+        # only where sb falls OUTSIDE the clean range. Test it against a band whose range excludes 0.
+        import copy
+        b_tight = copy.deepcopy(b5)
+        b_tight["sign_balance_null_range"] = {
+            "loss": {"min": 0.3, "max": 0.7, "pairs": 6, "values": [0.3, 0.5, 0.7]},
+            "grad_norm": {"min": 0.3, "max": 0.7, "pairs": 6, "values": [0.3, 0.5, 0.7]}}
+
+        def sb_blocks(cand, l0_better):
+            v = tg.verdict(legs[0], cand, b_tight, l0_strictly_better=l0_better)
+            return v["pass"] is False and any("sign balance" in f for f in v["reason"].split(";"))
+
+        ok(sb_blocks(lower, False),
+           "lower loss, L0 NOT strictly better -> BLOCKS (a less accurate op descending faster is "
+           "exactly what a downhill bias looks like)")
+        ok(not sb_blocks(lower, True),
+           "lower loss, L0 strictly better -> waived (the expected shape of a correctness fix)")
+        ok(sb_blocks(higher, True),
+           "HIGHER loss, L0 strictly better -> STILL BLOCKS; accuracy on one frozen microbatch does "
+           "not license a trajectory moving the wrong way")
+        ok(sb_blocks(higher, False),
+           "higher loss, L0 not strictly better -> blocks")
+        v_w = tg.verdict(legs[0], lower, b_tight, l0_strictly_better=True)
+        ok(any("WAIVED" in a for a in v_w.get("advisories", [])),
+           "a waiver is REPORTED, never silent")
+
         # ---------------------------------------------------------------- 5. legacy bands
         legacy = dict(b5)
         legacy.pop("envelope_discriminating", None)

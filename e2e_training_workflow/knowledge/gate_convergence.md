@@ -444,6 +444,38 @@ statistic is blind to whether "downhill" is deserved. **A candidate that fixes a
 to L1 exactly like one that introduces one.** Until that is resolved, an L1 sign-test rejection on a
 candidate L0 rates as *more* accurate should be read as investigate-and-report.
 
+### THE L0/L1 RULE (written 2026-10-08, before being applied to any candidate)
+
+`attn_fmha_bwd_retry` was rejected on loss sign balance **0.000** — the only voting detector that
+fired — while **L0 rated it strictly more accurate than the incumbent on every output**, the
+incumbent failing an analytic `dq` invariant by **1355.79×**. Both statements were true, the
+framework had no rule, and the verdict therefore depended on which layer was read last.
+
+**The rule.** When L0 rates the candidate strictly more accurate than the incumbent on all outputs,
+a one-sided move **toward lower loss** is corroboration rather than evidence of bias, and the sign
+test may not reject on it alone.
+
+**The asymmetry is the entire safety argument**, so it is enumerated rather than implied:
+
+| loss direction | L0 verdict | sign test |
+|---|---|---|
+| **lower** | strictly more accurate | **WAIVED** — the expected shape of a correctness fix |
+| **higher** | strictly more accurate | **BLOCKS** — accuracy on one frozen microbatch does not license a trajectory moving the wrong way; unexplained is not safe |
+| lower | not strictly better | **BLOCKS** — *this is the dangerous case*: a less accurate op descending faster is exactly what a downhill-pointing bias looks like |
+| higher | not strictly better | **BLOCKS** |
+
+A waiver is reported as an advisory with its reason; it is never silent. All four rows are pinned by
+tests.
+
+**What this rule did NOT turn out to decide, and the honest version matters.** Implementing it
+revealed that the *earlier* fix already covers this candidate: the sign test only blocks outside the
+range clean pairs themselves produce, and clean pairs reach **0.0** on both the synthetic data (6
+pairs: 0.125 0.25 0.25 0.125 0.125 **0.0**) and the real 7B legs (**0.0** and 0.75 both observed).
+So `sb = 0.000` was already unblockable before this rule existed. The L0 rule is a **second,
+independent** reason that matters only where sign balance falls *outside* the clean range — narrower
+than it first appeared. It is kept because the case it covers is real and will recur; it is not
+credited with resolving the candidate that motivated it.
+
 **Still open:** the 0.2917% attention-backend pair has still not been separated into "pure numerics"
 versus "the flash path does not preserve packing isolation" (the separating test is
 packed-vs-unpacked per backend). That is a question about that pair, not about the envelope.

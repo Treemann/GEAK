@@ -400,7 +400,7 @@ def calibrate(dirs, safety=3.0, holdout=None):
     return band
 
 
-def verdict(ref_dir, cand_dir, band, candidate_kind="overlay"):
+def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_better=False):
     """The L1 verdict, in the shape training_workflow.js's gateVerdict() consumes: {pass, reason}."""
     rs, cs = _series(ref_dir), _series(cand_dir)
     res = {"pass": None, "reason": "", "checks": {}}
@@ -529,6 +529,40 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay"):
             # scored 0.0 on loss while another scored 0.75. Firing on 0.0 there would have rejected a
             # leg for being identical to itself. So the bar is the observed clean range, when the band
             # carries one -- the same discipline the per-step envelope was held to, and failed.
+            # THE L0/L1 RULE (written 2026-10-08, BEFORE being applied to any candidate).
+            #
+            # A sign test cannot tell a correctness fix from a bias: both make the loss move one way.
+            # Measured case: `attn_fmha_bwd_retry` was rejected on loss sign balance 0.000 -- the only
+            # voting detector that fired -- while L0 rated it strictly MORE accurate than the
+            # incumbent on every output, the incumbent failing an analytic dq invariant by 1355.79x.
+            # Both statements were true and the framework had no rule, so the verdict depended on
+            # which layer was read last.
+            #
+            # THE RULE: when L0 rates the candidate strictly more accurate than the incumbent on all
+            # outputs, a one-sided move TOWARD LOWER LOSS is corroboration, not evidence of bias, and
+            # the sign test may not reject on it alone.
+            #
+            # THE ASYMMETRY IS THE WHOLE SAFETY ARGUMENT, so it is spelled out rather than implied:
+            #   * lower loss  + L0 strictly better -> waived. A more accurate op that descends faster
+            #                                         is the expected shape of a real fix.
+            #   * HIGHER loss + L0 strictly better -> STILL BLOCKS. Being more accurate on one frozen
+            #                                         microbatch does not license a trajectory moving
+            #                                         the wrong way; that combination is unexplained
+            #                                         and unexplained is not safe.
+            #   * either direction, L0 not strictly better -> STILL BLOCKS. This is the dangerous case
+            #                                         the rule must never cover: a candidate that is
+            #                                         LESS accurate and still descends faster is
+            #                                         exactly what a downhill-pointing bias looks like.
+            # Waived is not silent: it is reported as an advisory with the reason.
+            if l0_strictly_better and key == "loss" and sb == 0.0:
+                advisories.append(
+                    "loss moved one way on all early steps (sign balance 0.000) -- WAIVED, not "
+                    "blocking: L0 rates this candidate strictly more accurate than the incumbent on "
+                    "every output, so a faster descent is the expected shape of a correctness fix "
+                    "rather than evidence of bias. A one-sided move toward HIGHER loss, or either "
+                    "direction without that L0 verdict, still blocks.")
+                res["checks"][f"{key}_sign_balance_early"]["waived_by_l0"] = True
+                continue
             null_rng = (band.get("sign_balance_null_range") or {}).get(key)
             if null_rng and null_rng.get("pairs", 0) >= 2:
                 inside = null_rng["min"] <= sb <= null_rng["max"]
@@ -697,7 +731,7 @@ if __name__ == "__main__":
         # consequence: `--candidate-kind kernel_swap` (the flag is `--kind`) fell through to the
         # default "overlay", applying a 0.05% step-1 floor where 2.0% was intended -- 40x tighter,
         # silently, on the gate that decides whether a candidate is numerically acceptable.
-        KNOWN = {"--band", "--kind"}
+        KNOWN = {"--band", "--kind", "--l0-strictly-better"}
         for i, tok in enumerate(sys.argv[2:], start=2):
             if tok.startswith("--") and tok not in KNOWN:
                 sys.exit(f"unknown flag {tok!r}. Known flags for `compare`: {sorted(KNOWN)}. "
@@ -706,8 +740,9 @@ if __name__ == "__main__":
         bandpath = sys.argv[sys.argv.index("--band") + 1] if "--band" in sys.argv else None
         band = json.load(open(bandpath)) if bandpath else {"limits": {}}
         kind = sys.argv[sys.argv.index("--kind") + 1] if "--kind" in sys.argv else "overlay"
+        l0_better = "--l0-strictly-better" in sys.argv
         if kind not in STEP1_FLOOR_PCT:
             sys.exit(f"unknown --kind {kind!r}; known: {sorted(STEP1_FLOOR_PCT)}")
-        print(json.dumps(verdict(sys.argv[2], sys.argv[3], band, kind), indent=2))
+        print(json.dumps(verdict(sys.argv[2], sys.argv[3], band, kind, l0_better), indent=2))
     else:
         sys.exit(_usage())
