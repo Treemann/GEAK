@@ -42,9 +42,22 @@ order, or precision/scaling.
 
 ### On a REJECT, write the finding back to the kernel layer's knowledge base
 
-**Only when `l0.pass` or `l1.pass` is false.** The kernel layer gates on its own frozen unittest and
-its own latency, and it is right to — but neither can see a defect that appears only once the kernel
-runs inside a real training step. This has already cost a run: the 7B attention candidate was
+**Write a card whenever the candidate ITSELF is at fault** — `l0.pass` false, `l1.pass` false, a
+measured **regression**, or `CAND_USABLE: false` with a diagnosis in `INTEGRATOR_NOTES` (the
+candidate never produced a measurable leg: it diverged, hung, or crashed).
+
+**Do NOT write one** when the fault is the measurement rather than the candidate — a band too wide to
+resolve the signal, or a missing aligned comparison. Those say nothing about the kernel and a card
+claiming otherwise is worse than no card.
+
+The gap this closes: `mlp_fc1_swiglu` died at iteration #2 with an **inf gradient**, reproduced
+twice, caught by Megatron's rerun_state_machine. That is the strongest possible result about a
+candidate — and it reached no card, because the rule used to fire only on L0/L1. **The most
+catastrophic failure mode available was the one the knowledge base never heard about.**
+
+Why any of this is needed at all: the kernel layer gates on its own frozen unittest and its own
+latency, and it is right to — but neither can see a defect that appears only once the kernel runs
+inside a real training step. This has already cost a run: the 7B attention candidate was
 **accepted by the lane**, and its card in `_inbox` still says `"validation_status": "accepted"`, with
 its one technique card describing the dk/dv **backward** reduction — the exact area of the defect —
 while the training layer rejected it for an **88.50% step-1 grad_norm collapse**. Nothing in the KB

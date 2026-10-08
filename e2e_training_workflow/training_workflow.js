@@ -800,10 +800,22 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
     noImprove += 1; continue;
   }
 
+  // The Integrator's diagnosis travels to the Auditor, because the Auditor is what writes findings
+  // back to the kernel layer's KB and the worst failures never reach L0/L1 at all. The
+  // mlp_fc1_swiglu candidate died at iteration #2 with an inf gradient, reproduced twice: a stronger
+  // result than any L1 verdict, diagnosed exactly by the Integrator, and recorded in no KB card
+  // because the rule fired only on l0.pass/l1.pass being false. The most catastrophic failure mode
+  // available was the one the knowledge base never heard about.
   const audit = await safeAgentStub('convergence_auditor', 'gate',
-    { TASK: optimized.ext, REF_PROBE: integ.ref.probe_dir, CAND_PROBE: integ.cand.probe_dir,
-      BAND: wfReturn.bands.trajectory_band_path },
-    'Run L0 (out/dgrad/wgrad vs fp32, magnitude AND sign) and L1 (step-indexed envelope).');
+    { TASK: optimized.ext, REF_PROBE: integ.ref && integ.ref.probe_dir,
+      CAND_PROBE: integ.cand && integ.cand.probe_dir,
+      BAND: wfReturn.bands.trajectory_band_path,
+      INTEGRATOR_NOTES: integ.notes || null,
+      CAND_USABLE: !!(integ.cand && legUsable(integ.cand).ok) },
+    'Run L0 (out/dgrad/wgrad vs fp32, magnitude AND sign) and L1 (step-indexed envelope). ' +
+    'If CAND_USABLE is false the candidate never produced a measurable leg — read INTEGRATOR_NOTES ' +
+    'and record THAT as the finding; a candidate that diverges is a stronger result than one that ' +
+    'is merely slow.');
 
   // Forward the Integrator's window-aligned comparison. Omitting it here made alignedDelta() return
   // null on EVERY real gate -- the unit tests pass `comparison` straight into gateVerdict(), so they
