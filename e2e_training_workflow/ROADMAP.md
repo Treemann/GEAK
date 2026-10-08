@@ -288,11 +288,14 @@ either, the conclusion is not to tune it — it is that a ~10 h instrument has n
 300 steps and should be **retired**, as the per-step envelope already was. Thresholds stay fixed
 either way.
 
-### P5 — Close the KB gap found in W1
+### P5 — Close the KB gap found in W1 — **DONE**
 
-A candidate that dies with an inf gradient at iteration #2 writes no KB card, because the rule fires
-on `l0.pass == false || l1.pass == false` and an integration failure is neither. The most
-catastrophic failure mode is the one the knowledge base never hears about.
+`roles/convergence_auditor.md` now fires on "whose fault is it" rather than on which gate voted: a
+card is written whenever the CANDIDATE is at fault — `l0.pass` false, `l1.pass` false, a measured
+regression, **or `CAND_USABLE: false` with a diagnosis in `INTEGRATOR_NOTES`**, which is the case
+that was missing (a candidate that diverged, hung or crashed never reached a gate, so no gate could
+vote). It deliberately does NOT fire when the fault is the measurement — a band too wide, a missing
+aligned comparison — because a card claiming the kernel was bad on that evidence is worse than none.
 
 ## Month 2 — adaptation: other stacks, other cases, tuning
 
