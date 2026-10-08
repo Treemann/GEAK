@@ -123,6 +123,20 @@ else
   bad "calls the sandbox rejects at runtime — a resumed run must replay identically:"
   printf '%s\n' "$CLOCK" | sed 's/^/        /'
 fi
+# (iii) a TEMPORAL DEAD ZONE reference: `const A = {x: B}` where B is declared further down. Valid
+#       JavaScript, accepted by `node --check`, and it throws at LAUNCH with zero agents run --
+#       exactly like the stray export and the clock call before it. PHASE_SCHEMA referencing a
+#       *_SCHEMA declared below it cost one launch. Checked by ordering the declarations.
+PHASE_LN=$(grep -n '^const PHASE_SCHEMA' "$WFJS" | cut -d: -f1)
+if [ -n "$PHASE_LN" ]; then
+  LATE=""
+  for sch in $(sed -n "${PHASE_LN},\$p" "$WFJS" | grep -oE '^const [A-Z_]+_SCHEMA' | awk '{print $2}'); do
+    grep -qE "^  [a-z]+: $sch," "$WFJS" && LATE="$LATE $sch"
+  done
+  [ -z "$LATE" ] && ok "PHASE_SCHEMA references no schema declared below it (no TDZ at launch)" \
+    || bad "PHASE_SCHEMA references schema(s) declared LATER:$LATE — this throws at launch, after
+        zero agents, and node --check cannot see it"
+fi
 NODE="$(command -v node || ls ~/.cursor-server/bin/linux-x64/*/node 2>/dev/null | head -1)"
 if [ -n "$NODE" ]; then
   "$NODE" --check "$WF/training_workflow.js" >/dev/null 2>&1 \

@@ -527,6 +527,12 @@ const AUDIT_SCHEMA = obj({ l0: { type: 'object' }, l1: { type: 'object' },
   kb_rejection_card: { type: ['string', 'null'] } }, ['l0', 'l1']);
 const FINALIZE_SCHEMA = obj({ overlay: { type: 'string' }, patch: { type: 'string' },
   launch: { type: 'string' }, engagement_recheck: { type: 'object' } }, []);
+const CONFIG_SCHEMA = obj({ lever: { type: 'string' }, flags_added: { type: 'array' },
+  ceiling_pct: { type: 'number' }, ref: { type: 'object' }, cand: { type: 'object' },
+  comparison: { type: 'object' }, config_digest_delta: { type: 'object' },
+  peak_reserved_mb: { type: 'object' }, memory_conversion: { type: 'object' } },
+  ['lever', 'ref', 'cand', 'comparison']);
+
 const VALIDATE_SCHEMA = obj({ validation_status: { type: 'string' },
   baseline_useful_tok_s: { type: 'number' }, final_useful_tok_s: { type: 'number' },
   delta_pct: { type: 'number' } }, ['validation_status']);
@@ -563,12 +569,6 @@ if (T0 == null || !isFinite(T0)) {
        `budget is NOT enforced this run. The lane loop is still bounded by budget=${BUDGET} tasks ` +
        `and max_gates=${MAX_GATES}. Pass t0_epoch_ms (epoch ms at launch) to enforce it.`);
 }
-const CONFIG_SCHEMA = obj({ lever: { type: 'string' }, flags_added: { type: 'array' },
-  ceiling_pct: { type: 'number' }, ref: { type: 'object' }, cand: { type: 'object' },
-  comparison: { type: 'object' }, config_digest_delta: { type: 'object' },
-  peak_reserved_mb: { type: 'object' }, memory_conversion: { type: 'object' } },
-  ['lever', 'ref', 'cand', 'comparison']);
-
 const CLOCK_SCHEMA = obj({ epoch_ms: { type: 'number' } }, ['epoch_ms']);
 let clockFailed = false;
 const outOfTime = async () => {
