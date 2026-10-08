@@ -198,6 +198,28 @@ const leg = (o = {}) => Object.assign({
     'a schema-2 vs schema-3 pair says RE-MEASURE, not re-summarise: the v2 sidecar never recorded ' +
     'the fields schema 3 digests, so there is nothing on disk to recover them from');
 
+  // "we measured and it is not there" vs "we could not measure". A real candidate at +1.147% was
+  // recorded as no_win against a 2.467% band -- 16.4x the floor -- because the reference leg's IQR
+  // was 3.324% where this workload gives 0.05-0.11%. The legs were the problem; the record blamed
+  // the candidate.
+  const noisyPair = { ref: leg({ worst_iqr_spread_pct: 3.324, min_steady_steps: 29 }),
+                      cand: leg({ worst_iqr_spread_pct: 1.316, min_steady_steps: 29,
+                                  useful_tok_s_per_gpu: 4815 }),
+                      comparison: { delta_pct: 1.147, window_artifact_pct: 0 }, mode: 'fast' };
+  const nz = gateVerdict(noisyPair);
+  ok(nz.klass === 'inconclusive_noise' && nz.remeasure === true,
+    'a sub-band delta on legs far noisier than the workload is INCONCLUSIVE, not a no_win');
+  ok(/NOT evidence against the candidate/.test(nz.reason),
+    '...and says so, because the two must never be read the same way');
+  // quiet legs, same delta -> an ordinary verdict again, so the rule is about the legs not the delta
+  const quiet = gateVerdict({ ...noisyPair,
+    ref: leg({ worst_iqr_spread_pct: 0.06, min_steady_steps: 29 }),
+    cand: leg({ worst_iqr_spread_pct: 0.10, min_steady_steps: 29, useful_tok_s_per_gpu: 4815 }) });
+  ok(quiet.klass !== 'inconclusive_noise',
+    'the same delta on quiet legs is judged normally — the rule keys on the legs, not the number');
+  ok(quiet.accepted === true,
+    '...and on quiet legs +1.147% clears the floor, which is what the noisy pair could not show');
+
   const inc = v({ cand: leg({ useful_tok_s_per_gpu: 9999, config_digest: 'different99' }) });
   ok(inc.klass === 'incomparable' && !inc.accepted,
     'a +110% delta measured at a DIFFERENT config digest is refused as incomparable, not accepted');

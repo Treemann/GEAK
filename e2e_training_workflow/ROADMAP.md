@@ -192,11 +192,23 @@ the answer is: the step-1 probe, plus a sign test that cannot tell a fix from a 
 
 ## Revised remainder, in priority order
 
-### P1 — Recover what is already measured (~2 h, highest return per GPU-hour)
+### P1 — Re-measure `attn_dense_wgrad_rowslice` on quiet legs (~40 min)
 
-Re-gate `attn_dense_wgrad_rowslice` with the quietest-leg fix in place. It measured **+1.147%** and
-was lost to a 2.467% band that the same legs would now price near 0.5%. One A/B pair, L0 already
-passed. Nothing else on the list returns ~1.1% for an hour of GPU.
+**Correction to this plan's own first draft.** P1 originally said the +1.147% was lost to a *reused
+noisy baseline leg* and that the quietest-leg fix would recover it. Checking before acting showed
+that was wrong: the 2.467% band came from the **gate legs' own** dispersion — reference IQR
+**3.324%**, candidate 1.316% — where this workload normally gives 0.05–0.11%. The baseline fix does
+not touch it.
+
+What the check did find is worse and more useful: the run reported **`no_win`** when the truth was
+**"we could not measure"**. The band was **16.4× the workload floor**, i.e. set by the legs rather
+than by the workload, and on quiet legs the same delta clears the 0.15% floor outright. Now fixed —
+`gateVerdict` returns `inconclusive_noise` with `remeasure: true` in that regime, and it does not
+count toward the stop rule, because a leg too noisy to measure says nothing about whether candidates
+are paying off.
+
+So P1 is a re-measurement, not a recomputation: one A/B pair on quiet legs. The overlay is on disk
+and already passed L0.
 
 ### P2 — Rule the L0/L1 disagreement, then re-decide `attn_fmha_bwd_retry`
 

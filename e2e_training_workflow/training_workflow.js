@@ -308,6 +308,26 @@ function gateVerdict(spec) {
       ...base,
     };
   }
+  // "We measured and it is not there" and "we could not measure" must not look alike. When the band
+  // is set by the LEGS' dispersion rather than by this workload's reproducibility, a sub-band delta
+  // says nothing about the candidate. Measured 2026-09-28: a candidate at +1.147% was recorded as
+  // `no_win` against a 2.467% band -- 16.4x the floor -- because the reference leg had an IQR of
+  // 3.324% where this workload normally gives 0.05-0.11%. On quiet legs that band would have been
+  // the 0.15% floor and +1.147% a clear win. The legs were the problem and the record blamed the
+  // candidate.
+  //
+  // 4x is chosen against the accepted cases rather than picked: the two real wins carried bands at
+  // 3.2x and 3.6x the floor, so a lower threshold would start calling sound gates inconclusive. It
+  // can only ever fire where the verdict was already a non-win, so it cannot turn a win into a doubt.
+  const bandDominatedByLegNoise = band > 4 * ACROSS_JOB_FLOOR_PCT;
+  if (bandDominatedByLegNoise) {
+    return { accepted: false, klass: 'inconclusive_noise', remeasure: true,
+             reason: `${deltaPct.toFixed(2)}% is inside a ${band.toFixed(2)}% band, but that band is ` +
+                     `${(band / ACROSS_JOB_FLOOR_PCT).toFixed(1)}x this workload's floor ` +
+                     `(${ACROSS_JOB_FLOOR_PCT}%) — it was set by leg dispersion, not by the workload. ` +
+                     `This is NOT evidence against the candidate: re-measure the pair on quiet legs.`,
+             ...base };
+  }
   return { accepted: false, klass: 'no_win', reason: `${deltaPct.toFixed(2)}% within band ${band.toFixed(2)}%`, ...base };
 }
 
@@ -829,7 +849,16 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
     }
     wfReturn.rejected = wfReturn.rejected || [];
     wfReturn.rejected.push(record);
-    noImprove += 1;
+    // An inconclusive gate must not count toward the stop rule. noImprove means "candidates are not
+    // paying off"; a leg too noisy to measure says nothing about payoff, and letting it stop the
+    // track would end a run on the box's behaviour rather than on the work's.
+    if (v.klass === 'inconclusive_noise') {
+      wfReturn.inconclusive = wfReturn.inconclusive || [];
+      wfReturn.inconclusive.push({ head: record.head, delta_pct: v.delta_pct, band_pct: v.band_pct });
+      log0(`  INCONCLUSIVE (not counted as a non-win): ${v.reason}`);
+    } else {
+      noImprove += 1;
+    }
   }
   if (noImprove >= 2) { log0('two consecutive non-wins — stopping the kernel track'); break; }
 }
