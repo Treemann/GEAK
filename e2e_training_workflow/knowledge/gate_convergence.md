@@ -676,6 +676,28 @@ statement about L0's one-call **structure**, which is what makes it interesting.
 recognises both sites and refuses a file containing neither. This is the same error — comparing
 against a path the change does not lie on — that produced the retracted +8.46% attention figure.
 
+**MEASURED 2026-10-08 — the invisibility claim, demonstrated rather than argued.** Three arms, the
+same L0 task dir (`l0_gather0923_gate_0924`), the same harness, and crucially **the same line of
+`kernel_src/kernel.py`** as the injection point, so nothing differs between arms but the defect:
+
+| arm | injected at `coef[:n] = g_flat.index_select(0, idx) * mg` | L0 verdict |
+|---|---|---|
+| 1 | nothing (the accepted candidate) | `correct: true` |
+| 2 | **cross-step staleness, alpha = 1.0** (maximal) | **`correct: true`** |
+| 3 | x1.004 bias (op-local numerics) | **`correct: false`** — dgrad `scale_bias +3.78e-03`, wgrad `+4.72e-03` |
+
+Arm 2 did not merely pass. Its numbers are **bit-identical to arm 1** — `out max_abs`
+0.09031867980957031, `scale_bias` −1.27e-04, `dgrad` 4.172325134277344e-07, every digit the same.
+That is the algebra showing up in the instrument: with one frozen input there is no previous
+invocation, so the blend returns its operand untouched and L0 computes exactly what it computes
+without the defect. At full staleness. There is no magnitude at which L0 begins to see it.
+
+Arm 3 is the contrast that makes arm 2 mean something, and it reproduces DECISIONS 3.6c's figures
+from the other injection point (dgrad +3.78e-03 here against +3.80e-03 recorded; wgrad +4.72e-03
+against +4.41e-03 — the small difference is the different site, and is reported rather than smoothed
+over). Same file, same line, same gate: one defect class is caught decisively and the other is
+invisible. **The soak now has a control that is its own to catch.**
+
 **Cheap checks that run BEFORE the 3 hours**, because a control that fails to install reads as a
 pass and that has happened here before (`measure_stack.sh` wrote 3528 silent engagement failures):
 
