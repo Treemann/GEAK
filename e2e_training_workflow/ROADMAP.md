@@ -3,9 +3,15 @@
 > Chinese version: `ROADMAP.zh-CN.md`. Both are maintained together; the numbers here are
 > authoritative if the two ever drift.
 
-Status at the time of writing: `fast` mode runs end to end. Three real runs exist (0.5B/2GPU ×1,
-7B/8GPU ×2) plus 12 soak legs (11 usable; one crashed at step 1). One kernel is accepted and independently re-validated at **+4.66%**.
-Everything below is ordered by two constraints that were **measured this month**, not assumed:
+Status, revised **2026-10-08** (first written 2026-09-24). `fast` mode runs end to end. **Five real
+runs** (0.5B/2GPU ×1, 7B/8GPU ×4) plus 12 soak legs and a 4-leg stack measurement.
+
+**Two kernels accepted, and the combined stack is MEASURED at +12.36%** — four ref/cand pairings
+spanning 0.12 points, null control +0.0706%, and a window-immune `step_median_ms` cross-check at
++12.324%. The savings **compound** (adding predicts +12.00%, compounding +12.34%, measured +12.36%),
+so the two kernels shorten disjoint parts of the step.
+
+Everything below is ordered by two constraints that were **measured**, not assumed:
 
 **Constraint A — a gate that cannot discriminate makes every later number fiction.** Three gates were
 found non-discriminating *after* they had already issued verdicts: the throughput gate accepted on a
@@ -14,10 +20,11 @@ legs (out-of-sample null control fails 3/3); the L2 soak passed a kernel with a 
 gradient bias. **Gate work therefore precedes optimization work in this plan** — not out of caution,
 but because optimization output is unfalsifiable until the gates are.
 
-**Constraint B — one run costs 8–10 h and yields ~2 heads.** The last 7B run: 69 agents, 1331 tool
-calls, 8 h 15 m, 2 of 4 queued heads, stopped on the wall clock. At that rate a calendar month holds ~70–90
-runs *if the box were exclusive*, which it is not — so plan on a fraction of that. **Iteration speed, not agent
-capability, is the binding constraint on everything in Month 2.**
+**Constraint B — a run costs 8–10 h and decides ~2 heads, and that did NOT change.** Overhead removal
+took a run from 10.6 h to 7.9 h, but the head count stayed at 2 both times. The timeline says why:
+`kernel_lane` is **46%** of a run and it is the actual optimisation work. Per-head cost is ~2.5–3 h
+and is not overhead. **The original exit criterion (≥3 heads/run) was the wrong target** — see "What
+this plan got wrong" below.
 
 Assumptions (flag if wrong — they change the plan materially): one 8×MI308X node, shared;
 `rocm/primus:v26.4/5`; bare Megatron + the `--sft` path; no multi-node access yet; effort is
@@ -80,12 +87,13 @@ This table is the most important thing in the document, and every row is measure
 |---|---|---|---|---|
 | **Throughput** | **yes — the only one** | 0 false wins / 47 null pairs | fires on a known +4.66% | band 0.415% on that real pair (old formula: 0.914%) |
 | **L0** op numerics | no (reject only) | scores exactly 0 ref-vs-ref | **rejects ×1.004 bias** | `scale_bias` 2e-3 tol; 11.5 s end to end, ~40 ms for the comparison |
-| **L1** step-1 probe | no | 0.0% (bit-reproducible) | rejects the attention backward | caught −88.5% grad_norm collapse |
-| **L1** per-step envelope | no | **FAILS out-of-sample 3/3** | — | **advisory; retires or is fixed in W1** |
+| **L1** step-1 probe | no | 0.0% (bit-reproducible) | rejects the attention backward | caught −88.5% grad_norm collapse — **the only detector L1 has left** |
+| **L1** sign balance | no | **a true-zero pair scored 0.000** | — | held to a measured clean-pair range; cannot tell a fix from a bug |
+| **L1** per-step envelope | no | **FAILS out-of-sample 3/3** | — | **RETIRED from voting 2026-09-28** |
 | **L2** soak | no | passes | **does NOT reject ×1.004** | underpowered; ~0.9% bias, not 0.4% |
 
 The through-line: **op-local defects belong to L0** (11.5 s end to end), **forward-path changes to the step-1
-probe** (free), and the soak is left with only what neither can see. That is why W3 exists.
+probe** (free), and the soak is left with only what neither can see. That is why P4 exists.
 
 ### Identity, the anti-fiction spine
 
@@ -98,180 +106,169 @@ because a v2 sidecar physically never recorded the fields v3 digests.
 
 ## Progress — what is built, and what is *verified*
 
-Built and **verified on real runs** (134 agents across three training runs, `agents_error: 0`):
+Built and **verified on real runs** (~260 agents across five training runs, `agents_error: 0`):
 
 | area | state |
 |---|---|
-| Measurement layer | **solid.** `useful_tok_s_per_gpu`, warmup detection, occupancy guard, contamination retry, aligned `compare_legs.py`. The instrument that disproved a +7.85% "win". |
-| Six role prompts | all execute; the rejection path and the acceptance path have both been exercised end to end |
+| Measurement layer | **solid.** The instrument that disproved a +7.85% "win" and that answers the headline question |
+| Six role prompts | all execute; accept, reject, and *integration-blocked* paths all exercised end to end |
 | Throughput gate | recalibrated from 47 null pairs; **both controls demonstrated** |
-| L0 | both controls demonstrated; two new op oracles (attention varlen/GQA, lmhead+CE) validated numerically |
-| Extraction → kernel lane | works; produced 18.86× geomean on an isolated kernel → +4.66% end to end |
-| Overlay + engagement proof | 8 ranks, forward and backward counted separately, zero fallbacks |
-| Finalize bundle | self-verifying; `launch.sh` refuses on checksum mismatch |
-| Independent validation | an independent role (Director or Auditor) has overturned an upstream conclusion in **all three** runs |
+| L0 | both controls demonstrated; four op oracles; rejects a ×1.004 gradient bias in 11.5 s |
+| Extraction → kernel lane | works; 18.86× geomean on an isolated kernel → +4.66% end to end |
+| Overlay | **now a STACK** — `GEAK_OVERLAY` takes a list, all-or-nothing, per-overlay counters |
+| Combined delivery | `measure_stack.sh`; **+12.36% measured, engagement proved per overlay on 8 ranks** |
+| Independent validation | an independent role overturned an upstream conclusion in **all five** runs |
 
-Built but **not yet trustworthy**:
+**Decided heads** (7B):
 
-- **L1 per-step envelope** — falsified out of sample; advisory by default (W1 decides its fate)
-- **L2 soak** — tooling and a pre-registered spec exist; has never issued a verdict carrying weight
+| head | result |
+|---|---|
+| `lmhead_ce_unmasked_gather` | **accepted, +4.66%** |
+| `mlp_fc2_down` | **accepted, +7.34%** — wgrad 13× closer to fp32 than the original |
+| `attn_fmha_fwdbwd_gqa_d128_causal` | rejected — backward defect, step-1 grad_norm −88.50% |
+| `mlp_fc1_swiglu` | rejected — inf gradient at iteration #2, reproduced twice |
+| `attn_dense_wgrad_rowslice` | `no_win` at **+1.147%** vs a band of 2.467% — **recoverable, see below** |
+| `attn_fmha_bwd_retry` | rejected by a detector since shown non-discriminating — **unresolved** |
 
-**Not built:**
+**Built but not trustworthy, and the picture got worse rather than better:**
 
-- **ConfigSweep / `deep` mode** — refuses to run (W2)
-- **`mode=bakeoff` from this layer** — structurally unreachable, costs a nesting level the runtime
-  does not have; must be driven from the top
-- **Multi-node** — unverified, and the overlay mechanism explicitly does not survive it
-- **TP > 1** — now *refused* rather than silently wrong (the LM-head oracle would freeze a
-  shard-local logsumexp)
-- **Second stack adapter** — the seam exists with one implementation
+- **L1 is now effectively the step-1 probe alone.** The per-step envelope was retired from voting
+  (4 runs, 4 firings, 0 times load-bearing). Within a week the *other* voting detector, early-window
+  sign balance, was falsified the same way: a pair with a **true delta of exactly zero** scored
+  0.000. It is now held to a measured clean-pair range, but the deeper problem is recorded and open —
+  **a sign test cannot separate a correctness fix that descends faster from a bias pointing
+  downhill**, and it rejected a candidate L0 rates *strictly more accurate* than the incumbent.
+- **L2 soak** — tooling and a pre-registered spec exist; still has never issued a verdict with weight.
 
-### Results to date
+**Not built:** ConfigSweep / `deep` mode · `mode=bakeoff` from this layer (structurally unreachable)
+· multi-node · TP > 1 (refused, not supported) · a second stack adapter.
 
-| head | cp_share | result |
+### Recoverable value sitting on disk
+
+Two candidates were *measured* and then lost to instrument defects that are now fixed. Re-gating them
+costs ~1 h each, against ~3 h to decide a fresh head:
+
+- **`attn_dense_wgrad_rowslice`, +1.147%.** Rejected because a reused noisy baseline leg (IQR 1.842%
+  against 0.05–0.11% for its siblings) inflated the band to 2.467%. The reference is now the
+  *quietest* leg, which would price that pair near 0.5%. The overlay already passed L0.
+- **`attn_fmha_bwd_retry`.** Rejected solely on the sign test that was falsified days later, while
+  L0 rates it strictly more accurate than the incumbent — which fails an analytic `dq` invariant by
+  **1355.79×**. This one needs a decision, not just a re-run: it is the concrete case where L0 and L1
+  disagree and the framework has no rule for it.
+
+## What this plan got wrong
+
+Worth recording, because the errors are more useful than the parts that went as written.
+
+**1. "≥3 heads per run" was the wrong exit criterion.** Overhead removal worked — 10.6 h → 7.9 h —
+and the head count did not move, because `kernel_lane` is 46% of a run and it *is* the work. Chasing
+heads-per-run would have meant cutting optimisation depth to make a number go up. The useful metric
+is **cost per decided head including rejections**, and on that the real lever turned out to be not
+re-deriving decided answers (`skip_heads`, `baseline_dirs`) rather than running faster.
+
+**2. The plan audited the decision path and never looked at the delivery path.** Nothing in it
+noticed that two accepted kernels **could not be run together** — `GEAK_OVERLAY` took one manifest,
+and the two overlays rebind different symbols. The workflow could accept N candidates and deliver
+none of them as a stack. A roadmap for a system that *decides* things should ask, at every stage,
+what happens to the things it decided.
+
+**3. "Decide the envelope's fate" was too small a question.** Deciding it exposed that the problem
+was not one detector: the sign test fell to the same control within a week. The right question was
+**"what can L1 actually detect, and what is left when the undemonstrable parts are removed?"** — and
+the answer is: the step-1 probe, plus a sign test that cannot tell a fix from a bug.
+
+## Month 1 — status against the original plan
+
+| week | item | status |
 |---|---|---|
-| `lmhead_ce_unmasked_gather` | 6.41% | **accepted, +4.66% independently validated** |
-| `attn_fmha_fwdbwd_gqa_d128_causal` | 18.68% | **rejected** — backward defect, step-1 grad_norm −88.50% |
-| `swiglu_fwd_bwd_fused` | 3.4% | not attempted (expected 1.13%) |
-| `mlp_gate_up_gemm_bf16_n37888` | 36.17% | not attempted (expected 1.05% — big share, little headroom) |
-| `rope_fused_fwd_bwd` | 1.3% | not attempted (expected 0.78%) |
+| W1 | decide the L1 envelope's fate | ✅ **retired from voting**, on 4-run evidence |
+| W1 | feed the attention defect back to the kernel layer | ✅ both channels (in-run constraint, cross-run KB card) |
+| W1 | rejection diagnostics become KB inputs | ⚠️ **gap**: fires on L0/L1 failure only, so the *inf-gradient* candidate — the most catastrophic failure available — produced no card |
+| W2 | ConfigSweep / `deep` mode | ❌ not started |
+| W3 | L2 soak with a correct positive-control class | ❌ not started |
+| W4 | iteration speed | ⚠️ 10.6 h → 7.9 h, head count unchanged; criterion was wrong (see above) |
+| W4 | TP > 1, packed coverage | ❌ still refused / untouched |
+| — | **multi-overlay delivery + combined measurement** | ✅ **unplanned, and the most valuable thing done** |
 
-### What the first month of running actually produced
+## Revised remainder, in priority order
 
-Fourteen defects in four classes — not counting several smaller ones fixed in passing — and the
-distribution is the lesson: **every launch-blocking one was plumbing, none
-was in the measurement science.** Four stopped a run outright (a stray `export`; a clock the sandbox
-does not have; eight schemas declared and never passed; three nesting levels where one is allowed).
-Four were gates that issued verdicts they could not support. Three were identity/integrity holes
-(`config_digest` covering five fields; `impl_digest` hashing a path; two runs merged into one probe
-dir). Three were silent-wrong-default bugs (`--kind` ignored → a 40× tighter floor; a report written
-to the repo root; TP>1 uncovered).
+### P1 — Recover what is already measured (~2 h, highest return per GPU-hour)
 
-None of them were found by reading the code. All of them were found by running it and by insisting
-that each gate demonstrate, on a known input, that it can fail.
+Re-gate `attn_dense_wgrad_rowslice` with the quietest-leg fix in place. It measured **+1.147%** and
+was lost to a 2.467% band that the same legs would now price near 0.5%. One A/B pair, L0 already
+passed. Nothing else on the list returns ~1.1% for an hour of GPU.
 
----
+### P2 — Rule the L0/L1 disagreement, then re-decide `attn_fmha_bwd_retry`
 
-## Month 1 — make the thing correct, complete, and fast enough to iterate
+This is a **framework** gap, not a candidate problem, and it will recur. L0 says a candidate is
+strictly more accurate than the incumbent on every output; L1's sign test rejects it for descending
+one-directionally. Both statements are true. The framework has no rule, so the verdict today depends
+on which layer is read last.
 
-### Week 1 — close the open gate defects and the feedback loop
+A defensible rule, to be written down *before* it is applied to this candidate: **when L0 rates a
+candidate strictly more accurate than the incumbent on all outputs, a one-sided loss improvement is
+corroboration rather than evidence of bias, and the sign test may not reject on it alone.** The
+dangerous case it must not cover is a candidate that is *less* accurate and still descends faster.
 
-The gates are the product. Three concrete items, all already diagnosed:
+### P3 — ConfigSweep / `deep` mode (the largest remaining lever by a wide margin)
 
-| item | evidence | exit criterion |
-|---|---|---|
-| **Decide the fate of the L1 per-step envelope** | Falsified out-of-sample twice in one session (5/5/6 exceedances on true-zero-delta pairs); structurally can't see a +25% steady-window loss shift because identical legs already disagree ~8.9% by step 12 | Either an envelope that passes an out-of-sample control on ≥3 workloads, or the envelope is **formally retired** and L1 is documented as = step-1 probe + sign balance. Do not leave it half-alive. |
-| **Feed the attention backward defect back to the kernel layer** | step-1 grad_norm 74.109 → 8.524 (−88.50%, 100–200× the noise floor) with the forward clean (p=0 pair −0.1999%) | A rejection emits a machine-readable diagnostic the kernel lane consumes as a starting constraint; re-running that head does not re-discover it from zero |
-| **Rejection diagnostics become KB inputs** | KB learned cards exist but record *wins*; the attention rejection's isolating experiment (p=0 matched pair) was re-invented by hand | A rejected candidate writes a card; the next lane on the same op reads it |
+The kernel track at 7B is visibly converging: queue expectations fell from 5.82% to **1.37% / 1.24%**.
+Meanwhile every run has reported the same unexploited opportunity: **70.1% of tokens are padding**.
+Packing raises `useful_tokens` *directly*, where a kernel win only shortens `step_time` — and the
+remaining heads are worth ~1% each.
 
-**Why first:** these are the only items where the analysis is already done and only the plumbing is
-missing. They are also what stops Week 2 from producing numbers nobody can trust.
+Seam hooks 1–6 already exist in `fast` with trivial behaviour, so this is wiring a designed seam.
+**Exit criterion:** a `deep` run that gates a config change through the same gates as a kernel
+change, with the memory-conversion path exercised.
 
-### Week 2 — ConfigSweep / `deep` mode
+**Sequencing note:** do P3 *after* P2. A config change moves `config_digest` by design, so every
+sweep leg is a new identity; starting that while a gate rule is unsettled compounds two unknowns.
 
-The single largest missing feature. `deep_mode: true` currently **refuses to run**, and `fast` mode's
-read-only diagnosis already emits its requirements list:
+### P4 — L2 soak, blocked on a correct positive control
 
-- **71.3% of tokens are padding.** Packing raises `useful_tokens` *directly*; a kernel win only
-  shortens `step_time`. This is arithmetically the larger lever and it has been sitting in the
-  diagnosis output of every run.
-- `comm_overlap_pct = 0.0` — latent, scales with model size and DP degree.
+Unchanged and still correct: the soak's control must be a defect **L0 structurally cannot see** —
+cross-step state, accumulation over ~19 200 invocations, allocator effects. L0 rejects an op-local
+bias in 11.5 s that two 300-step soaks missed entirely. **Do not run another soak until such a
+control exists and the soak rejects it.**
 
-Seam hooks 1–6 exist in `fast` with trivial behaviour, deliberately (DECISIONS 5.4), so this is
-wiring a designed seam rather than inventing one.
+### P5 — Close the KB gap found in W1
 
-**Exit criterion:** a `deep` run that proposes, measures and gates at least one config change through
-the same gates as a kernel change, with the **memory-conversion** path exercised (today memory is
-banked because there is no knob to spend it with).
-
-**Risk:** config changes alter `config_digest` by design, so every sweep leg is a new identity.
-Budget for the comparison discipline, not just the sweep.
-
-### Week 3 — L2 that can speak, and the soak's real target
-
-L2 is named in the docs, auto-triggers on `risk_class: backward`, and **has never issued a verdict
-that carries weight**. Two runs (~15 h) both ended ADVISORY.
-
-The reframing from Week-0 evidence: **op-local numerics is L0's job** — L0 rejects the ×1.004 bias in
-11.5 s end to end -- ~40 ms for the comparison itself -- while two 300-step soaks miss it entirely. So the soak's positive control must be a defect of a
-class L0 *structurally cannot see*, because L0 evaluates one frozen microbatch:
-
-- cross-step state corruption (the accepted lmhead kernel accumulates into `main_grad` — precisely
-  this class)
-- accumulation error that only compounds over ~19 200 invocations
-- allocator / fragmentation effects
-- non-determinism that averages out in one call but not over an epoch
-
-**Exit criterion:** a positive control of that class, injected deliberately, that the soak **rejects**
-— and that L0 **passes**. Until both halves hold, the soak stays unrun; ~10 h that cannot demonstrate
-its own sensitivity buys nothing.
-
-### Week 4 — iteration speed, then coverage
-
-**Speed (Constraint B).** Today: Setup takes 3 baseline legs per run (~25 min at 7B) and every run
-re-profiles from the bare stack. Candidates:
-- persist and reuse baselines keyed by `config_digest` + `digest_schema` (the digest now actually
-  covers identity, since schema 3)
-- resume a stopped run from `unexplored_heads` instead of re-deriving the queue
-- overlap lane work with gate legs where the barrier allows
-
-**Exit criterion:** ≥3 heads per run at the same wall clock, measured.
-
-**Coverage.** Two known holes, both currently *refused* rather than wrong — which is the right state,
-but they bound applicability:
-- **TP > 1**: the LM-head capture now refuses it (the oracle would freeze a shard-local logsumexp).
-  Unblocking needs a vocab-parallel reference.
-- **Packed data**: the accepted +4.66% is specific to ~70% padding and **shrinks toward zero** when
-  packed. Any claim outside SFT-with-padding is currently unsupported.
-
----
+A candidate that dies with an inf gradient at iteration #2 writes no KB card, because the rule fires
+on `l0.pass == false || l1.pass == false` and an integration failure is neither. The most
+catastrophic failure mode is the one the knowledge base never hears about.
 
 ## Month 2 — adaptation: other stacks, other cases, tuning
 
-Month 2 assumes Month 1 delivered trustworthy gates and ≥3 heads/run. **If it did not, do not start
-Month 2** — adapting an instrument that cannot discriminate multiplies the fiction across stacks.
+Gated, as before: if the gates are not trustworthy, adapting the instrument multiplies the fiction
+across stacks. That gate is **closer to met than it was** — the throughput gate and L0 both have two
+demonstrated controls — but L1 is now one probe plus an unresolved rule, so read "trustworthy" as
+"trustworthy for throughput and op numerics; weak for trajectory".
 
-### Week 5–6 — a second training stack
+### A second training stack
 
-`scripts/adapters/<stack>.sh` is a designed seam with exactly one implementation (megatron), so the
-seam is **unvalidated**: one implementation cannot show which assumptions leaked. Candidates in
-rough order of value: Primus (same box, least distance), TorchTitan / DeepSpeed (different
-abstractions, harder and therefore more informative).
+`scripts/adapters/<stack>.sh` still has exactly one implementation, so the seam is **unvalidated**.
+What it actually tests: whether the probe is genuinely stack-neutral (it exists because upstream
+Megatron reports no tokens/s; a stack that *does* will expose whether ours is comparable), whether
+the config IR survives or is Megatron vocabulary in an IR's clothes, and whether the capability
+manifest routes correctly.
 
-What the second adapter actually tests, and why this is not busywork:
-- Is the **probe** genuinely stack-neutral? It exists because upstream Megatron reports no tokens/s
-  at all; a stack that *does* report its own number will expose whether ours is comparable.
-- Does the **config IR** survive, or is it Megatron vocabulary wearing an IR's clothes (DECISIONS 6.1)?
-- Does the **capability manifest** route correctly — it has already caught one over-claim
-  (`step_ranged_profiler`).
+**Exit criterion:** one accepted kernel on the second stack through the same gates, with the adapter
+diff confined to `scripts/adapters/`. Anything forced outside that directory is a leak — record it.
 
-**Exit criterion:** one accepted kernel on the second stack, gated by the same gates, with the
-adapter diff confined to `scripts/adapters/`. Any change forced *outside* that directory is a leak
-and should be recorded as such.
-
-### Week 7 — other cases
-
-In rough order of expected information per GPU-hour:
+### Other cases, by information per GPU-hour
 
 | case | why | what it probably breaks |
 |---|---|---|
-| **Packed sequences** | the largest known lever, and the current win's stated limitation | attention isolation across segments; the rope/varlen path already needed squeezing at MBS=1 |
-| **TP > 1 / PP > 1** | `config_digest` claims to cover the parallel mapping but was covered on *no leg ever measured* | vocab-parallel references; per-rank capture; straggler bucket (empty at TP1×DP8, untested above) |
-| **A different model family** (e.g. MoE) | head-op *class* already changes with scale (0.5B → attention bwd; 7B → GEMM) | routing/expert ops have no oracle; critical-path model assumes dense |
-| **Longer sequence / different precision** | changes the arithmetic intensity the whole ranking rests on | fp8 would need new L0 tolerances — the current ones are anchored on the original's own bf16 error |
+| **Packed sequences** | the largest known lever; also the stated limit of the current +12.36% | attention isolation across segments; the varlen/rope path already needed squeezing at MBS=1 |
+| **TP > 1 / PP > 1** | `config_digest` claims to cover the parallel mapping but has covered it on *no leg ever measured* | vocab-parallel references (the LM-head capture already refuses TP>1); per-rank capture; the straggler bucket, empty at TP1×DP8 and untested above |
+| **A different model family** (MoE) | the head op's *class* already changes with scale | routing/expert ops have no oracle; the critical-path model assumes dense |
+| **Longer sequence / fp8** | changes the arithmetic intensity the whole ranking rests on | fp8 needs new L0 tolerances — the current ones anchor on the original's own bf16 error |
 
-### Week 8 — tuning and campaign mode
+### Campaign mode and per-workload bands
 
-- **Campaign mode**: several workloads, one budget, KB carried across. The KB identity is already
-  `config_digest`-hashed (seam hook 6), so this is closer than it looks.
-- **Revisit the band per workload class.** `ACROSS_JOB_FLOOR_PCT` now lives in `workloads/*.env`
-  (0.15% at 7B, 0.5% at 0.5B) from 47 measured null pairs. Each new workload needs its own, and the
-  cheapest lever remains **window length**, not the band: ≥29 steady steps halved the 0.5B noise
-  floor.
-- **Close the loop on the three unexplored heads** (swiglu 1.13%, mlp_gate_up 1.05%, rope 0.78%) once
-  runs are cheap enough that ~1% items are worth a gate.
-
----
+KB identity is already `config_digest`-hashed, so carrying knowledge across workloads is close. Each
+new workload needs its own `ACROSS_JOB_FLOOR_PCT` measured into `workloads/*.env`; and the cheapest
+precision lever remains **window length**, not the band — ≥29 steady steps halved the 0.5B floor.
 
 ## Cross-cutting, every week
 
@@ -283,6 +280,12 @@ In rough order of expected information per GPU-hour:
   named no path.
 - **Every claim in DECISIONS.md names a number and where it came from.** Keep it that way; it is the
   reason this month's wrong turns were findable.
+- **Audit the delivery path, not just the decision path.** Two accepted kernels could not be run
+  together for a fortnight and nothing noticed, because every check asked "is this verdict sound?"
+  and none asked "can we ship what we accepted?".
+- **Writing the warning is not the same as heeding it.** The combined-stack measurement failed its
+  first attempt on exactly the per-run-manifest trap that the bundle's `launch.sh` warns about and
+  that `l2_soak.sh` guards against — both of which this project had already written down.
 
 ## Known risks
 
@@ -293,5 +296,9 @@ In rough order of expected information per GPU-hour:
 3. **Chaos is the noise floor.** Measured: no statistic averaged *within* a run buys power, because
    divergence is serially correlated. Any future convergence work must buy power with **legs**, not
    steps — this is a permanent property of the problem, not a current limitation.
-4. **The plan is gate-heavy and may read as slow.** The counter-evidence is this month: the headline
-   number survived every audit, while three gates did not. The gates were the risk.
+4. **The plan is gate-heavy and may read as slow.** The counter-evidence is this fortnight: the
+   headline number survived every audit — and is now a *measured* +12.36% rather than an arithmetic
+   guess — while **five** gates or detectors did not survive. The gates were the risk.
+5. **L1 is thin and the project should say so.** After two retirements it is one zero-noise probe
+   plus a sign test that cannot distinguish a correctness fix from a bias. Trajectory-level
+   confidence currently rests on L0 being strong, not on L1 being strong.
