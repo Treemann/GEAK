@@ -476,6 +476,48 @@ independent** reason that matters only where sign balance falls *outside* the cl
 than it first appeared. It is kept because the case it covers is real and will recur; it is not
 credited with resolving the candidate that motivated it.
 
+### ConfigSweep needs a different comparison basis, and loses two gates (2026-10-08)
+
+The roadmap called ConfigSweep "wiring a designed seam". Checking first showed it is not. Every
+trajectory instrument here rests on one premise, stated in `trajectory_gate.py:38` — *both legs must
+run the same seed and the same data order, or step i is not the same batch*. Config levers split on
+exactly that line:
+
+| class | levers | step i same batch? | step-1 probe | step-aligned delta |
+|---|---|---|---|---|
+| **A — changes HOW** | attention-backend, `NVTE_*`, recompute, grad-accum-fusion | yes | valid | valid |
+| **B — changes WHAT per step** | **packing**, GBS, MBS, seq-length | **no** | **invalid** | **invalid** |
+
+Class A is already gateable today — those keys live in `IMPL_KEYS`, i.e. the digest treats them as
+implementation, not identity. **The valuable part of ConfigSweep is exactly the part the existing
+gates cannot judge**: the one lever worth the most here, 70.1% padding, is Class B.
+
+`scripts/compare_legs_tokens.py` supplies the only basis that survives a Class-B change: **time to
+consume the same number of useful tokens.** `useful_tokens` counts non-pad, loss-unmasked tokens, so
+packing changes how fast they are consumed, not how many exist.
+
+**Measured, including the mistake that nearly shipped.** The first version let each leg use its own
+detected warmup — so the two windows started at different places in the data stream and re-acquired
+the sample-composition artifact the whole comparator exists to avoid:
+
+| | null control (true delta 0) |
+|---|---|
+| each leg's own warmup | **1.6 – 2.9%** |
+| common warmup (`max` of both), as `compare_legs.py` does | **0.007 – 0.30%** |
+| step-aligned comparator, same pairs | 0.035 – 0.071% |
+
+So it is usable for signals above roughly 1%, and it is **not** equivalent to the step-aligned
+comparator — about 4–8× noisier at best. Against four known same-data-order pairs it agrees to
++0.004 / −0.330 points on two and diverges by −0.590 / −1.827 on the other two. That divergence is
+**semantic, not error**: when a kernel's step time correlates with how many useful tokens the step
+holds — the row-slice candidate is exactly that — "per step" and "per useful token" are different
+questions with different right answers.
+
+**What no basis restores:** the step-1 forward probe and the per-step envelope compare step i to
+step i, so a Class-B config change has **no trajectory gate at all**. That is a safety gap to state
+wherever such a result is reported, not to discover afterwards. L0 does not apply either — no kernel
+changed. A packing result would rest on throughput alone.
+
 **Still open:** the 0.2917% attention-backend pair has still not been separated into "pure numerics"
 versus "the flash path does not preserve packing isolation" (the separating test is
 packed-vs-unpacked per backend). That is a question about that pair, not about the envelope.
