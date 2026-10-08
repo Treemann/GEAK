@@ -392,6 +392,10 @@ function makeBarrier(poolSize) {
 // silently stale reference leg would hide.
 // ===========================================================================
 let curConfig = null;                 // hook 1: carried config IR; constant in fast
+// Declared HERE, with the other carried state, not inside KernelTrack. ConfigSweep runs BEFORE
+// that block and passes it to the Tuner, and a `let` read above its declaration is a temporal
+// dead zone error that costs a launch -- this one cost 3 agents and 24 minutes.
+let curOverlay = null;                // the carried accepted overlay, or null
 const bankedMemory = [];              // hook 5 input
 
 function benchInputs(config, tag) {   // hook 2: config is ALWAYS an explicit argument
@@ -796,7 +800,6 @@ if (want('config')) {
 // Lanes may use the whole GPU pool; a gate DRAINS them, because a training A/B needs every GPU.
 // ---------------------------------------------------------------------------
 phase('KernelTrack');
-let curOverlay = null;
 let refLeg = baseline;          // the carried accepted stack, not the bare baseline
 let noImprove = 0;
 
