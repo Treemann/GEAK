@@ -158,6 +158,34 @@ Note also what the unaligned column does: on identical data it ranges **+7.39% t
 **5.5-point** spread, with the artifact reaching 4.89%. The same four legs would support almost any
 story if the windows were not aligned.
 
+### 4e. A noisy leg corrupts the DELTA, not just the band (2026-10-08)
+
+`attn_dense_wgrad_rowslice` was recorded `no_win` at **+1.147%** against a 2.467% band. Re-measured
+on quiet reference legs it is **+8.46%** — `accepted`, and **seven points** from the original figure.
+
+| | reference IQR | candidate IQR | aligned delta |
+|---|---|---|---|
+| original gate | **3.324%** | 1.316% | +1.147% |
+| re-measurement | **0.110% / 0.079%** | 2.927% / 2.236% | **+8.46 / +8.38 / +8.41 / +8.43** |
+
+Four pairings spanning 0.08 points, null control **+0.0353%**, `step_median_ms` cross-check
+**+8.58%**. The verdict is not marginal.
+
+**The lesson corrects the one drawn when the guard was written.** `inconclusive_noise` was added on
+the reasoning that *"the delta is sound, the band is merely too wide to resolve it"*. That was wrong
+in a way that makes the guard **more** necessary, not less: the noisy reference leg corrupted the
+**delta itself** by seven points. On legs that dispersed, neither number meant anything. "A sub-band
+delta on legs far noisier than the workload says nothing about the candidate" turns out to be
+literally true rather than a statement about statistical power.
+
+**The candidate's own dispersion is intrinsic, and that is a finding about the kernel.** Both
+re-measured candidate legs sit at **2.2–2.9% IQR** against references at 0.08–0.11%. This kernel
+takes a runtime live-row-prefix slice of two backward GEMMs, and `n_live/M` ranges over 0–100% across
+the 13 440 calls per rank — so its step time is **data-dependent by construction**. That is a real
+property to carry forward, not noise to average away: this kernel is fast *and* variable, and any
+future band involving it will be wide for a legitimate reason. It is also why the win survives
+scrutiny — +8.46% clears even the 2.02% band its own variance produces.
+
 ## 5. A leg is not a measurement unless it is clean
 `status == "ok"`, no hang, and `occupancy_verdict == "clean"`. This node carries ~20 unrelated
 containers; a neighbour taking a GPU mid-leg drags one side down and the delta becomes fiction.

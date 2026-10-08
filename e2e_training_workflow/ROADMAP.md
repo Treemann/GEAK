@@ -192,7 +192,7 @@ the answer is: the step-1 probe, plus a sign test that cannot tell a fix from a 
 
 ## Revised remainder, in priority order
 
-### P1 — Re-measure `attn_dense_wgrad_rowslice` on quiet legs (~40 min)
+### P1 — DONE (2026-10-08): `attn_dense_wgrad_rowslice` is **+8.46%**, accepted
 
 **Correction to this plan's own first draft.** P1 originally said the +1.147% was lost to a *reused
 noisy baseline leg* and that the quietest-leg fix would recover it. Checking before acting showed
