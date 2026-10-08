@@ -158,33 +158,42 @@ Note also what the unaligned column does: on identical data it ranges **+7.39% t
 **5.5-point** spread, with the artifact reaching 4.89%. The same four legs would support almost any
 story if the windows were not aligned.
 
-### 4e. A noisy leg corrupts the DELTA, not just the band (2026-10-08)
+### 4e. RETRACTED, and the retraction is the lesson (2026-10-08)
 
-`attn_dense_wgrad_rowslice` was recorded `no_win` at **+1.147%** against a 2.467% band. Re-measured
-on quiet reference legs it is **+8.46%** — `accepted`, and **seven points** from the original figure.
+**What was claimed here hours earlier, and is false:** that `attn_dense_wgrad_rowslice` had been
+recorded `no_win` at +1.147% because a noisy reference leg "corrupted the delta by seven points",
+and that it was really worth +8.46%.
 
-| | reference IQR | candidate IQR | aligned delta |
+**What actually happened.** The two measurements used **different references**, so they measure
+different quantities and both are correct:
+
+| | reference leg carried | candidate leg carried | measures |
 |---|---|---|---|
-| original gate | **3.324%** | 1.316% | +1.147% |
-| re-measurement | **0.110% / 0.079%** | 2.927% / 2.236% | **+8.46 / +8.38 / +8.41 / +8.43** |
+| original gate | bare **+ fc2** | + attn | attn's increment **on top of fc2** |
+| re-measurement | **bare** | attn overlay, which **chains fc2 internally** | **fc2 + attn combined** |
 
-Four pairings spanning 0.08 points, null control **+0.0353%**, `step_median_ms` cross-check
-**+8.58%**. The verdict is not marginal.
+`overlays/attn_outproj_0928/impl.py` says so in its own header — it *delegates to* the accepted fc2
+overlay rather than replacing it, importing that module by path, because both rebind the same symbol
+(`transformer_engine…linear:_Linear`) and `_Linear` serves two call sites per layer. The
+re-measurement's reference had **zero** `geak-overlay` lines in its log; the original gate's
+reference had them.
 
-**The lesson corrects the one drawn when the guard was written.** `inconclusive_noise` was added on
-the reasoning that *"the delta is sound, the band is merely too wide to resolve it"*. That was wrong
-in a way that makes the guard **more** necessary, not less: the noisy reference leg corrupted the
-**delta itself** by seven points. On legs that dispersed, neither number meant anything. "A sub-band
-delta on legs far noisier than the workload says nothing about the candidate" turns out to be
-literally true rather than a statement about statistical power.
+**They agree.** fc2 alone is +7.34% against bare; fc2 + attn is +8.46% against bare; so attn's
+increment is `1.0846 / 1.0734 − 1 = +1.043%`, against the **+1.147%** the original gate measured
+directly — **0.10 points apart**. The original figure was right, the noisy legs did not corrupt it,
+and the candidate is worth about **+1.0%** on top of fc2, not +8.46%.
 
-**The candidate's own dispersion is intrinsic, and that is a finding about the kernel.** Both
-re-measured candidate legs sit at **2.2–2.9% IQR** against references at 0.08–0.11%. This kernel
-takes a runtime live-row-prefix slice of two backward GEMMs, and `n_live/M` ranges over 0–100% across
-the 13 440 calls per rank — so its step time is **data-dependent by construction**. That is a real
-property to carry forward, not noise to average away: this kernel is fast *and* variable, and any
-future band involving it will be wide for a legitimate reason. It is also why the win survives
-scrutiny — +8.46% clears even the 2.02% band its own variance produces.
+**The lesson is the one this file already states and I violated anyway** (§4d): *per-candidate
+deltas are measured against different references and do not compare.* The guard that would have
+caught it exists in the orchestrator — an accepted candidate becomes the carried reference, and the
+Integrator is told to use that, not the bare baseline — but a hand-run re-measurement bypasses the
+orchestrator entirely, and nothing checked what the reference leg was carrying. **Before comparing
+two deltas, verify both references, by reading the overlay lines in each leg's log.**
+
+`inconclusive_noise` (committed the same day) survives this retraction intact and for its original
+reason: a 2.467% band genuinely cannot resolve a +1.147% signal, so "we could not measure" was the
+honest verdict. What does not survive is the justification added with it — the delta was never
+corrupted.
 
 ## 5. A leg is not a measurement unless it is clean
 `status == "ok"`, no hang, and `occupancy_verdict == "clean"`. This node carries ~20 unrelated
