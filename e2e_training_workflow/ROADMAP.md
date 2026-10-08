@@ -225,7 +225,33 @@ candidate strictly more accurate than the incumbent on all outputs, a one-sided 
 corroboration rather than evidence of bias, and the sign test may not reject on it alone.** The
 dangerous case it must not cover is a candidate that is *less* accurate and still descends faster.
 
-### P3 — ConfigSweep / `deep` mode (the largest remaining lever by a wide margin)
+### P3 — ConfigSweep / `deep` mode — **DONE 2026-10-08**
+
+A `deep` run completed end to end: 7 agents, 0 errors, 64 minutes, exit criterion met. ConfigSweep
+proposed comm overlap, measured a matched pair, and was gated through the kernel path's own rule —
+`no_win`, aligned delta **+0.1178%** inside a 0.15% band. Two things are worth more than the verdict:
+
+* **the unaligned number had the opposite sign** (−0.212%) with a window artifact of 0.3298%, larger
+  than the signal itself. Reporting the raw ratio would have been mostly artifact, with a sign.
+* **the lever COSTS 780 MB** (+0.97%), it does not bank any — overlapped param-gather needs live
+  all-gather buffers the serialized path reuses. So the memory-conversion path is exercised in the
+  direction nobody designed for, and stacking this with `--recompute-granularity selective` would be
+  spending memory this lever already consumed.
+
+**The run found a defect in the layer underneath it.** Both legs reported identical `config_digest`
+AND `impl_digest` with only `argv_hash` moving: no `overlap-*` key existed in any of the three key
+lists, so the snapshot was blind to the only thing that differed. The Config Tuner established the
+controlled comparison by diffing Megatron's 686-line arg dump instead — i.e. by routing around the
+instrument whose job that was. Inspection then found the mirror image, `attention-backend`
+classified in `IMPL_KEYS` and captured by nothing. Fixed at schema v4, which needs **no re-measure**
+(verified on four legs), and pinned by `scripts/tests/test_identity_keys.py`.
+
+**The sequencing note below was wrong, and harmlessly so.** It predicted a config change would move
+`config_digest` by design. It does not and should not: the workload is the same, only the
+implementation differs. What actually happened is that it moved *neither* digest, which is the
+defect above.
+
+### P3 (original entry) — the largest remaining lever by a wide margin
 
 The kernel track at 7B is visibly converging: queue expectations fell from 5.82% to **1.37% / 1.24%**.
 Meanwhile every run has reported the same unexploited opportunity: **70.1% of tokens are padding**.
@@ -239,12 +265,28 @@ change, with the memory-conversion path exercised.
 **Sequencing note:** do P3 *after* P2. A config change moves `config_digest` by design, so every
 sweep leg is a new identity; starting that while a gate rule is unsettled compounds two unknowns.
 
-### P4 — L2 soak, blocked on a correct positive control
+### P4 — L2 soak — **unblocked 2026-10-08, and the answer may be to retire it**
 
-Unchanged and still correct: the soak's control must be a defect **L0 structurally cannot see** —
-cross-step state, accumulation over ~19 200 invocations, allocator effects. L0 rejects an op-local
-bias in 11.5 s that two 300-step soaks missed entirely. **Do not run another soak until such a
-control exists and the soak rejects it.**
+The control exists and is demonstrated: `scripts/controls/stale_state_control.py` injects cross-step
+staleness, `g[n] + alpha*(g[n-1] - g[n])`. Three arms at the **same line** of the kernel L0 actually
+runs: unpatched `correct: true`, stale at alpha = 1.0 `correct: true` **with every number bit-identical
+to unpatched**, x1.004 bias `correct: false`. L0 is blind to this class by construction, not by luck.
+
+Two measurements then reshaped the task, both of them before any soak leg ran:
+
+1. **L1 catches it at alpha = 1.0** (grad_norm sign balance 0.750 against a measured null range of
+   0.5–0.625). Good news for L1, which now has its first positive control of a class L0 cannot see.
+   But it means alpha = 1.0 is not soak-only, so the soak must prove itself at **alpha = 0.25**, the
+   largest staleness L1 misses.
+2. **The effect the first two soaks chased was noise.** The quoted 0.03742 is one leg, and its sign
+   is negative; three legs give +0.0157. v1 was also underpowered — MDE 0.0742 at n=1 vs m=3.
+
+So v3 runs 3 positive legs at alpha = 0.25 against 4 reference legs (MDE 0.0294, ~4 GPU-h), with
+criteria pre-registered. **And the possible finding is that the soak's niche is empty**: L1 goes
+silent at 0.25, and the soak could not reach a far cruder defect. If it cannot separate alpha = 0.25
+either, the conclusion is not to tune it — it is that a ~10 h instrument has no region of its own at
+300 steps and should be **retired**, as the per-step envelope already was. Thresholds stay fixed
+either way.
 
 ### P5 — Close the KB gap found in W1
 
