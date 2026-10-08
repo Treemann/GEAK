@@ -261,8 +261,17 @@ def _overlay_content_hash(manifest_path):
 _IDENTITY_PAIR_KEYS = (
     # mapping / batching
     "--micro-batch-size", "--global-batch-size", "--seq-length", "--tensor-model-parallel-size",
-    "--pipeline-model-parallel-size", "--context-parallel-size", "--recompute-granularity",
+    "--pipeline-model-parallel-size", "--context-parallel-size",
     "--sft-tokenizer-prompt-format",
+    # HOW a step is computed (classified as implementation in probe_summarize.IMPL_KEYS, not as
+    # workload identity). Added after a ConfigSweep run measured two comm-overlap legs whose
+    # config_digest AND impl_digest were both identical: no overlap-* key existed anywhere in this
+    # file, so the snapshot was blind to the only thing that differed between them. `--attention-
+    # backend` is the same bug found by inspection rather than by a run -- probe_summarize has
+    # listed it in IMPL_KEYS all along, while nothing here ever captured it, so the key it
+    # classified could never arrive. A key named in one list and absent from the other classifies
+    # nothing.
+    "--attention-backend", "--recompute-granularity", "--recompute-method",
     # regularization + optimizer: these move the loss/grad-norm trajectory L1 gates on
     "--attention-dropout", "--hidden-dropout", "--weight-decay", "--clip-grad",
     "--lr", "--min-lr", "--lr-decay-style", "--lr-warmup-iters",
@@ -278,6 +287,8 @@ _IDENTITY_FLAG_KEYS = (
     "--bf16", "--fp16", "--sft", "--finetune", "--swiglu", "--disable-bias-linear",
     "--add-qkv-bias", "--no-rope-fusion", "--untie-embeddings-and-output-weights",
     "--group-query-attention", "--sequence-parallel", "--use-flash-attn",
+    # comm overlap: implementation, see the note above
+    "--overlap-grad-reduce", "--overlap-param-gather",
 )
 
 
@@ -297,7 +308,16 @@ def _config_snapshot():
     # contain attention_dropout, so re-summarising it cannot recover the value: stamping a newer
     # schema onto it in probe_summarize would produce a digest that CLAIMS to cover dropout and does
     # not. Old dirs stay v2 forever, new dirs are v3, and any v2-vs-v3 pair must be RE-MEASURED.
-    out["snapshot_keys"] = "v3"
+    # v4 adds the comm-overlap / recompute / attention-backend keys above and moves
+    # recompute-granularity from the workload half to the implementation half.
+    #
+    # UNLIKE v2->v3, THIS DOES NOT REQUIRE A RE-MEASURE, and that is a checked claim rather than a
+    # convenience: every key added here is captured only when the flag is PRESENT, and all five are
+    # absent from every leg on disk (verified against stackB0929_ref1). An absent flag contributes
+    # no key, so a v3 leg and a v4 leg of the same run produce byte-identical identity and impl
+    # dicts, hence identical digests. Only legs that actually USE one of these levers become
+    # distinguishable -- which is the entire point of adding them.
+    out["snapshot_keys"] = "v4"
     out["world_size"] = os.environ.get("WORLD_SIZE", "1")
     for e in ("NVTE_FLASH_ATTN", "NVTE_FUSED_ATTN", "NVTE_USE_HIPBLASLT"):
         if e in os.environ:

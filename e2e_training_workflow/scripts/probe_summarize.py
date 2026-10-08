@@ -159,7 +159,16 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
     # GEAK_OVERLAY_SHA is IMPLEMENTATION, and listing it here is mandatory, not cosmetic: `identity`
     # is the COMPLEMENT of `impl`, so an unlisted new key silently becomes WORKLOAD IDENTITY and
     # every overlay candidate would be refused as "a different workload" before it could be gated.
-    IMPL_KEYS = ("attention-backend", "GEAK_OVERLAY", "GEAK_OVERLAY_SHA")
+    IMPL_KEYS = ("attention-backend", "GEAK_OVERLAY", "GEAK_OVERLAY_SHA",
+                 # v4. A ConfigSweep run compared two comm-overlap legs and BOTH digests were
+                 # identical, because no overlap-* key was captured or classified anywhere. Listing
+                 # them here without capturing them in train_probe would fix nothing -- that is
+                 # exactly the state `attention-backend` was in, named here and captured nowhere.
+                 "overlap-grad-reduce", "overlap-param-gather",
+                 # recompute changes HOW a step is computed, not what is trained, so it belongs in
+                 # this half. It sat in the workload half until v4; the move is free because the
+                 # flag is absent from every leg on disk.
+                 "recompute-granularity", "recompute-method")
     # Snapshot-format metadata is NEITHER half: it describes the record, not the run. It is excluded
     # from both digests and surfaces as digest_schema below.
     META_KEYS = ("snapshot_keys",)
@@ -200,7 +209,7 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         # re-summarising: hardcoding 3 here would stamp v3 on a v2 header and produce a digest that
         # CLAIMS to cover dropout and does not -- precisely the fiction the guard exists to prevent.
         # A v2-vs-v3 pair must be RE-MEASURED, not re-summarised.
-        "digest_schema": 3 if cfg.get("snapshot_keys") == "v3" else 2,
+        "digest_schema": {"v4": 4, "v3": 3}.get(cfg.get("snapshot_keys"), 2),
         "config_digest": cfg_digest,      # identity only: what is being trained
         "impl_digest": impl_digest,       # how it is computed: a candidate is EXPECTED to differ here
         # Ranks running different argv would silently mix two configurations inside ONE leg.

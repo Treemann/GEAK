@@ -413,7 +413,7 @@ async function restrategize(config, profile) {      // hook 3
 }
 function proposeMemoryConversion(banked) {          // hook 5: no-op in fast
   if (!DEEP_MODE) return { proposed: false, reason: 'fast mode has no ConfigSweep to spend memory with', banked };
-  return { proposed: false, reason: 'ConfigSweep not implemented yet', banked };
+  return { proposed: false, reason: banked.length ? 'ConfigSweep ran but banked memory was not spent' : 'no memory was banked to spend', banked };
 }
 function kbIdentity(config) {                       // hook 6: config hash keys every record
   return { stack: STACK, workload: WORKLOAD, gpus: NPROC, config_digest: (config && config.digest) || null };

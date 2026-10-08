@@ -147,6 +147,13 @@ python3 "$WF/scripts/tests/test_trajectory_gate.py" >/dev/null 2>&1 \
 # The L2 positive control's claim is that L0 cannot see it BY CONSTRUCTION. That claim is algebraic,
 # so it is checkable here in milliseconds without a GPU -- and it must be, because the claim is what
 # licenses spending 3 GPU-hours on a soak. See knowledge/gate_convergence.md, "L2 soak spec v3".
+# The two identity key lists live in different files and must agree. Both halves of that failure
+# were live at once until 2026-10-08: attention-backend was classified and captured by nothing, and
+# no overlap-* key existed anywhere, so a ConfigSweep run produced two differently-computed legs
+# carrying identical config_digest AND impl_digest. Comparing two lists costs milliseconds.
+python3 "$WF/scripts/tests/test_identity_keys.py" >/dev/null 2>&1 \
+  && ok "identity key lists agree (captured <-> classified, schema stamped)" \
+  || bad "identity key tests FAIL — a digest does not cover what it claims to"
 python3 "$WF/scripts/controls/stale_state_control.py" --self-test >/dev/null 2>&1 \
   && ok "L2 positive control: L0-invisibility holds (bit-exact at every alpha)" \
   || bad "L2 positive control self-test FAILS — do not run a soak licensed by it"
