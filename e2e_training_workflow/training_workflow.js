@@ -985,6 +985,14 @@ if (want('config')) {
   // several" -- a result shape that depends on the input is a reader bug waiting to happen, and
   // this field is read by the report and the validate phases.
   if (sweepRecords.length) {
+    // Surfaced at the TOP LEVEL too. `accepted` lists kernels; the first run that accepted a config
+    // lever (packing, +258% equal-useful-token) returned `accepted: []` at the top, which reads as
+    // "nothing was accepted" to anyone who does not dig into config_sweep.
+    const acc = sweepRecords.find((r) => r.verdict && r.verdict.accepted) || null;
+    wfReturn.accepted_config = acc ? { lever: acc.lever, class: acc.class || 'A',
+                                       delta_pct: acc.verdict.delta_pct,
+                                       delta_source: acc.verdict.delta_source,
+                                       flags_added: acc.flags_added } : null;
     wfReturn.config_sweep = {
       levers: sweepRecords,
       accepted: sweepRecords.find((r) => r.verdict && r.verdict.accepted) || null,

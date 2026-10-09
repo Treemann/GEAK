@@ -318,6 +318,11 @@ Production-recipe result: **833 → 3,048 useful tok/s/GPU (3.66x)**. Every kern
 ~1%. Remaining: wire the checks into ConfigSweep so Class B can be gated automatically, and choose
 GBS in packs to preserve samples-per-update (16 or 24).
 
+**Automated and accepted (same day).** The first deep run with `config_levers: "packing"` did all of
+it unaided -- pack, gate on a fresh pack, measure, compare -- and accepted packing at +258.11%;
+Validate reproduced +256.75% (3,042.3 vs 839.2) through the bundle's own launcher and re-gated on
+another pack. The 3.66x is now a result the workflow produces, not one a person produced.
+
 ## Month 2 — adaptation: other stacks, other cases, tuning
 
 Gated, as before: if the gates are not trustworthy, adapting the instrument multiplies the fiction

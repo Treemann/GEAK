@@ -212,6 +212,8 @@ async function dryRun(args) {
       const accepted = lv.refused ? false : v.accepted;
       ok(accepted === expect && (klass === null ? lv.refused === true : v.klass === klass),
         `${label}: accepted=${accepted} (${lv.refused ? 'REFUSED' : v.klass})`);
+      ok(!!result.accepted_config === expect,
+        `${label}: top-level accepted_config is ${result.accepted_config ? 'set' : 'null'}, matching the verdict`);
     } catch (e) {
       ok(false, `${label} threw: ${e && e.message}`);
     }

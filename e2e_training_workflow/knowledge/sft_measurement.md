@@ -637,3 +637,138 @@ token does not depend on it.
 
 Still manual: the orchestrator's ConfigSweep keeps refusing Class B (`pack` is on its refusal list)
 until the checks above run automatically inside it.
+
+**Re-measured as a ConfigSweep lever (config_tuner, 2026-10-09 12:13–12:28): it reproduces.** Pack
+rebuilt with `pack_sft.py` into a fresh path: **sha256 identical** to the 10:32 artifact (`e4e7be83…`),
+so packing is deterministic. `pack_gate.py --pack-index 3` (a pack the gate was not designed on):
+**PASS**, 765 conversations token-identical (0 mismatches), 4052 = 4052 loss tokens, forward +0.0046%
+vs isolated with the non-isolated control 5.29% away. Then a fresh back-to-back pair, both `ok`/clean
+on the first attempt, GBS 64 on both legs (the workload descriptor's value, kept per the measurement
+invariant), only `train-data-path` differing in the realized config (digest `d1548a7a764bdada` →
+`6716c26a104f449d`; impl_digest `49d9009f46b82686` on both):
+
+| leg | useful tok/s/GPU | pad | step median | peak reserved |
+|---|---|---|---|---|
+| ref `cfgpack1009_ref_1009_121334` | 834.4 | 70.38% | 11,635.7 ms | 80,578 MB |
+| cand `cfgpack1009_cand_1009_122110` | **3,049.7** | 1.71% | 10,560.2 ms | 80,602 MB |
+
+`compare_legs_tokens.py` (equal useful tokens, the valid basis for Class B): **+258.1%**.
+`compare_legs.py` aligned: +265.1% (flagged WORKLOAD IDENTITY DIFFERS, as it must). L1
+(`trajectory_gate.py compare`) refuses with "legs trained a different WORKLOAD" — correct for Class B;
+packing's correctness evidence is `pack_gate`, not L1. Diagnosis ceiling from 71.1% padding:
+1/(1−0.711) = 3.46x (+246%); measured exceeds it because the varlen step is also 9.2% faster.
+
+**Finalize (2026-10-09 12:32–12:52): the assembled bundle reproduces the packing stack.** Bundle:
+`runs/finalize_bundle_1009_pack/`. It contains 0 kernel overlays. `final_patch.diff` is one key of
+the realized config, `train-data-path`, with no source change against `86c9857c`. `launch.sh` checks
+the source and pack by sha256 and builds the pack only if it is missing. After each leg it checks
+that the lever engaged: digest, data path, GBS/SEQ/MBS, pad fraction, and the boundary-mask marker
+on every rank. Both invocations ran from `/tmp` and exited 0:
+
+| leg (bundle `launch.sh`) | useful tok/s/GPU | pad | step median | aligned vs config-phase leg |
+|---|---|---|---|---|
+| `--pack-gate` → `finalize_repro_pack1009_cand` | 3,045.4 | 1.855% | 10,560.2 ms | +0.0427% (window artifact 0.18%) |
+| `--ref` → `finalize_repro_pack1009_ref` | 837.5 | 70.22% | 11,653.1 ms | −0.1431% |
+
+The `pack_gate` run that `launch.sh --pack-gate` triggered on pack 3 passed:
+- token identity: 765/765 conversations
+- boundary targets masked: 4052 = 4052 loss tokens
+- forward: 0.0046% from isolated, against a 5.29% control
+
+The same-session paired equal-token gain is **+253.1%**, against +258.1% in the config phase. The
+two configurations reproduced to within 0.15%, so the 5-point difference is the comparator window.
+At ITERS=30 the 19 steady reference steps hold only 190,708 useful tokens, so the equal-token basis
+covers just 5.94 packed steps (31% of the leg), and a few points of window placement is its
+resolution. Quote the gain as **~3.6x (+253 to +258%)**, not to a decimal place. A tighter
+equal-token figure needs longer reference legs for both Setup and the gate.
+
+**Validate (training_director, 2026-10-09 12:55–13:16): CONFIRMED.** The director took a fresh
+back-to-back pair with the bundle's `launch.sh`, which runs `bench_train.sh` with the same workload,
+megatron, nproc 8 and 30 iters. Both legs were `ok`/clean on the first attempt, and every engagement
+check exited 0. The packed leg had the boundary mask on 8/8 ranks.
+
+| leg | config_digest | useful (own window) | pad | step median | peak |
+|---|---|---|---|---|---|
+| `validate_td1009_ref_1009_125547` | d1548a7a764bdada | 811.6 (aligned to base leg1: **837.0**) | 71.13% | 11,659.2 ms | 80,578 MB |
+| `validate_td1009_cand_1009_125547` | 6716c26a104f449d | **3,042.3** | 1.79% | 10,577.7 ms | 80,602 MB |
+
+- **A headline-only trap.** The ref leg's own useful figure is 811.6, which is −3.3% from baseline leg1
+  (839.2). It detected a 2-step warmup where the baseline detected 6, so its window took in a
+  different batch mix (pad 71.1% against 70.2%). `compare_legs.py` aligned against Setup legs 1/2/3
+  gives −0.262 / −0.180 / −0.107%, with window artifacts of 2.5–3.0%. The configuration reproduced;
+  the summary number did not. Never compare two `useful_tok_s_per_gpu` headlines whose `own_warmup`
+  differs; use the aligned comparison. −0.262% is just over the 0.25% floor and inside this run's
+  ~0.31% gate band. The L1 per-step envelope (advisory) passes the ref leg against leg1.
+- **The packed leg reproduces.** Aligned against the config-phase cand leg it is −0.020% (paired
+  −0.056%). Against the finalize cand leg it is −0.200% (paired +0.023%).
+- **Gain, from `compare_legs_tokens.py` over 239,144 equal useful tokens.** Against the TRUE
+  baseline leg1 it is **+256.75%**. Against legs 2 and 3 it is +260.20% and +260.65%. Against the
+  same-session ref it is +258.87%. All of these fall inside the +253 to +258% range from the earlier
+  phases, give or take the comparator's few-point window resolution. Only one lever was accepted,
+  so there is no sum of per-candidate deltas to dispute.
+- **L1.** `trajectory_gate compare` of baseline leg1 against the packed leg refuses with "different
+  WORKLOAD", which is correct for Class B. The stand-in is `pack_gate.py` on a pack that no earlier
+  phase used, **pack 11** (4 conversations). It PASSED: token identity 765/765, boundary-masked
+  3979 = 3979 loss tokens, forward 0.0065% from isolated, against a non-isolated control 6.37% away.
+  Evidence: `runs/validate_td1009_packgate/pack_gate_p11.json`.
+
+### Baseline setup 2026-10-09 (`baseline_td1009_leg{1,2,3}`): offered schema-3 legs refused, three fresh legs
+
+**The offered baseline legs could not be reused, and they were not defective.** `stackB0929_ref1`,
+`stackB0929_ref2` and `coldstart_ref` passed every per-leg check: `status: ok`, occupancy clean,
+`dispersion_reliable`, not profiled or captured, zero overlay lines in the log, and the same
+`config_digest` `d1548a7a764bdada`. All three are **`digest_schema` 3**, and every leg measured today
+is schema 4. `training_workflow.js:comparable()` refuses any pair whose schema differs, so each
+candidate leg this run takes (schema 4) would have been refused against them. Re-summarising cannot
+fix this, because `digest_schema` comes from the sidecar's `snapshot_keys` header. The legs also carry
+the schema-3 `impl_digest` (`2da763eeb36d03fb`, against `49d9009f46b82686` today). Rule: when an
+offered baseline is reused, check its schema against **what bench_train produces today**, not only
+against the other offered legs. The three offered legs agree with each other, so that check alone
+would have passed them.
+
+Fresh legs, 30 iters, 8 GPUs. All `ok`, clean on the first attempt, `identity_vs_realized` 26 keys
+with 0 mismatches, and argv_hash `ed00d2f999a555d9` on all three:
+
+| leg | useful tok/s/GPU | pad | warmup | steady | worst IQR | step median |
+|---|---|---|---|---|---|---|
+| 1 | 839.2 | 70.22% | 6 | 24 | 0.051% | 11629.8 ms |
+| 2 | 834.0 | 70.375% | 5 | 25 | 0.137% | 11640.3 ms |
+| 3 | 837.9 | 70.22% | 6 | 24 | **3.085%** | 11648.3 ms |
+
+Throughput null pairs from `compare_legs.py`, aligned / paired: 1v2 −0.0953 / −0.1011%, 1v3
+**−0.1549** / **−0.1776%**, 2v3 −0.0596 / −0.054%. The worst aligned value is 0.1549%, under the
+0.25% floor, so the floor holds. The gate band `max(floor, 4·se, 2·across_job)` is about 0.31% on
+the aligned figure and 0.36% on the paired one, so the run-measured across-job term binds here, not
+the floor. Leg 3's 3.085% IQR is the same tail-stall cliff described in §4.11: it is a clean leg, but
+the se term will be wide whenever leg 3 is the reference.
+
+Trajectory band (`baseline_td1009_band.json`, 3 legs, holdout `tdval1009_base`: same digest,
+schema, impl and argv_hash): the in-sample null control **passed** (0/3 pairs), and the
+**out-of-sample control FAILED**. Against the holdout, grad_norm exceeded the envelope at steps 13, 20,
+22, 23, 26 and 30 (up to 5.9x) and loss reached 1.28x. So `envelope_discriminating: false` and the
+envelope is ADVISORY. Step-1 loss was bit-identical across all legs (0.0%), and step-1 grad_norm
+varied 0.314%. An out-of-sample holdout falsifies a three-leg band here, as it did twice on 2026-09-24
+(`trajectory_gate._out_of_sample_control`). The status was not hand-recalibrated. To get a voting envelope, calibrate
+on at least 5 legs.
+
+### The workflow accepted packing on its own (2026-10-09, run wf_01fab37a-6da)
+
+First end-to-end deep run with `config_levers: "packing"`. 7 agents, 0 errors, 111 minutes. The
+Config Tuner ran the whole procedure itself -- packed the data, gated it on a fresh pack (index 3:
+765 conversations token-identical, 0.0046% from the isolated expectation, control 5.29% wide),
+measured both legs, compared on equal useful tokens -- and the orchestrator accepted it:
+**`win`, +258.11% > 5%, packing gate PASS.**
+
+Validate re-measured through the bundle's own `launch.sh`: **3,042.3 vs 839.2 useful tok/s/GPU,
++256.75%** (+256.8 / +260.2 / +260.7% against the three baseline legs, +258.9% against a same-session
+reference), and re-ran the gate on yet another pack (index 11). It noted, correctly, that the
+trajectory gate refuses this pair as "a different workload" -- step i is a different batch -- and
+that the packing gate is what stands in its place. Boundary masking confirmed on 8/8 ranks.
+
+Independent of the manual measurement, the number reproduced: manual 3.66x, workflow 3.63–3.66x.
+
+The bundle records the one realized-config difference (`--train-data-path`), the packed file's
+sha256, and refuses to overwrite a pack whose hash does not match. The Training Director dropped the
+three v3 baselines and re-measured, for reasons that turned out to be a mistake of mine (DECISIONS
+4.10b). The result now also carries `accepted_config` at the top level, because `accepted: []`
+read as "nothing was accepted".
