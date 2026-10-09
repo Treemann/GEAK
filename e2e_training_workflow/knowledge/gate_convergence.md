@@ -933,3 +933,52 @@ What the result will mean, fixed before the leg runs so neither outcome can be r
 
 Either way the claim in the retirement note — that the comparator fails its positive control —
 is **withdrawn as unsupported** until this leg exists.
+
+### RESULT: the alpha = 1.0, 300-step positive control (2026-10-09)
+
+The leg the correction above called for. `l2soak_a10_300`: `status ok`, occupancy clean, 290 steady
+steps, engagement `fwd=2400 bwd=2400 fallback_fwd=0` on all 8 ranks. Judged against the four clean
+overlay-ON legs, under the criterion fixed before it ran.
+
+**Pre-registered verdict: NOT REJECTED. Class B stays refused.**
+
+| statistic | null (6 clean pairs) | alpha = 1.0 (vs each clean leg) |
+|---|---|---|
+| token-aligned median, whole trajectory | −1.365 … +0.422% | −1.087 … +0.129% — **inside** |
+| sign balance | 0.24 … 0.74 | 0.28 … 0.58 — **inside** |
+
+That stands, and the comparator is not promoted on this data.
+
+**But the defect is plainly visible in the same leg**, which changes what the failure means:
+
+| | clean (4 legs) | alpha = 1.0 | |
+|---|---|---|---|
+| terminal loss (mean, last 10% of steps) | 1.4281 ± 0.0092 | **1.4853** | **+6.25 sd** |
+| terminal grad_norm | 1.92 ± 0.50 | **11.11** | +18.4 sd (spike-driven — read with care) |
+
+Reading the per-step tail explains the disagreement. From about step 262 the alpha = 1.0 loss sits
+above the clean leg on almost every step, by 0.03–0.11 (step 272: 1.57 vs 1.46; step 268: 1.59 vs
+1.53), and grad_norm spikes to 48, 43 and **85.7** where the clean leg peaks at 15.1. It is a
+**late-onset, accumulating** divergence that appears only after ~19 200 invocations — precisely the
+cross-step class the soak was meant for. The comparator's whole-trajectory median weights the
+~250 steps where the two legs agree as heavily as the ~40 where they do not, and dilutes it away.
+Splitting the token grid into quarters still leaves the last quarter overlapping the null range,
+because a median over 75 steps is still mostly pre-onset.
+
+So the failure is the STATISTIC, not the token-aligned basis — and that is a hypothesis, not a
+finding, for one reason: it was formed by looking at this leg. Choosing a terminal-window statistic
+now and declaring the comparator passed would be fitting the test to the one positive example it has.
+What it would take, stated before any of it exists:
+
+* pre-register a terminal-window statistic (for instance: mean token-aligned deviation over the last
+  10% of the shared token range, with its null range taken from the six clean pairs), and
+* confirm it on a **fresh** alpha = 1.0 leg, not this one, and
+* re-check that the null pairs stay inside it — a terminal window is noisier than a whole-trajectory
+  median, so the null range will widen and may swallow the effect.
+
+**What this does to the soak retirement: nothing, and it sharpens it.** One leg is one draw and no
+formal test exists at n = 1, but +6.25 sd strongly suggests a terminal-loss test at n >= 2 would
+reject alpha = 1.0. The soak is therefore not blind to everything: its floor sits somewhere between
+alpha 0.25 (not rejected, n = 4) and 1.0 (very likely rejected). That does not revive it, because at
+alpha = 1.0 L1's sign test already rejects the defect for free inside a 30-step gate leg. The soak's
+only exclusive region would be the band between those two, and nothing measured so far lands in it.

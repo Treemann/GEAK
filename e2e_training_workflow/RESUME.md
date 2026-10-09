@@ -1,3 +1,7 @@
+> **RESUMED AND COMPLETED 2026-10-09.** The interrupted run's validate phase finished from cache; the
+> alpha = 1.0 300-step leg ran and is recorded in `knowledge/gate_convergence.md`. Nothing below is
+> pending any more — this file is kept as the record of the pause.
+
 # Paused 2026-10-09 — GPUs released for another task
 
 Stopped at the user's request. **The GPUs are free**: `rocm-smi --showpids` reports no KFD PIDs, and
