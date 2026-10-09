@@ -511,3 +511,30 @@ and the blocker was imaginary.
 **This is only the null half.** An infinitely wide band scores 0/400 and gates nothing. The positive
 half is not reconstructible from same-identity legs and lives in the accepted candidates. Read them
 together or neither means anything.
+
+### OPEN: the reference workload trains with dropout the model does not use (found 2026-10-09)
+
+Found while matching the HF stack to Megatron. The Megatron adapter passes neither
+`--attention-dropout` nor `--hidden-dropout`, so every Megatron leg — the 7B reference included —
+runs at Megatron's defaults, **attention 0.1 and hidden 0.1**. Qwen2.5's own `config.json` says
+`attention_dropout: 0.0` and has no hidden dropout. HF loads that config, so an HF leg trains with no
+dropout at all.
+
+This was known as an IDENTITY problem (v2 could not tell 0.0 from 0.1) but was never raised as a
+RECIPE question, and the cost is not small: on the 0.5B workload attention dropout alone is worth
+**+7.3% throughput** and moves step-1 loss 4.3728 → 3.1689 on identical data. Hidden dropout is still
+on in both of those legs, so the full gap to Qwen's own recipe is not yet measured.
+
+**Not changed, deliberately.** Switching the reference to dropout 0 would move every baseline, every
+band and the three accepted wins (+1.147%, +7.4348%, +12.36%), all of which were measured against a
+dropout-0.1 stack, and it would change the profile itself — dropout kernels leave the critical path
+and the hot-kernel ranking shifts. Continuity of the existing evidence is worth more than fidelity
+of a recipe nobody has asked to change.
+
+**What IS done:** cross-stack comparisons run Megatron with `--attention-dropout 0.0
+--hidden-dropout 0.0` explicitly, so the two stacks train the same model the same way. Comparing
+HF-at-0 against Megatron-at-0.1 would attribute a recipe difference to the stack.
+
+**The question for whoever owns the workload:** should the reference recipe follow the model's own
+config? If yes, it is a new workload descriptor with its own baselines and bands, not an edit to
+this one.

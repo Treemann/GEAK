@@ -313,7 +313,26 @@ across stacks. That gate is **closer to met than it was** — the throughput gat
 demonstrated controls — but L1 is now one probe plus an unresolved rule, so read "trustworthy" as
 "trustworthy for throughput and op numerics; weak for trajectory".
 
-### A second training stack
+### A second training stack — **IN PROGRESS (started 2026-10-09): HF TRL**
+
+Chosen over TorchTitan (also in the image) because it shares the image, the HF weights and the
+dataset — so differences are the stack — reports its own token counts, and has a configuration
+vocabulary nothing like Megatron's. TorchTitan has no SFT path; measuring it would measure our code.
+
+Done so far: `adapters/hf_trl.sh`, `adapters/hf_sft.py`, `train_probe.install_hf`, and **useful-token
+parity proven 300/300 samples** by running both stacks' real tokenisation, truncation, shift and
+masking code (`scripts/tests/check_token_parity.py`). The stack is now part of workload identity.
+
+Seam leaks found already, recorded as the exit criterion asks: the config IR is Megatron's argv (the
+HF launcher had to adopt its names for identity capture to work); `MODEL_CKPT` names a torch_dist
+checkpoint rather than weights by format; `--attention-backend` reuses a name with a different value
+set; and HF's data loading falls outside the timed window where Megatron's falls inside.
+
+And a recipe finding the comparison surfaced: the Megatron reference trains with dropout 0.1/0.1
+while Qwen2.5's own config is 0.0 — worth +7.3% throughput at 0.5B from attention dropout alone.
+Recorded as an open question in `knowledge/sft_measurement.md`; the reference is not changed.
+
+### A second training stack (original entry)
 
 `scripts/adapters/<stack>.sh` still has exactly one implementation, so the seam is **unvalidated**.
 What it actually tests: whether the probe is genuinely stack-neutral (it exists because upstream
