@@ -375,3 +375,42 @@ before and after the edit incomparable inside one run.
   recoverable by re-summarising after the fact).
 - Give the jsonl dataset a fixed, frozen subset on local disk: data order must be identical between
   legs or L1 compares different batches.
+
+### The full Tier-0 lever pack, measured (2026-10-09)
+
+All three Class-A levers have now been measured on the 7B reference workload. **None of them pays**,
+and two of the three cost memory rather than banking it. Recorded so the next run does not re-spend
+GPU hours rediscovering it.
+
+Reference leg 837.5 useful tok/s/GPU; both candidates judged against the same leg and the same band,
+which is why they were measured in one run rather than two.
+
+| lever | aligned delta | window artifact | memory | verdict |
+|---|---|---|---|---|
+| comm overlap | +0.1178% (band 0.15%) | 0.3298% | **−780 MB** | `no_win` |
+| recompute `selective` | **−3.403%** | 0.5102% | **−838 MB** | regression |
+| attention backend `flash` | −0.7284% (band 1.978%) | 0.5243% | — | `no_win`, inconclusive |
+
+Three things worth keeping beyond the verdicts.
+
+**The memory converter has nothing to convert.** `recompute selective` is the knob `fast` banks
+memory *for*, and on this configuration it **freed nothing and cost 838 MB**. The reason is
+specific: with NVTE fused attention the core-attention path never materialises the seq x seq score
+matrix, so the activations selective recompute exists to drop are already not stored, and what
+remains is its workspace. The whole bank-and-spend design path therefore has no work to do on this
+workload, and that is a property of the stack, not a measurement artifact.
+
+**The band was dominated by the REFERENCE leg's noise**, not the candidate's: 4 x se_pair = 1.978%,
+with the reference's forced-window IQR at 2.607% against the candidate's 0.07%. The reference's own
+window IQR was 0.096% — six outlier stall steps land inside the *common* window. This is exactly the
+case the se term exists for, and it arrived with the noise on the side nobody expects.
+
+**A window-immune cross-check caught what the band could not resolve.** For the attention backend,
+`step_median_ms` moved +0.734%, implying −0.729% throughput, agreeing with the aligned −0.7284% to
+0.001 points. So the direction is real even though |delta| sits under the band: flash is at best
+neutral and more likely a small regression here. Step-median is immune to window placement, and
+quoting it alongside a sub-band delta distinguishes "too small to resolve" from "not there".
+
+**And the v4 identity fix is confirmed on real legs.** On both levers `config_digest` stayed
+identical while `impl_digest` moved — the behaviour whose absence on the comm-overlap pair exposed
+the blindness in the first place.
