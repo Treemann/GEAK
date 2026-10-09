@@ -354,6 +354,19 @@ leg. Weights compared tensor-by-tensor are bit-identical, the same sample gives 
 2.0232 (Megatron), and a same-day Megatron leg matches HF (1.553 vs 1.601). The old leg was from a
 different era of the setup. Cross-stack comparisons must be same-code, same-day.
 
+**Overlay delivery works on the second stack unchanged (2026-10-09).** An identity overlay on
+`transformers.models.qwen2.modeling_qwen2:Qwen2MLP.forward` engaged **exactly** 1152 forward and
+1152 backward per rank — 24 layers × 12 steps × 4 micro-batches — with `impl_digest` moving and
+`config_digest` not, and `overlay_train.py` untouched: the HF launcher only had to call it. The
+import-path rebind is stack-neutral by construction.
+
+**What is NOT portable is the bind point.** Every accepted kernel targets a Megatron/TE symbol
+(`GPTModel._postprocess`, `_LayerNormLinear`, ...) with no HF counterpart by that name. A kernel's
+compute can move between stacks; its integration cannot, and must be redone per stack. Remaining
+for the exit criterion: one kernel candidate for an HF op through the lane and the same gates.
+Note the Profiler's `config_first` verdict on HF 0.5B (24% idle): at that size a kernel win may not
+show end to end, so the candidate should be chosen at 7B or after the launch overhead is addressed.
+
 ### A second training stack (original entry)
 
 `scripts/adapters/<stack>.sh` still has exactly one implementation, so the seam is **unvalidated**.

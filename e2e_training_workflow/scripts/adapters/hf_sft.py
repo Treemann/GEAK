@@ -91,6 +91,19 @@ def main():
 
     import train_probe
 
+    # OVERLAYS. On Megatron the launcher shim (rocm_compat.py) installs them; HF has no shim, so the
+    # launcher does it, BEFORE the model is built. overlay_train rebinds an import path
+    # ("module:Class.attr"), which is stack-neutral by construction -- what is NOT neutral is the
+    # target string, which names a stack's own module (Megatron's GPTModel._postprocess has no HF
+    # counterpart by that name). A failed install EXITS rather than continuing: a leg that silently
+    # measures the original implementation while its env names an overlay is the worst outcome the
+    # overlay layer exists to prevent.
+    if os.environ.get("GEAK_OVERLAY"):
+        import overlay_train
+        if not overlay_train.install():
+            sys.exit("[hf_sft] GEAK_OVERLAY is set but the overlay stack did not install completely; "
+                     "refusing to run a leg that would measure the original implementation")
+
     tok = AutoTokenizer.from_pretrained(a.tokenizer_model)
     model = AutoModelForCausalLM.from_pretrained(
         a.load, torch_dtype=torch.bfloat16 if a.bf16 else torch.float32,
