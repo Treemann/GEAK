@@ -459,3 +459,55 @@ when the quartile sits on a cliff. Linear interpolation would have given 0.70% i
 smoother, still a 7x jump, because the cliff is real. Changing it would move every band in the
 system and invalidate the 0/47 false-win calibration, so it needs its own re-validation and is not
 being done as a side effect of this fix.
+
+### The null control is a script now, and it says the 7B floor was too tight (2026-10-09)
+
+The band's licence was one line in this file — *"47 same-identity baseline pairs, true delta 0, 0
+false wins"* — and every proposal to touch anything the band depends on has been declined on the
+grounds that re-validating it would be expensive. It is not expensive. The legs are on disk and the
+pairs rebuild from their identity digests. `scripts/calibrate_band.py` does it in minutes, no GPU.
+
+A NULL PAIR is two legs with the same `config_digest` AND `impl_digest`: the true delta is zero by
+construction, so any "win" is false. Reconstructing that set took three corrections, and each one
+moved the answer by more than the thing being measured:
+
+| reconstruction | false wins | what was wrong |
+|---|---|---|
+| all legs with ≥25 steps | 73 / 386 | included **capture runs**, which `bench_train.sh` itself prints are not valid throughput measurements |
+| + the gate's usability rules | 49 / 400 | still re-derived identity instead of reading it, and omitted `world_size`, so legs at different world sizes grouped together |
+| + identity read from `bench_summary.json` | 32 / 400 | still paired **v2 legs**, whose 9-field snapshot cannot separate them |
+| + identity schema ≥ v3 | **16 / 400** | — |
+
+The v2 exclusion is the one worth remembering. `td_ref_legA_p0` runs **7.3% faster** than
+`td_baselineA` with a byte-identical config snapshot, which looks exactly like a catastrophic digest
+collision. Diffing Megatron's own 647-line realized dump gives **one** differing line —
+`attention_dropout 0.1 vs 0.0` — the precise gap v3 was built to close. The legs were never the same
+measurement; v2 could not say so. Grading the band on them would have indicted it for a limitation
+fixed weeks earlier.
+
+**The result, on 400 clean v3 same-identity pairs:**
+
+| | |
+|---|---|
+| false wins at the shipped floor (0.15%) | **16 / 400 (4%)** |
+| |delta| median / max | 0.051% / **0.225%** |
+| every false win | at the FLOOR, none driven by the `se` term |
+
+All sixteen are 7B pairs, all marginal (0.150–0.225%), all spanning different jobs on different
+days. So `ACROSS_JOB_FLOOR_PCT=0.15` in `workloads/qwen2_5_math_7b.env` **understates the measured
+across-job reproducibility of this workload**, and is raised to **0.25%**.
+
+That is the existing method applied to better data, not a retune. The 0.15 came from "~1.8× the
+worst of 10 clean pairs (0.0823%)"; the multiplier was carrying the thinness of a 10-sample maximum.
+Over 400 pairs the worst is 0.225% and 0.25% covers it with 1.11×. Cost: nothing accepted to date
+comes near — the three accepted wins are +1.147%, +7.4348% and +12.36%.
+
+**And the quartile question is settled.** The nearest-rank estimator was left unpatched because
+changing it "would invalidate the 0/47 calibration". Re-run both ways: **nearest 16/400, interpolated
+17/400**, identical median band, max band 2.026% vs 1.965%. The estimator is not what the null
+control is sensitive to, so the fragility can be fixed on its own merits whenever it is convenient,
+and the blocker was imaginary.
+
+**This is only the null half.** An infinitely wide band scores 0/400 and gates nothing. The positive
+half is not reconstructible from same-identity legs and lives in the accepted candidates. Read them
+together or neither means anything.
