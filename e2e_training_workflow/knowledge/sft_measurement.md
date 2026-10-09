@@ -584,3 +584,27 @@ launcher now states the choice as `--master-weights fp32|bf16`, captured as work
 Rule for any future launcher: **every recipe choice must appear in argv**, or identity cannot see
 it. HF legs digested `325fbe030fd6f6b7` are ambiguous between the two recipes and must not be paired
 across that boundary; `hf_smoke_1009` and `hf_null_b` are both pure bf16 and remain a valid null pair.
+
+### Cross-stack at 7B, matched recipe (2026-10-09)
+
+Both at dropout 0, fp32 master weights, same day, 8 GPUs, 30 iters:
+
+| | useful tok/s/GPU | nominal | pad | step median | peak mem |
+|---|---|---|---|---|---|
+| HF TRL, FSDP full_shard | **1,098.6** | 1,098.6 | 0% | 8.80 s | 73.6 GB |
+| Megatron | 893.7 | **2,948.9** | 69.7% | 11.11 s | 79.9 GB |
+
+At 7B HF leads by **+22.9%** — not the 2.0x of 0.5B. Megatron processes a token **2.68x faster**
+than HF; at this size the compute efficiency nearly pays for the padding, but not quite. Two things
+follow.
+
+**The packing ceiling.** If padding were removed at Megatron's present per-token efficiency, useful
+throughput would approach its nominal figure: ~2,949 against ~894, **up to ~3.3x**. Every remaining
+kernel head is worth ~1%. Nothing else on the board is within an order of magnitude of this.
+
+**Dropout at 7B, roughly:** 893.7 (dropout 0) against 832.9 for a dropout-0.1 reference leg from a
+different day — about +7%. Cross-day, so an estimate, not a measurement; the 0.5B same-era figure
+was +7.3% for attention dropout alone.
+
+HF needs FSDP at 7B: with fp32 master weights DDP replicates weights, grads and AdamW state and
+OOMs at step 3 (183.5 GB allocated of 192 GB).
