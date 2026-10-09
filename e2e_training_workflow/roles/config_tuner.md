@@ -70,6 +70,14 @@ properly designed; it supplies a comparison basis, not a gate.
    output pasted verbatim into `comparison`. Without a numeric `comparison.delta_pct` the gate
    returns `no_aligned_delta` and your proposal cannot be accepted however large its raw ratio.
 
+4b. **Run L1 and return it verbatim as `l1`.** `python3 scripts/trajectory_gate.py compare
+   <ref>/probe <cand>/probe --band <BANDS.trajectory_band_path>`. A config lever passes the same
+   correctness gate as a kernel or it cannot be accepted -- the orchestrator refuses a win without
+   `l1`. This is not a formality: Megatron's **flash** attention backend on this stack has a forward
+   within 0.11% of fused and a gradient **2.7x too small** (step-1 grad_norm 26.7 vs 68.0 in the
+   production recipe). L1's step-1 gradient probe rejects it at 60.7% against a 10% limit; a
+   throughput-only verdict would have accepted it the moment it measured faster.
+
 5. **Expect `config_digest` to change, and say what changed.** A kernel candidate must keep the
    digest identical; yours is *allowed* to differ, because the flag you moved is part of the realized
    config. Name the key and both values. If anything OTHER than your one lever moved, stop — the two
@@ -89,5 +97,6 @@ Return JSON:
  "config_digest_delta": {"key": "overlap-grad-reduce", "ref": null, "cand": "true"},
  "peak_reserved_mb": {"ref": 80578, "cand": 80578},
  "memory_conversion": {"freed_mb": 0, "would_buy": null},
+ "l1": {"...trajectory_gate.py compare stdout verbatim, MUST contain a boolean pass..."},
  "notes": "..."}
 ```

@@ -1142,3 +1142,23 @@ under the same objective.)
 
 Packing is NOT licensed by this. Next: localise -- attention backend, and the rocm_compat cu_seqlens
 patch.
+
+### Localising: the flash backend's backward is broken; L1 gains a gradient probe (2026-10-09)
+
+Fused vs flash, packed vs unpacked, Megatron 7B, lr 0, dropout 0, per-token loss, same samples:
+
+| backend | packed | unpacked | expected (HF) |
+|---|---|---|---|
+| fused (the reference) | 50.06 | **47.93** | 48.01 / 47.89 |
+| **flash** | **19.90** | **17.45** | 48.01 / 47.89 |
+
+Flash's FORWARD is right (loss 2.1103 vs fused 2.1127) and its GRADIENT is 2.7x too small, packed
+or not. In the production recipe (dropout 0.1) the same backend reads step-1 grad_norm 26.7 against
+68.0. The reference workload runs fused, so no baseline is affected -- but today's attention-backend
+lever measured flash, and ConfigSweep called the gate with **no L1 at all**: had flash been faster,
+it would have been accepted. Both fixed (DECISIONS 3.4f): L1 now checks step-1 grad_norm against a
+10% limit (null max 1.40% over 696 pairs; known defects 61-88.5%), and a config lever cannot be
+accepted without an L1 result.
+
+The fused PACKED discrepancy (+4.27%, not explained by boundary targets) is still open. The
+rocm_compat THD patch only squeezes a vacuous batch dimension and is not a plausible cause.

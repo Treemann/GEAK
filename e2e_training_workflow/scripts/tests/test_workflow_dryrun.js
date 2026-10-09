@@ -37,6 +37,7 @@ const leg = (o = {}) => Object.assign({
 }, o);
 
 // One stub per role phase, returning the minimum shape its call site reads.
+let CONFIG_L1 = { pass: true, checks: {} };   // overridden per test below
 function stubFor(prompt) {
   const p = String(prompt);
   const is = (s) => p.includes(s);
@@ -62,7 +63,8 @@ function stubFor(prompt) {
              comparison: { delta_pct: 1.9, window_artifact_pct: 0.05 },
              config_digest_delta: { key: 'overlap-grad-reduce', ref: null, cand: 'true' },
              peak_reserved_mb: { ref: 80578, cand: 80578 },
-             memory_conversion: { freed_mb: 0, would_buy: null } };
+             memory_conversion: { freed_mb: 0, would_buy: null },
+             ...(CONFIG_L1 === undefined ? {} : { l1: CONFIG_L1 }) };
   }
   if (is('PHASE=extract')) return { task_dir: '/work/tasks/t', op: 'o', has_backward: true, engagement: {} };
   if (is('PHASE=integrate')) {
@@ -171,6 +173,25 @@ async function dryRun(args) {
   } catch (e) {
     ok(false, `budget-bounded sweep threw: ${e && e.message}`);
   }
+
+  // A config lever is held to the same correctness gate as a kernel. Same +1.9% aligned win, three
+  // L1 situations. Before 2026-10-09 the ConfigSweep call carried no l1 at all and all three would
+  // have been ACCEPTED -- including Megatron's flash attention backend, whose gradient is 2.7x off.
+  for (const [label, l1, expect] of [
+    ['L1 passed', { pass: true, checks: {} }, true],
+    ['L1 FAILED (step-1 grad_norm 60.7%)', { pass: false, reason: 'step-1 grad_norm differs by 60.74%' }, false],
+    ['no L1 returned at all', undefined, false]]) {
+    CONFIG_L1 = l1;
+    try {
+      const { result } = await dryRun({ ...base, deep_mode: 'true', budget: 0 });
+      const lv = (((result || {}).config_sweep || {}).levers || [])[0] || {};
+      const v = lv.verdict || {};
+      ok(v.accepted === expect, `config lever with ${label}: accepted=${v.accepted} (${v.klass})`);
+    } catch (e) {
+      ok(false, `config lever with ${label} threw: ${e && e.message}`);
+    }
+  }
+  CONFIG_L1 = { pass: true, checks: {} };
 
   console.log();
   if (failures) { console.error(`${failures} check(s) FAILED`); process.exit(1); }

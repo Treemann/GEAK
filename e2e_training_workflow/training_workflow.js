@@ -638,6 +638,7 @@ const AUDIT_SCHEMA = obj({ l0: { type: 'object' }, l1: { type: 'object' },
 const FINALIZE_SCHEMA = obj({ overlay: { type: 'string' }, patch: { type: 'string' },
   launch: { type: 'string' }, engagement_recheck: { type: 'object' } }, []);
 const CONFIG_SCHEMA = obj({ lever: { type: 'string' }, flags_added: { type: 'array' },
+  l1: { type: 'object' },
   ceiling_pct: { type: 'number' }, ref: { type: 'object' }, cand: { type: 'object' },
   comparison: { type: 'object' }, config_digest_delta: { type: 'object' },
   peak_reserved_mb: { type: 'object' }, memory_conversion: { type: 'object' } },
@@ -899,8 +900,21 @@ if (want('config')) {
       log0(`ConfigSweep REFUSED (${sweep.lever}): Class B lever ${kind.key}`);
     } else {
       gatesUsed += 1;
+      // A config lever passes through the SAME correctness gate as a kernel, or it cannot ACCEPT.
+      // Until 2026-10-09 this call carried no l1 at all, so a Class-A lever was judged on throughput
+      // alone -- the exact objection used to refuse Class B. It mattered: Megatron's flash attention
+      // backend on this stack has a forward within 0.11% of fused and a gradient 2.7x too small
+      // (step-1 grad_norm 26.7 vs 68.0 in the production recipe). Had flash measured faster, it would
+      // have been accepted.
+      const l1 = sweep.l1 && typeof sweep.l1.pass === 'boolean' ? sweep.l1 : null;
       const cv = gateVerdict({ ref: sweep.ref, cand: sweep.cand, comparison: sweep.comparison,
-                               mode: 'deep' });
+                               l1, mode: 'deep' });
+      if (!l1 && cv.accepted) {
+        cv.accepted = false;
+        cv.klass = 'no_correctness_gate';
+        cv.reason = 'the Config Tuner returned no L1 result (scripts/trajectory_gate.py compare): a ' +
+                    'config lever may not be accepted on throughput alone';
+      }
       // A config change is EXPECTED to move config_digest -- that is what makes it a config change.
       // comparable() refuses that as "different workload", correctly, for a KERNEL candidate. Here
       // the identity difference is the subject of the experiment, so the digest check is reported
@@ -912,7 +926,10 @@ if (want('config')) {
         const band = noiseBandPct(wmC ? wmC.ref : sweep.ref, wmC ? wmC.cand : sweep.cand, true);
         const d = alignedDelta({ comparison: sweep.comparison });
         cv.klass = d && d.delta_pct > band ? 'win' : 'no_win';
-        cv.accepted = cv.klass === 'win';
+        cv.accepted = cv.klass === 'win' && !!l1 && l1.pass === true;
+        if (cv.klass === 'win' && !(l1 && l1.pass === true)) {
+          cv.klass = l1 ? 'trajectory' : 'no_correctness_gate';
+        }
         cv.delta_pct = d ? d.delta_pct : null;
         cv.band_pct = +band.toFixed(3);
         cv.delta_source = d ? 'window-aligned' : 'raw ratio (NOT window-aligned)';
