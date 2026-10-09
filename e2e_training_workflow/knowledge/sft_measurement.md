@@ -538,3 +538,27 @@ HF-at-0 against Megatron-at-0.1 would attribute a recipe difference to the stack
 **The question for whoever owns the workload:** should the reference recipe follow the model's own
 config? If yes, it is a new workload descriptor with its own baselines and bands, not an edit to
 this one.
+
+### The Profiler phase on the second stack (2026-10-09)
+
+A profiled HF TRL leg (0.5B, 2 GPUs, steps 10–12) goes through `parse_train_profile.py` unchanged:
+trace written by the probe-driven profiler, four buckets, Top-N with op and shapes. So the
+Profiler phase is stack-neutral in practice, not just in intent.
+
+| bucket | HF TRL 0.5B | Megatron 7B reference |
+|---|---|---|
+| compute | 70.1% | 92.2% |
+| idle (no kernel resident) | **24.4%** | 2.5% |
+| exposed comm | 5.5% | 3.4–5.4% |
+| comm overlapped | **61%** (DDP buckets) | **0%** |
+
+The diagnosis comes back **`config_first`**: a quarter of the step has no kernel resident — eager
+PyTorch issuing many small elementwise kernels, launch-bound at this size — so no kernel win can
+show end to end until that is addressed (compile/fusion, larger micro-batches). That is the right
+call, made by logic written for Megatron and applied unmodified.
+
+One classification leak fixed: ROCm AOTriton's flash-attention backward kernels (`bwd_kernel_dk_dv`,
+`bwd_kernel_fuse`, `bwd_kernel_dq` — 13.8% of the step) were filed as `other` because their NAMES
+match no attention pattern. The classifier now falls back to the parent op
+(`aten::_flash_attention_backward`), which is stack-neutral vocabulary. Megatron's classification is
+unchanged.

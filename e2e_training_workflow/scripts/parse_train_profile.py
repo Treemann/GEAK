@@ -40,10 +40,23 @@ FAMILY = (
 )
 
 
-def _family(name):
+def _family(name, op=None):
+    """Kernel family from the kernel name, falling back to the PARENT OP when the name says nothing.
+
+    Names are vendor vocabulary. On the HF stack, ROCm's AOTriton flash-attention backward kernels
+    are `bwd_kernel_dk_dv`, `bwd_kernel_fuse`, `bwd_kernel_dq` -- nothing a name pattern written for
+    TE/CK kernels recognises -- and 13.8% of the profiled step was filed under "other" while the
+    forward kernel, `attn_fwd`, was classed correctly. The parent op (`aten::_flash_attention_
+    backward`) is stack-neutral vocabulary, so it decides when the name cannot. Name first, because
+    a name that does match is the more specific evidence.
+    """
     for fam, pat in FAMILY:
         if pat.search(name):
             return fam
+    if op:
+        for fam, pat in FAMILY:
+            if pat.search(op):
+                return fam
     return "other"
 
 
@@ -137,6 +150,8 @@ def decompose(trace_path):
             a["family"] = "comm" if COMM_PAT.search(k["name"]) else _family(k["name"])
         if a["shapes"] is None and k.get("ext") in shapes_by_ext:
             a["shapes"] = shapes_by_ext[k["ext"]]
+            if a["family"] == "other":
+                a["family"] = _family(k["name"], (a["shapes"] or {}).get("op"))
 
     topn = sorted(
         ({"kernel": n, "ms": round(v["ms"], 3), "calls": v["calls"], "family": v["family"],
