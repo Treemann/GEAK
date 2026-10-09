@@ -563,27 +563,43 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
                     "direction without that L0 verdict, still blocks.")
                 res["checks"][f"{key}_sign_balance_early"]["waived_by_l0"] = True
                 continue
+            # THE RULE WAS REPLACED 2026-10-09; THE DETECTOR WAS NOT RETIRED.
+            #
+            # What it used to be held to -- the min..max of the band's 3 clean pairs -- is what noise
+            # leaves most of the time. Re-measured on 693 clean same-identity pairs: OUTSIDE that
+            # range on loss 63.5%, grad_norm 55.6%. A reject-only gate rejecting a coin-flip of good
+            # candidates. The arithmetic agrees: at n = 8 the statistic moves in 0.125 steps and a
+            # fair coin lands in {0.5, 0.625} only 49% of the time. Three draws cannot bound that.
+            #
+            # STRICT RULE: block only when every one of >= 5 non-identical early diffs has the same
+            # sign. Identical steps are excluded rather than counted as "not up", which is what made
+            # a leg identical to its reference read as one-sided. Both controls are measured:
+            #   null      693 clean pairs: loss 5.1%, grad_norm 0.6% false reject
+            #   positive  fires on a real gross backward defect (7B attention, step-1 grad_norm
+            #             74 -> 8.5, dropout-0 pair: loss 0.0, grad_norm 0.0), and on a gross one-sided
+            #             drift that the step-1 probe structurally cannot see (synthetic, below)
+            # Its blind spots are stated, not implied: it misses cross-step staleness and a x1.004
+            # gradient bias on every leg tried, and at dropout 0.1 the dropout noise hides even the
+            # real defect above (0.375 / 0.5) -- which the step-1 probe catches. So this is a
+            # backstop for GROSS one-sided moves, not a detector of subtle ones.
+            #
+            # Retiring it outright was considered and rejected: a loss shift of +0.9 from step 3 on,
+            # step 1 untouched, would then pass L1 entirely.
+            nz = [v for v in d if v != 0]
+            strict = len(nz) >= 5 and (all(v > 0 for v in nz) or all(v < 0 for v in nz))
+            chk = res["checks"][f"{key}_sign_balance_early"]
+            chk["strict_one_sided"] = strict
+            chk["non_identical_steps"] = len(nz)
+            chk["measured_null_rate_pct"] = {"loss": 5.1, "grad_norm": 0.6}[key]
             null_rng = (band.get("sign_balance_null_range") or {}).get(key)
-            if null_rng and null_rng.get("pairs", 0) >= 2:
-                inside = null_rng["min"] <= sb <= null_rng["max"]
-                res["checks"][f"{key}_sign_balance_early"]["null_range"] = [null_rng["min"], null_rng["max"]]
-                res["checks"][f"{key}_sign_balance_early"]["blocking"] = not inside
-                if not inside:
-                    failures.append(
-                        f"{key} early sign balance {sb:.3f} lies OUTSIDE the {null_rng['min']}-"
-                        f"{null_rng['max']} range that {null_rng['pairs']} clean baseline pairs of "
-                        f"this workload produced: a one-sided move noise here does not make")
-                elif sb in (0.0, 1.0):
-                    advisories.append(
-                        f"{key} moved one way on all {len(d)} early steps (sign balance {sb:.3f}) -- "
-                        f"reported, NOT blocking, because clean pairs of this workload reached "
-                        f"{null_rng['min']}-{null_rng['max']} themselves")
-            elif sb in (0.0, 1.0):
-                # No calibrated range: fall back to the old rule, but say that it is uncalibrated.
-                failures.append(f"{key} moved the SAME direction on all {len(d)} early steps: a "
-                                f"systematic bias, not noise (every magnitude check can still pass). "
-                                f"NOTE: no clean-pair sign-balance range in this band, so this "
-                                f"threshold is assumed rather than measured")
+            if null_rng:
+                chk["band_range_reported_only"] = [null_rng["min"], null_rng["max"]]
+            chk["blocking"] = strict
+            if strict:
+                failures.append(
+                    f"{key} early sign balance {sb:.3f}: moved the SAME direction on all {len(nz)} non-identical early steps, a "
+                    f"gross one-sided move. Clean pairs do this {chk['measured_null_rate_pct']}% of the "
+                    f"time (693 measured pairs), so a re-gate is the remedy if this is a false reject")
 
     res["implementation_delta"] = impl_delta
     res["pass"] = not failures

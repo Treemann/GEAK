@@ -229,6 +229,33 @@ def main():
            "not license a trajectory moving the wrong way")
         ok(sb_blocks(higher, False),
            "higher loss, L0 not strictly better -> blocks")
+        # ------------------------------------- 4e. the STRICT rule replaces the 3-pair range
+        # The old bar was min..max of the band's 3 clean pairs; 693 measured clean pairs fall
+        # outside such a range 55-64% of the time. A 6-up/2-down pair (0.75) is ordinary noise and
+        # must not block, even against a band whose recorded range excludes it.
+        lo_m, gn_m = synth(1, cross_at=11)
+        for i in range(0, 8):
+            lo_m[i] += (0.05 if i not in (2, 5) else -0.05)
+        mixed = make_leg(root, "cand_mixed", lo_m, alt(gn_m))
+        v_m = tg.verdict(legs[0], mixed, b_tight)
+        sbm = v_m["checks"].get("loss_sign_balance_early") or {}
+        ok(sbm.get("blocking") is False and not sbm.get("strict_one_sided"),
+           f"a 6-up/2-down early window (sign balance {sbm.get('value')}) does NOT block, though it lies "
+           "outside the band's recorded range -- the falsified 3-pair rule would have rejected it")
+        ok("band_range_reported_only" in sbm,
+           "the band's range is still REPORTED, so a reader can see what the old rule would have said")
+        # Identical steps carry no direction. Counting them as "not up" is what made a leg identical
+        # to its reference read as one-sided.
+        lo_i, gn_i = synth(1, cross_at=11)
+        for i in (1, 3, 5):
+            lo_i[i] += 0.05                       # 3 differing steps, all up; 5 identical
+        ident = make_leg(root, "cand_mostly_identical", lo_i, alt(gn_i))
+        v_i = tg.verdict(legs[0], ident, b_tight)
+        sbi = v_i["checks"].get("loss_sign_balance_early") or {}
+        ok(sbi.get("blocking") is False and sbi.get("non_identical_steps") == 3,
+           f"3 differing steps out of 8 are too few to call a direction ({sbi.get('non_identical_steps')} "
+           "non-identical) -- identical steps are excluded, not counted as down")
+
         v_w = tg.verdict(legs[0], lower, b_tight, l0_strictly_better=True)
         ok(any("WAIVED" in a for a in v_w.get("advisories", [])),
            "a waiver is REPORTED, never silent")

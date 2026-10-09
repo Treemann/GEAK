@@ -1031,3 +1031,61 @@ marginal one (positive values within ~10% of B) will be reported as marginal, no
 (1.4417) sits away from the other three (~1.423). That is the chaos floor showing through, and it is
 why B is a max over all six pairs rather than over the quiet ones: excluding the inconvenient clean
 leg would be choosing the null to make the test easier.
+
+### RESULT: the terminal-window comparator, and what a second alpha = 1.0 leg did to everything (2026-10-09)
+
+**Pre-registered verdict: NOT REJECTED.** The fresh leg `l2soak_a10_300_b` (status ok, clean, 294
+steady steps, full engagement) against the four clean overlay-ON legs, `terminal_mean_rel_pct` at
+300 points: +0.2153, +0.0368, +0.2555, −1.1438% — **0 of 4** exceed B = 1.4399%, largest 0.79×B. Per
+the rule written before it ran, the token comparator line is **closed**; Class B stays refused.
+
+**The first alpha = 1.0 leg's divergence did not reproduce.** Same config, same seed:
+
+| | `l2soak_a10_300` | `l2soak_a10_300_b` |
+|---|---|---|
+| terminal loss vs clean | **+6.25 sd** | **−0.20 sd** |
+| terminal grad_norm vs clean | +18.4 sd | +0.11 sd |
+
+The late divergence on the first leg was one chaotic instability episode, not an effect of the
+defect. This withdraws my statement that "+6.25 sd strongly suggests a terminal-loss test at n ≥ 2
+would reject alpha = 1.0" and the soak floor "between alpha 0.25 and 1.0" built on it: at 300 steps
+the soak has no demonstrated sensitivity to cross-step staleness at ANY alpha tried. It is the same
+lesson as the x1.004 bias's 0.03742 — one leg is one draw — and this time the draw was mine to
+over-read. The retirement stands, more firmly.
+
+### The L1 sign test: its null range was falsified, and a strict rule replaces it (2026-10-09)
+
+Following up the alpha = 1.0 legs exposed two things about the early-window sign test.
+
+**Its claimed positive control was confounded and does not reproduce.** "L1 catches alpha = 1.0"
+rested on ONE 30-step leg at 0.750, one unit outside 0.5–0.625, compared against an overlay-OFF
+reference while the stale leg had the overlay ON. Against overlay-matched references the three
+alpha = 1.0 legs score 0.375–0.75, indistinguishable from clean pairs. Withdrawn.
+
+**Its null range was the wrong instrument.** The range was the min..max of the band's three clean
+pairs. Over **693 clean same-identity v3 pairs** a value outside such a range is what noise does
+most of the time:
+
+| rule | loss false-reject | grad_norm false-reject |
+|---|---|---|
+| shipped: outside the band's 3-pair range | **63.5%** | **55.6%** |
+| strict: all ≥ 5 non-identical early diffs one sign | **5.1%** | **0.6%** |
+
+At n = 8 the statistic moves in steps of 0.125 and a fair coin lands in {0.5, 0.625} 49% of the
+time; three draws cannot bound that. The shipped rule was a reject-only gate rejecting a coin-flip of
+good candidates — it "carried the 0.5B attention rejection" and rejected `attn_fmha_bwd_retry` on a
+detector with these rates, so neither verdict has a sound basis on this evidence.
+
+**Replaced, not retired.** Retiring it was tried first and reverted: a synthetic loss shift of +0.9
+from step 3 onward, step 1 untouched, would then pass L1 entirely — the case the step-1 probe
+structurally cannot see. The strict rule has both controls:
+
+* **null** — the 693 pairs above;
+* **positive** — the real 7B attention backward defect on its dropout-0 pair (step-1 grad_norm
+  74 → 8.5): loss 0.0 and grad_norm 0.0, both firing; and the synthetic gross drift.
+
+Its blind spots, stated: cross-step staleness and the x1.004 bias on every leg tried, and **at
+dropout 0.1 — how the 7B reference runs — dropout noise hides even the real defect** (0.375 / 0.5);
+the step-1 probe caught that one. It is a backstop for gross one-sided moves, not a detector of
+subtle ones. Identical steps are now excluded rather than counted as "not up", which is what made a
+leg identical to its reference read as one-sided.
