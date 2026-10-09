@@ -12,6 +12,14 @@
 # adapter-seam finding: the workload descriptor's MODEL_CKPT is Megatron vocabulary, and a stack-
 # neutral descriptor would name the weights by FORMAT.
 #
+# RECIPE KNOBS ARE ARGUMENTS, NOT ENVIRONMENT. bench_train.sh re-executes inside the training image
+# and forwards only a short list of env vars (ATTENTION_BACKEND, RETRY_CONTAMINATED). An adapter env
+# knob set on the host therefore reaches the container as nothing at all -- measured: HF_FSDP=
+# full_shard on the host produced a leg whose captured argv says `hf-fsdp none`, and it OOMed exactly
+# like the DDP leg. Defaults are written out here; override with
+#   bench_train.sh ... --extra-train-args "--hf-fsdp full_shard"
+# which is forwarded verbatim and, being appended last, wins the argparse duplicate.
+#
 # ATTENTION_BACKEND here is HF's attn_implementation (sdpa | flash_attention_2 | eager), not
 # Megatron's fused/flash. Same knob name, different value set -- a second place the config IR is
 # shown to be Megatron's argv rather than an IR.
@@ -54,7 +62,7 @@ adapter_launch() {
       --train-iters "$ITERS" \
       --lr 1.0e-5 --min-lr 0.0 --lr-decay-style constant --lr-warmup-iters 0 \
       --weight-decay 0.1 --clip-grad 1.0 --adam-beta1 0.9 --adam-beta2 0.95 \
-      --bf16 --sft --seed "${SEED:-1234}" --master-weights "${MASTER_WEIGHTS:-fp32}" \
+      --bf16 --sft --seed "${SEED:-1234}" --master-weights fp32 --hf-fsdp none \
       --attention-backend "${ATTENTION_BACKEND:-sdpa}" \
       --output-dir "$OUT_DIR/hf_out" \
       $EXTRA_TRAIN_ARGS \

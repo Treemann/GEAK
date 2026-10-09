@@ -198,6 +198,11 @@ const leg = (o = {}) => Object.assign({
                                            paired: { ...hfCmp.paired, same_batches: false } } });
   ok(vBig.klass === 'no_aligned_delta' && !vBig.accepted,
     `even a +40% per-leg delta cannot ACCEPT a variable-shape pair without a valid paired comparison (${vBig.klass})`);
+  ok(!legUsable(leg({ identity_vs_realized: { checked: 28, mismatches: [
+       { key: 'lr', captured: '1.0e-5', realized: '0.0' }] } })).ok,
+    'a leg whose captured identity disagrees with what ran is NOT usable (the real one-sample leg)');
+  ok(legUsable(leg({ identity_vs_realized: null })).ok,
+    'a stack with no realized table is "not checked", not refused');
   ok(legUsable(hfLegs.cand).ok,
     'a clean variable-shape leg at 25.36% per-leg IQR is USABLE (that spread is the dataset)');
   ok(!legUsable(leg({ worst_iqr_spread_pct: 25.36 })).ok,

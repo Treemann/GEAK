@@ -254,6 +254,16 @@ function legUsable(leg) {
                   'step itself, so this leg cannot bound anything (a band derived from it exceeds ' +
                   'any delta a candidate could show). Suspect two runs merged into one probe dir.' };
   }
+  // A leg whose CAPTURED identity disagrees with what the framework says it RAN is a measurement of a
+  // config other than the one its digest names. It cannot be paired or compared, because the digest
+  // is the only thing that says what it is. (identity_vs_realized is null for a stack that prints no
+  // realized table -- that is "not checked", not "checked and clean", and is not refused here.)
+  const ivr = leg.identity_vs_realized;
+  if (ivr && Array.isArray(ivr.mismatches) && ivr.mismatches.length) {
+    return { ok: false,
+             why: 'identity records a config that did not run: ' +
+                  ivr.mismatches.map((m) => `${m.key} captured ${m.captured}, ran ${m.realized}`).join('; ') };
+  }
   const occ = (leg.occupancy_verdict || {}).verdict;
   if (occ === 'contaminated') return { ok: false, why: 'another process held a GPU during this leg' };
   if (occ === 'unknown') return { ok: false, why: 'isolation could not be established (rocm-smi unavailable)' };

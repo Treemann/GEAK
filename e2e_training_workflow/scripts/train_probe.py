@@ -292,6 +292,8 @@ _IDENTITY_PAIR_KEYS = (
     # not just how fast it goes. Only the HF launcher passes it; Megatron's --bf16 implies fp32 main
     # params and every Megatron leg digests as before.
     "--master-weights",
+    # HF parallel strategy (implementation half, see probe_summarize.IMPL_KEYS).
+    "--hf-fsdp",
     # regularization + optimizer: these move the loss/grad-norm trajectory L1 gates on
     "--attention-dropout", "--hidden-dropout", "--weight-decay", "--clip-grad",
     "--lr", "--min-lr", "--lr-decay-style", "--lr-warmup-iters",
@@ -316,11 +318,22 @@ def _config_snapshot():
     """Pinned-config verification input (Seam 1): what the process ACTUALLY runs with."""
     import sys
     argv, out = sys.argv, {}
+    # ARGPARSE SEMANTICS: the LAST occurrence wins, and `--flag=value` is the same as `--flag value`.
+    # This used argv.index(k) -- the FIRST occurrence -- which is exactly backwards whenever an
+    # adapter writes a default and --extra-train-args appends an override. Measured: an HF 7B leg run
+    # with `--extra-train-args "--hf-fsdp full_shard"` captured `hf-fsdp none` while FSDP was plainly
+    # active (73.6 GB peak where the DDP leg OOMs at 183.5 GB). The same shape hit Megatron: a leg
+    # passing `--lr 0.0` over the adapter's `--lr 1.0e-5` recorded 1.0e-5. Identity recorded a config
+    # that did not run, which is worse than recording nothing.
     for k in _IDENTITY_PAIR_KEYS:
-        if k in argv:
-            i = argv.index(k)
-            if i + 1 < len(argv):
-                out[k.lstrip("-")] = argv[i + 1]
+        val = None
+        for i, tok in enumerate(argv):
+            if tok == k and i + 1 < len(argv):
+                val = argv[i + 1]
+            elif tok.startswith(k + "="):
+                val = tok.split("=", 1)[1]
+        if val is not None:
+            out[k.lstrip("-")] = val
     for k in _IDENTITY_FLAG_KEYS:
         if k in argv:
             out[k.lstrip("-")] = "true"

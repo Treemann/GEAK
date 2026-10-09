@@ -42,6 +42,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))           # scripts/, for train_probe
 
 
+def _decoder_layer_cls(model_dir):
+    """FSDP wraps per decoder layer; the class name comes from the model's own config, not a guess."""
+    import json
+    arch = json.load(open(os.path.join(model_dir, "config.json")))["architectures"][0]
+    return arch.replace("ForCausalLM", "DecoderLayer")       # Qwen2ForCausalLM -> Qwen2DecoderLayer
+
+
 def parse():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     # Megatron vocabulary, translated below. Names must match train_probe._IDENTITY_PAIR_KEYS.
@@ -69,6 +76,10 @@ def parse():
     # Every recipe choice this launcher makes must be VISIBLE IN ARGV, because identity is captured
     # from argv. The first version switched pure-bf16 -> fp32-master in code with argv unchanged, and
     # two legs training different recipes carried identical config_digest AND impl_digest.
+    # Parallel strategy. DDP replicates fp32 master weights, grads and AdamW state on every GPU and
+    # OOMs at 7B (183.5 GB allocated at step 3 on a 192 GB device). full_shard is FSDP with fp32
+    # master shards and bf16 compute -- the counterpart of Megatron's --use-distributed-optimizer.
+    ap.add_argument("--hf-fsdp", choices=("none", "full_shard"), default="none")
     ap.add_argument("--master-weights", choices=("fp32", "bf16"), default="fp32",
                     help="fp32 = fp32 master weights + bf16 autocast (Megatron --bf16); bf16 = pure bf16")
     ap.add_argument("--output-dir", required=True)
@@ -77,6 +88,16 @@ def parse():
 
 def main():
     a = parse()
+    # REALIZED ARGUMENT TABLE, in Megatron's own dump format ("  key ....... value"), so that
+    # probe_summarize.identity_vs_realized checks this stack exactly as it checks Megatron. argparse
+    # resolves duplicates (last wins) before this prints, so this is what actually runs. Without it
+    # an HF leg launched with `--extra-train-args "--hf-fsdp full_shard"` was captured as
+    # `hf-fsdp none` and nothing could notice.
+    if int(os.environ.get("RANK", "0")) == 0:
+        print("------------------------ arguments ------------------------", flush=True)
+        for k, v in sorted(vars(a).items()):
+            print(f"  {k} {'.' * max(3, 48 - len(k))} {v}", flush=True)
+        print("-------------------- end of arguments ---------------------", flush=True)
     world = int(os.environ.get("WORLD_SIZE", "1"))
     denom = a.micro_batch_size * world
     if a.global_batch_size % denom:
@@ -148,6 +169,9 @@ def main():
         dataloader_drop_last=True,
         gradient_checkpointing=False,
         ddp_find_unused_parameters=False,
+        **({"fsdp": "full_shard auto_wrap",
+            "fsdp_config": {"transformer_layer_cls_to_wrap": [_decoder_layer_cls(a.load)]}}
+           if a.hf_fsdp == "full_shard" else {}),
     )
     trainer = SFTTrainer(model=model, args=cfg, train_dataset=ds, processing_class=tok)
     train_probe.install_hf(trainer)

@@ -101,7 +101,7 @@ def main():
     # cannot be told apart from the reference it beat. This is the defect the run found, pinned so
     # it cannot come back by someone trimming a list.
     for lever in ("overlap-grad-reduce", "overlap-param-gather", "attention-backend",
-                  "recompute-granularity", "recompute-method"):
+                  "recompute-granularity", "recompute-method", "hf-fsdp"):
         ok(lever in captured and lever in set(impl),
            f"Class-A lever `{lever}` is captured AND classed as implementation")
 
@@ -113,6 +113,27 @@ def main():
        f"snapshot_keys is stamped v4 at the capture site (found {m.group(1) if m else 'nothing'})")
     summ = open(os.path.join(SCRIPTS, "probe_summarize.py")).read()
     ok('"v4": 4' in summ, "probe_summarize maps v4 to digest_schema 4")
+
+    # ARGPARSE SEMANTICS. Identity must record the value that RAN: the last occurrence of a flag,
+    # and `--flag=value` as well as `--flag value`. It took the first occurrence, so every
+    # --extra-train-args override of an adapter default was recorded as the default.
+    import hashlib
+    g = {"os": os, "sys": sys, "hashlib": hashlib, "json": __import__("json")}
+    tree = ast.parse(open(probe).read())
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in (
+                "_IDENTITY_PAIR_KEYS", "_IDENTITY_FLAG_KEYS"):
+            g[n.targets[0].id] = ast.literal_eval(n.value)
+        if isinstance(n, ast.FunctionDef) and n.name in ("_config_snapshot", "_overlay_content_hash"):
+            exec(compile(ast.Module(body=[n], type_ignores=[]), probe, "exec"), g)
+    saved = sys.argv
+    try:
+        sys.argv = ["x", "--lr", "1.0e-5", "--hf-fsdp", "none", "--lr", "0.0", "--hf-fsdp=full_shard"]
+        snap = g["_config_snapshot"]()
+    finally:
+        sys.argv = saved
+    ok(snap.get("lr") == "0.0", f"a repeated flag records the LAST value, as argparse uses (got {snap.get('lr')})")
+    ok(snap.get("hf-fsdp") == "full_shard", f"`--flag=value` is captured too (got {snap.get('hf-fsdp')})")
 
     print()
     if fails:

@@ -14,6 +14,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import statistics
 import sys
 
@@ -95,6 +96,63 @@ def dispersion(vals):
     out["outlier_steps"] = len(outliers)
     out["outlier_max_pct"] = round(100 * (max(outliers) - med) / med, 2) if outliers else 0.0
     return out
+
+
+_DUMP = re.compile(r"^\s+([a-z_0-9]+) \.+ (.*)$")
+_ENUM = re.compile(r"^[A-Za-z_]+\.([A-Za-z_0-9]+)$")
+
+
+def _norm(x):
+    x = str(x).strip().strip("'\"")
+    m = _ENUM.match(x)
+    if m:
+        x = m.group(1)                                   # AttnBackend.fused -> fused
+    if x.startswith("[") and x.endswith("]"):
+        x = x[1:-1].strip().strip("'\"")                # ['/data.jsonl'] -> /data.jsonl
+    try:
+        return float(x)
+    except ValueError:
+        return x
+
+
+def identity_vs_realized(probe_dir, cfg):
+    """Compare the identity captured from argv with what the framework says it RAN.
+
+    The digest reads argv, which records what was ASKED for. Megatron prints its realized argument
+    table at startup, which records what was DONE. Where both name a key they must agree, or the leg's
+    identity is a statement about a config that did not run. This is the realized-config check
+    designed earlier and deferred; it lands as an additive field, so no digest changes.
+
+    Run over all 205 Megatron legs on disk when it was written: 1 mismatch -- a diagnostic leg that
+    passed `--lr 0.0` over the adapter's `--lr 1.0e-5` while capture still took the FIRST
+    occurrence. Returns None for a stack that prints no realized table (HF), rather than claiming a
+    check that did not happen.
+    """
+    log = os.path.join(os.path.dirname(os.path.abspath(probe_dir)), "train.log")
+    if not os.path.exists(log):
+        return None
+    real = {}
+    with open(log, errors="replace") as f:
+        for i, line in enumerate(f):
+            if i > 4000:
+                break
+            m = _DUMP.match(line)
+            if m:
+                real[m.group(1)] = m.group(2)
+    # The dotted "  key ....... value" format is what identifies a realized table; its size does not.
+    # Megatron prints ~650 entries, the HF launcher ~25. A size threshold of 100 (the first version)
+    # silently skipped every HF leg and reported None -- "not checked" -- for a stack that does print
+    # one. Ten entries rules out a stray matching line while admitting a short, deliberate table.
+    if len(real) < 10:
+        return None
+    checked, bad = 0, []
+    for k, v in (cfg or {}).items():
+        rk = k.replace("-", "_")
+        if rk in real and v != "true" and k != "snapshot_keys":
+            checked += 1
+            if _norm(v) != _norm(real[rk]):
+                bad.append({"key": k, "captured": v, "realized": real[rk].strip()})
+    return {"checked": checked, "mismatches": bad}
 
 
 def _cv_pct(series_by_rank):
@@ -189,7 +247,9 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
                  # recompute changes HOW a step is computed, not what is trained, so it belongs in
                  # this half. It sat in the workload half until v4; the move is free because the
                  # flag is absent from every leg on disk.
-                 "recompute-granularity", "recompute-method")
+                 "recompute-granularity", "recompute-method",
+                 # HF's parallel strategy: HOW the step is computed, like the distributed optimizer.
+                 "hf-fsdp")
     # Snapshot-format metadata is NEITHER half: it describes the record, not the run. It is excluded
     # from both digests and surfaces as digest_schema below.
     META_KEYS = ("snapshot_keys",)
@@ -215,6 +275,7 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         # IQR (~25%) measures the dataset, not the measurement, and only a PAIRED comparison
         # (compare_legs' per-step ratio, 0.26% on an identical pair) separates noise from signal.
         "step_shape": _step_shape(per_rank_tokens),
+        "identity_vs_realized": identity_vs_realized(dirpath, cfg),
         "total_tokens_cv_pct": _cv_pct(per_rank_tokens),
         "rank_skew_pct": round(100 * (max(meds) - min(meds)) / statistics.median(meds), 3),
         "slowest_rank": slowest,
