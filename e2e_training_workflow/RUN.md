@@ -218,7 +218,7 @@ not count against a budget meant to bound GPU work. Omit `t0_epoch_ms` and the r
 * The head at 7B is a GEMM at **19% of the critical path**, so a 20% kernel win is worth ~4% on the
   headline, well clear of the 0.15% aligned band.
 * Kernel lanes use the whole GPU pool; each gate **drains them first**.
-* `deep_mode: true` refuses to run. ConfigSweep does not exist yet.
+* `deep_mode: true` adds ConfigSweep. See "Deep mode" below; it has run end to end since 2026-10-08.
 
 ## Where it is most likely to fail first
 
@@ -233,3 +233,50 @@ not count against a budget meant to bound GPU work. Omit `t0_epoch_ms` and the r
 Per-candidate deltas are measured against different references and do **not** sum to it.
 Check `delta_source` on each verdict: `window-aligned` is trustworthy, the raw-ratio fallback is
 labelled as carrying the artifact.
+
+## Deep mode: ConfigSweep (as of 2026-10-09)
+
+```
+Workflow({scriptPath: ".../training_workflow.js", args: {
+  ..., "deep_mode": "true", "phases": "setup,profile,strategize,config",
+  "config_levers": "packing",            // or "recompute_granularity,attention_backend", or omit
+  "budget": 0, "max_gates": 2, "t0_epoch_ms": "<date +%s%3N>" }})
+```
+
+* `config_levers` names the levers to measure, in ONE run so they share a baseline and a band.
+  Omit it and the Config Tuner picks one Tier-0 lever itself.
+* Every Class-A lever must return an L1 result (`trajectory_gate.py compare`) or it cannot be
+  accepted. This is what stops Megatron's **flash** attention backend on this ROCm stack, whose
+  gradient is 2.7x off under a correct forward.
+* **The Tier-0 Class-A pack is measured and none of it pays on the 7B reference**: comm overlap
+  +0.118% (costs 780 MB), recompute selective −3.40% (costs 838 MB), attention flash −0.73% and
+  unsafe. Do not re-run them on this workload expecting a different answer.
+* **Packing is the lever that pays: 833 → 3,048 useful tok/s/GPU (3.66x).** It is the one Class-B
+  lever with a gate (`scripts/pack_gate.py`); GBS/MBS/seq stay refused. After packing,
+  `--global-batch-size` counts packs — divide it by the packing ratio (~3.3) to keep samples per
+  optimizer step.
+
+To pack by hand:
+```
+docker run ... rocm/primus:v26.4 python /repo/e2e_training_workflow/scripts/pack_sft.py \
+    /work/data/sft_ultrachat20k.jsonl /work/data/sft_ultrachat20k_packed_7b.jsonl \
+    --tokenizer /models/qwen2_5_math_7b --seq 4096
+python3 scripts/pack_gate.py --workload workloads/qwen2_5_math_7b.env \
+    --source /work/data/sft_ultrachat20k.jsonl --packed /work/data/sft_ultrachat20k_packed_7b.jsonl \
+    --model /models/qwen2_5_math_7b --pack-index 1
+```
+
+## A second stack: HF TRL (as of 2026-10-09)
+
+```
+bash scripts/bench_train.sh --stack hf_trl --workload workloads/qwen2_5_0_5b.env --nproc 2 --iters 30
+bash scripts/bench_train.sh --stack hf_trl --workload workloads/qwen2_5_math_7b.env --nproc 8 --iters 30 \
+    --extra-train-args "--hf-fsdp full_shard"         # 7B: DDP with fp32 master weights OOMs
+```
+
+* Recipe knobs are ARGUMENTS (`--extra-train-args`), never environment: the container re-exec
+  forwards only ATTENTION_BACKEND and RETRY_CONTAMINATED, so an env knob silently does nothing.
+* HF pads dynamically, so its step time follows content. The gate reads a PAIRED per-step delta for
+  exactly this reason; per-leg medians put two identical HF runs 1.15% apart.
+* Compare stacks only same-code, same-day, same recipe (dropout, master-weight precision). An old
+  Megatron leg once made HF look 1.8x "better" in loss for reasons that had nothing to do with HF.
