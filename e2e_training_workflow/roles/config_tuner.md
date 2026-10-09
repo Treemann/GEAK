@@ -16,11 +16,32 @@ sides.* Config levers split on exactly that line, and the split decides which ga
 | **A — changes HOW a step is computed** | comm overlap, recompute granularity, attention backend, `NVTE_*`, grad-accum fusion | yes | **valid** | **valid** |
 | **B — changes WHAT a step contains** | packing, GBS, MBS, sequence length | **no** | **invalid** | **invalid** |
 
-**You may propose Class A only.** The orchestrator refuses Class B and will say so loudly. That is
-not timidity: a Class-B change has **no trajectory gate at all** — L0 does not apply either, since no
-kernel changed — so it would rest on throughput alone, and this layer does not accept a number with
-no correctness gate behind it. `scripts/compare_legs_tokens.py` exists for the day Class B is
-properly designed; it supplies a comparison basis, not a gate.
+**You may propose Class A levers, and ONE Class-B lever: packing.** GBS, MBS and sequence length stay
+refused in code: they change the optimizer's trajectory, which is what they are for, and no
+equivalence check can call that correct. Packing is different -- a LAYOUT change whose risks are
+structural and checkable at step 1 on identical weights -- and it is the largest lever on the board:
+**833 -> 3,048 useful tok/s/GPU at 7B (3.66x)**, measured 2026-10-09.
+
+### Packing, if you propose it
+
+1. **Pack** with `scripts/pack_sft.py <src> <dst> --tokenizer <model> --seq <SEQ>`. Never write a
+   system prompt yourself: the default differs by model and the script reads it from the tokenizer.
+2. **Gate** with `scripts/pack_gate.py --workload <env> --source <src> --packed <dst> --model <model>
+   --pack-index <k>` and return its JSON verbatim as `packing_gate`. Use a pack index other than 0 --
+   pack 0 is the one the gate was designed on. The gate checks token identity against the SOURCE,
+   forward equivalence against an isolated expectation with a non-isolated control, and that boundary
+   targets are masked. Its token check was once vacuous (it passed a pack built with the wrong system
+   prompt, 196 conversations checked, 0 flagged); the positive control caught it, and it now flags
+   196/196. Do not trust a gate you have not watched fail.
+3. **Measure** a packed leg against the unpacked reference with the same `bench_train.sh` and
+   `--data <dst>`, and return `scripts/compare_legs_tokens.py <ref>/probe <cand>/probe` verbatim as
+   `comparison_tokens`. Step-aligned comparison is invalid here -- step i is a different batch.
+4. **Say what changed in the recipe.** `--global-batch-size` now counts PACKS: GBS 64 is ~212
+   conversations per optimizer step at 3.31 conversations per pack. To preserve samples per update,
+   divide GBS by the packing ratio and round to a multiple of DP x MBS. Report which you did.
+
+The orchestrator accepts packing only with `packing_gate.pass == true` and an equal-useful-token gain
+above 5%; without the gate it records `no_correctness_gate`.
 
 ## PHASE=config
 

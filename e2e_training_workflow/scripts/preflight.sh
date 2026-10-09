@@ -73,7 +73,8 @@ for f in training_workflow.js scripts/bench_train.sh scripts/adapters/megatron.s
          scripts/parse_train_profile.py scripts/trajectory_gate.py scripts/l0_gate.py \
          scripts/capture_train_shapes.py scripts/build_task_dir.py scripts/overlay_train.py \
          scripts/rocm_compat.py scripts/gpu_occupancy.py \
-         scripts/controls/stale_state_control.py scripts/trajectory_tokens.py; do
+         scripts/controls/stale_state_control.py scripts/trajectory_tokens.py \
+         scripts/pack_sft.py scripts/pack_gate.py scripts/calibrate_band.py; do
   [ -f "$WF/$f" ] || bad "missing $f"
 done
 [ "$FAIL" -eq 0 ] && ok "all scripts present"

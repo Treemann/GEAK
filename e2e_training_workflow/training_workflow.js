@@ -638,7 +638,7 @@ const AUDIT_SCHEMA = obj({ l0: { type: 'object' }, l1: { type: 'object' },
 const FINALIZE_SCHEMA = obj({ overlay: { type: 'string' }, patch: { type: 'string' },
   launch: { type: 'string' }, engagement_recheck: { type: 'object' } }, []);
 const CONFIG_SCHEMA = obj({ lever: { type: 'string' }, flags_added: { type: 'array' },
-  l1: { type: 'object' },
+  l1: { type: 'object' }, packing_gate: { type: 'object' }, comparison_tokens: { type: 'object' },
   ceiling_pct: { type: 'number' }, ref: { type: 'object' }, cand: { type: 'object' },
   comparison: { type: 'object' }, config_digest_delta: { type: 'object' },
   peak_reserved_mb: { type: 'object' }, memory_conversion: { type: 'object' } },
@@ -846,10 +846,18 @@ const CLASS_B_LEVERS = [
   'packing', 'pack', 'global-batch-size', 'micro-batch-size', 'seq-length', 'seq_length',
   'gbs', 'mbs', 'sequence-length',
 ];
+// PACKING is the one Class-B lever with a gate, and the reason is specific: it is a LAYOUT change
+// whose risks are structural (attention isolation, position restarts, which tokens are targets) and
+// checkable at step 1 on identical weights -- scripts/pack_gate.py. GBS, MBS and sequence length
+// change the optimizer's trajectory, which is what they are FOR; no equivalence check can call them
+// correct, so they stay refused.
+const GATEABLE_CLASS_B = ['packing', 'pack'];
+const PACKING_MIN_GAIN_PCT = 5.0;   // cross-dataset comparison, no step pairing; measured effect 266%
 function classOfLever(flags) {
   const txt = (flags || []).join(' ').toLowerCase();
   const hit = CLASS_B_LEVERS.find((k) => txt.includes(k));
-  return hit ? { cls: 'B', key: hit } : { cls: 'A', key: null };
+  if (!hit) return { cls: 'A', key: null };
+  return { cls: 'B', key: hit, gateable: GATEABLE_CLASS_B.includes(hit) };
 }
 
 // args.config_levers names the levers to measure, comma-separated, e.g.
@@ -889,7 +897,36 @@ if (want('config')) {
     log0('ConfigSweep produced nothing; continuing to the kernel track.');
   } else {
     const kind = classOfLever(sweep.flags_added);
-    if (kind.cls === 'B') {
+    if (kind.cls === 'B' && kind.gateable) {
+      gatesUsed += 1;
+      const pg = sweep.packing_gate || null;
+      const ct = sweep.comparison_tokens || null;
+      const d = ct && typeof ct.delta_pct === 'number' ? ct.delta_pct : null;
+      let verdict;
+      if (!pg || pg.pass !== true) {
+        verdict = { accepted: false, klass: pg ? 'packing_gate_failed' : 'no_correctness_gate',
+                    reason: pg ? `scripts/pack_gate.py verdict ${pg.verdict}: ${JSON.stringify(pg.checks || {})}`
+                               : 'no packing_gate result (scripts/pack_gate.py): a packed dataset may not be ' +
+                                 'accepted on throughput alone' };
+      } else if (d == null) {
+        verdict = { accepted: false, klass: 'no_aligned_delta',
+                    reason: 'no equal-useful-token comparison (scripts/compare_legs_tokens.py)' };
+      } else {
+        const win = d > PACKING_MIN_GAIN_PCT;
+        verdict = { accepted: win, klass: win ? 'win' : 'no_win', delta_pct: d,
+                    band_pct: PACKING_MIN_GAIN_PCT, delta_source: 'equal useful tokens (Class B)',
+                    reason: `${d.toFixed(2)}% ${win ? '>' : '<='} ${PACKING_MIN_GAIN_PCT}% on an equal-useful-` +
+                            'token basis; packing gate PASS' };
+      }
+      sweepRecords.push({ lever: sweep.lever, requested: wantLever, flags_added: sweep.flags_added,
+        class: 'B (gated: packing)', verdict, packing_gate: pg,
+        // Recorded, not decided here: GBS counts PACKS after packing, so samples-per-update changes
+        // unless the caller divides it by the packing ratio. A recipe choice, made visibly.
+        recipe_note: 'global-batch-size now counts packs; divide by conversations_per_pack to keep ' +
+                     'samples per optimizer step' });
+      log0(`ConfigSweep ${sweep.lever}: ${verdict.klass} (${verdict.reason})`);
+      if (verdict.accepted) curConfig = { ...curConfig, config_flags: sweep.flags_added };
+    } else if (kind.cls === 'B') {
       // Refuse, do not silently downgrade: a Class-B result looks exactly like a Class-A one.
       sweepRecords.push({ refused: true, lever: sweep.lever, requested: wantLever, reason:
         `flags_added names a CLASS B lever (${kind.key}): it changes what a step contains, so step i ` +

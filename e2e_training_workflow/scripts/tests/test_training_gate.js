@@ -396,7 +396,8 @@ const leg = (o = {}) => Object.assign({
       'a Class B proposal is REFUSED and says why, rather than being silently downgraded');
     // Behaviour, not just presence: extract the classifier and run it.
     const { classOfLever } = load(['classOfLever'], 'const CLASS_B_LEVERS = ' +
-      (src.match(/const CLASS_B_LEVERS = \[[\s\S]*?\];/) || [''])[0].replace('const CLASS_B_LEVERS = ', '') + ';');
+      (src.match(/const CLASS_B_LEVERS = \[[\s\S]*?\];/) || [''])[0].replace('const CLASS_B_LEVERS = ', '') + ';\n' +
+      ((src.match(/const GATEABLE_CLASS_B = \[[\s\S]*?\];/) || [''])[0]));
     ok(classOfLever(['--overlap-grad-reduce']).cls === 'A',
       'comm overlap classifies as A — it changes HOW a step is computed');
     ok(classOfLever(['--recompute-granularity', 'selective']).cls === 'A',
@@ -405,6 +406,8 @@ const leg = (o = {}) => Object.assign({
       'GBS classifies as B — it changes what a step contains');
     ok(classOfLever(['--sft-packing']).cls === 'B',
       'packing classifies as B even when the flag is spelled differently');
+    ok(classOfLever(['--sft-packing']).gateable === true && classOfLever(['--global-batch-size', '128']).gateable === false,
+      'packing is the ONE gateable Class-B lever; GBS stays ungateable (it changes the optimizer trajectory by design)');
     ok(/identity difference IS the experiment/.test(src),
       'a config change is EXPECTED to move config_digest, so the digest check is reported rather ' +
       'than enforced — the opposite of the rule for a kernel candidate');

@@ -38,6 +38,7 @@ const leg = (o = {}) => Object.assign({
 
 // One stub per role phase, returning the minimum shape its call site reads.
 let CONFIG_L1 = { pass: true, checks: {} };   // overridden per test below
+let CONFIG_OVERRIDE = null;                     // replaces fields of the config stub per test
 function stubFor(prompt) {
   const p = String(prompt);
   const is = (s) => p.includes(s);
@@ -64,7 +65,7 @@ function stubFor(prompt) {
              config_digest_delta: { key: 'overlap-grad-reduce', ref: null, cand: 'true' },
              peak_reserved_mb: { ref: 80578, cand: 80578 },
              memory_conversion: { freed_mb: 0, would_buy: null },
-             ...(CONFIG_L1 === undefined ? {} : { l1: CONFIG_L1 }) };
+             ...(CONFIG_L1 === undefined ? {} : { l1: CONFIG_L1 }), ...(CONFIG_OVERRIDE || {}) };
   }
   if (is('PHASE=extract')) return { task_dir: '/work/tasks/t', op: 'o', has_backward: true, engagement: {} };
   if (is('PHASE=integrate')) {
@@ -192,6 +193,30 @@ async function dryRun(args) {
     }
   }
   CONFIG_L1 = { pass: true, checks: {} };
+
+  // PACKING is the one gateable Class-B lever. Real numbers: pack_gate.py PASS on fresh packs,
+  // equal-useful-token gain +266% (833 -> 3,048 useful tok/s/GPU at 7B).
+  const pk = { lever: 'packing', flags_added: ['--train-data-path', '/work/data/x_packed.jsonl', 'packing'],
+               comparison_tokens: { delta_pct: 265.9 } };
+  for (const [label, over, expect, klass] of [
+    ['packing, gate PASS', { ...pk, packing_gate: { pass: true, verdict: 'PASS' } }, true, 'win'],
+    ['packing, gate FAIL (wrong system prompt, 196/196 token mismatches)',
+       { ...pk, packing_gate: { pass: false, verdict: 'FAIL', checks: { token_identity: { pass: false } } } }, false, 'packing_gate_failed'],
+    ['packing, no gate result', { ...pk }, false, 'no_correctness_gate'],
+    ['GBS change (ungateable Class B)', { lever: 'gbs', flags_added: ['--global-batch-size', '128'] }, false, null]]) {
+    CONFIG_OVERRIDE = over;
+    try {
+      const { result } = await dryRun({ ...base, deep_mode: 'true', budget: 0 });
+      const lv = (((result || {}).config_sweep || {}).levers || [])[0] || {};
+      const v = lv.verdict || {};
+      const accepted = lv.refused ? false : v.accepted;
+      ok(accepted === expect && (klass === null ? lv.refused === true : v.klass === klass),
+        `${label}: accepted=${accepted} (${lv.refused ? 'REFUSED' : v.klass})`);
+    } catch (e) {
+      ok(false, `${label} threw: ${e && e.message}`);
+    }
+  }
+  CONFIG_OVERRIDE = null;
 
   console.log();
   if (failures) { console.error(`${failures} check(s) FAILED`); process.exit(1); }
