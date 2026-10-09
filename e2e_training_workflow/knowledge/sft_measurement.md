@@ -608,3 +608,32 @@ was +7.3% for attention dropout alone.
 
 HF needs FSDP at 7B: with fp32 master weights DDP replicates weights, grads and AdamW state and
 OOMs at step 3 (183.5 GB allocated of 192 GB).
+
+### PACKING: 3.66x useful throughput at 7B, with a correctness case built from controls (2026-10-09)
+
+Production recipe (dropout 0.1, fp32 master, fused attention), same day, 8 GPUs, 30 iters:
+
+| | useful tok/s/GPU | nominal | pad | step median | peak mem |
+|---|---|---|---|---|---|
+| unpacked (the reference) | 833.1 | 2,812.1 | 70.4% | 11.65 s | 80.6 GB |
+| **packed** (`scripts/pack_sft.py`) | **3,048.2** | 3,103.7 | **1.8%** | **10.56 s** | 80.6 GB |
+
+**3.66x** — above the ~3.3x ceiling estimated from nominal throughput, because the step got FASTER:
+variable-length attention costs Σ Lᵢ² rather than a full 4096² causal block. Memory unchanged.
+
+The correctness case, every part measured with its own control:
+
+| check | result | control |
+|---|---|---|
+| token identity (explicit default system prompt) | 500/500 on both models | the default differs by model and is read from the tokenizer |
+| forward equivalence, real 5-conversation pack | +0.057% vs isolated | non-isolated control 7.86% away |
+| kernel-level backward (`flash_attn_varlen_func` vs per-segment) | out/dq/dk/dv bit-identical | both within 0.3% of fp32 |
+| objective after boundary masking | −0.053% vs unpacked, 4090 = 4094 − 4 loss tokens | unmasked: −0.424% |
+
+What packing changes that is NOT a defect, and must be chosen deliberately: `--global-batch-size`
+counts packs, so GBS 64 is now ~212 conversations per optimizer step (3.3x the unpacked 64). To keep
+the recipe's samples-per-update, use GBS 16 or 24 packs (multiples of DP 8 × MBS 1); throughput per
+token does not depend on it.
+
+Still manual: the orchestrator's ConfigSweep keeps refusing Class B (`pack` is on its refusal list)
+until the checks above run automatically inside it.

@@ -306,6 +306,18 @@ that was missing (a candidate that diverged, hung or crashed never reached a gat
 vote). It deliberately does NOT fire when the fault is the measurement — a band too wide, a missing
 aligned comparison — because a card claiming the kernel was bad on that evidence is worse than none.
 
+## Packing — UNBLOCKED (2026-10-09): 3.66x useful throughput at 7B
+
+The largest lever on the board, refused all month for lacking a trajectory gate, turned out not to
+need one: its risks are structural and checkable at step 1. `scripts/pack_sft.py` packs (a pure data
+transform — Megatron splits packs natively), a forward equivalence probe with a 7.86%-wide positive
+control passes at 0.057%, the varlen attention backward is bit-identical to per-segment at kernel
+level, and a boundary-target defect in Megatron's packing (each conversation trained toward the next
+one's `<|im_start|>`, 10–13 nats per boundary) is fixed and verified (−0.053% vs unpacked).
+Production-recipe result: **833 → 3,048 useful tok/s/GPU (3.66x)**. Every kernel head left is worth
+~1%. Remaining: wire the checks into ConfigSweep so Class B can be gated automatically, and choose
+GBS in packs to preserve samples-per-update (16 or 24).
+
 ## Month 2 — adaptation: other stacks, other cases, tuning
 
 Gated, as before: if the gates are not trustworthy, adapting the instrument multiplies the fiction
