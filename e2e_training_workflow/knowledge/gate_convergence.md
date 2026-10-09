@@ -1089,3 +1089,56 @@ dropout 0.1 — how the 7B reference runs — dropout noise hides even the real 
 the step-1 probe caught that one. It is a backstop for gross one-sided moves, not a detector of
 subtle ones. Identical steps are now excluded rather than counted as "not up", which is what made a
 leg identical to its reference read as one-sided.
+
+## Packing: a structural equivalence probe instead of a trajectory gate (2026-10-09)
+
+Class B was refused for having no trajectory gate. But packing's risks are not trajectory risks:
+they are whether attention stays isolated between conversations, whether positions restart, and how
+the loss is normalised -- all checkable at step 1 on identical weights, the way L0 checks an op.
+The probe: put the same samples through the model packed and unpacked, and compare.
+
+Megatron packs natively -- a jsonl line may hold several conversations, each starting with a system
+message -- so `scripts/pack_sft.py` is a pure data transform. Token identity is its contract: the
+Qwen template inserts a default system prompt when none is present, the default differs by model
+("You are a helpful assistant." / "Please reason step by step, ..."), so it is read from the
+tokenizer, and 500/500 conversations were verified token-identical on both models. The 7B dataset
+packs 20,000 conversations into 6,042 packs, 3.31 per pack, 97.5% fill against 29.5% unpacked.
+
+**Forward: PASS.** Pack 0 (5 conversations, 4094 loss tokens) through Megatron 7B at lr 0:
+
+| | loss |
+|---|---|
+| expected, isolated (HF, each conversation alone + boundary targets) | 2.11936 |
+| positive control: NOT isolated (one sequence, positions continuing) | 1.95279 (−7.86%) |
+| **Megatron packed** | **2.12057 — +0.057% vs isolated, +8.59% vs non-isolated** |
+
+The control discriminates (7.86% apart), and broken isolation LOWERS the loss -- a packing bug would
+read as a quality improvement. Megatron's THD path on ROCm isolates attention in the forward.
+
+**A semantic finding: the boundary targets.** Megatron shifts labels across the whole pack, so the
+last token of each conversation is trained to predict the NEXT conversation's first token,
+`<|im_start|>`, where unpacked it is masked. The model expects `<|endoftext|>` there: those four
+tokens cost **10.6, 10.1, 10.7 and 13.4 nats**. 0.1% of tokens, 0.37% of the loss -- and a training
+signal to start a new conversation instead of stopping.
+
+**Backward: an unexplained 4.3% gradient discrepancy.** Within Megatron, with
+`--calculate-per-token-loss` so that packed and unpacked layouts of the same samples have the same
+objective by construction:
+
+| | step-1 grad_norm |
+|---|---|
+| HF, no boundary terms | 47.89 |
+| Megatron UNPACKED, same samples | 47.93 (+0.08% vs HF) |
+| HF, with boundary terms = expected for packed | 48.01 |
+| **Megatron PACKED** | **50.06 (+4.27% vs expected)** |
+
+The boundary terms explain the loss difference completely (ratio 1.0042 HF, 1.0037 Megatron) but
+only 0.25% of the gradient. Megatron unpacked matches HF to 0.08%, so Megatron's backward is sound in
+the single-segment case. **The multi-segment THD backward is where 4.3% appears**, with a forward
+that is correct -- the signature of an attention backward that does not respect segment boundaries
+the way its forward does. (Cross-stack grad_norm WITHOUT per-token loss differed by 16% on one
+conversation: normalisation, not numerics -- so grad norms are only compared within a stack and
+under the same objective.)
+
+Packing is NOT licensed by this. Next: localise -- attention backend, and the rocm_compat cu_seqlens
+patch.
