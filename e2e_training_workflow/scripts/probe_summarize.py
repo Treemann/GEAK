@@ -97,6 +97,25 @@ def dispersion(vals):
     return out
 
 
+def _cv_pct(series_by_rank):
+    vals = [v for s in series_by_rank for v in s if v]
+    if len(vals) < 2:
+        return 0.0
+    m = statistics.mean(vals)
+    return round(100 * statistics.pstdev(vals) / m, 3) if m else 0.0
+
+
+def _step_shape(series_by_rank):
+    """'fixed' when every step carries the same number of tokens (padded to SEQ), else 'variable'.
+
+    1% is not a tuned threshold: a padded stack's total_tokens is EXACTLY constant (cv 0.000), and
+    the one dynamically padded stack measured varies by tens of percent. Anything in between would
+    be a new kind of stack and deserves to be looked at, which 'variable' -- the stricter path --
+    forces.
+    """
+    return "variable" if _cv_pct(series_by_rank) > 1.0 else "fixed"
+
+
 def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
     ranks = {}
     for p in sorted(glob.glob(os.path.join(dirpath, "probe_rank*.jsonl"))):
@@ -108,6 +127,7 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         return {"error": f"no probe sidecars in {dirpath}"}
 
     per_rank, world = {}, max(len(ranks), int(next(iter(ranks.values()))[0].get("world_size", 1)))
+    per_rank_tokens = []
     for rank, (h, steps) in sorted(ranks.items()):
         durs = [s["dur_ms"] for s in steps]
         # force_warmup/max_steps exist so two legs can be summarised on a COMMON window. The headline
@@ -121,6 +141,7 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         if max_steps:
             steady = steady[:int(max_steps)]
         sd = [s["dur_ms"] for s in steady]
+        per_rank_tokens.append([s.get("total_tokens", 0) for s in steady])
         disp = dispersion(sd)
         med = disp["median_ms"]
         useful = statistics.median([s.get("useful_tokens", 0) for s in steady])
@@ -186,6 +207,15 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         # The step is as slow as its slowest rank, so the run-level number takes the max, and the
         # skew is reported instead of being averaged away -- it is the straggler bucket's input.
         "step_median_ms": round(max(meds), 2),
+        # FIXED vs VARIABLE step shape, decided from the data rather than from which stack ran.
+        # Megatron pads every sample to SEQ, so total_tokens is constant and step time is close to
+        # constant: per-leg dispersion is measurement noise. A dynamically padded stack (HF TRL)
+        # has step time that follows content -- and under DDP, the content on the SLOWEST rank, so
+        # even a dur = a + b*tokens fit on one rank leaves 16% residual IQR. For such legs per-leg
+        # IQR (~25%) measures the dataset, not the measurement, and only a PAIRED comparison
+        # (compare_legs' per-step ratio, 0.26% on an identical pair) separates noise from signal.
+        "step_shape": _step_shape(per_rank_tokens),
+        "total_tokens_cv_pct": _cv_pct(per_rank_tokens),
         "rank_skew_pct": round(100 * (max(meds) - min(meds)) / statistics.median(meds), 3),
         "slowest_rank": slowest,
         "useful_tok_s_per_gpu": round(statistics.median(

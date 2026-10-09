@@ -22,6 +22,32 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from probe_summarize import MIN_STEADY_FOR_DISPERSION, summarize  # noqa: E402
 
 
+def _per_step(probe_dir, warm, steps):
+    """(dur_ms, useful_tokens) per step for the SLOWEST rank's view, over the aligned window.
+
+    The step is as slow as its slowest rank, so per step the max duration across ranks is taken;
+    useful_tokens come from rank 0, whose batch order is what `same_batches` is checked against.
+    """
+    import glob
+    from probe_summarize import load_rank
+    per_rank = []
+    for f in sorted(glob.glob(os.path.join(probe_dir, "probe_rank*.jsonl"))):
+        try:
+            _, st = load_rank(f)
+        except BaseException:
+            return None
+        per_rank.append(st[warm:warm + steps])
+    if not per_rank or any(len(r) != steps for r in per_rank):
+        return None
+    out = []
+    for i in range(steps):
+        durs = [r[i].get("dur_ms") for r in per_rank]
+        if any(d is None for d in durs):
+            return None
+        out.append((max(durs), per_rank[0][i].get("useful_tokens")))
+    return out
+
+
 def compare(ref_probe, cand_probe, tol=0.02):
     a, b = summarize(ref_probe, tol), summarize(cand_probe, tol)
     for x, name in ((a, "ref"), (b, "cand")):
@@ -53,6 +79,31 @@ def compare(ref_probe, cand_probe, tol=0.02):
         "dispersion_reliable": bool(A.get("dispersion_reliable") and B.get("dispersion_reliable")),
         "min_steady_steps": min(A.get("min_steady_steps", 0), B.get("min_steady_steps", 0)),
     }
+    # ---- PAIRED estimator (added 2026-10-09, reported alongside; not yet what the gate reads) ----
+    # delta_pct above is median(useful)/median(dur) per leg, each median taken independently. That is
+    # robust only when every step has the same SHAPE -- true on Megatron, which pads every sample to
+    # SEQ (step-time IQR 0.30%). On a dynamically-padded stack step time follows content (HF TRL:
+    # IQR ~25%), the two legs' medians land on different steps, and two IDENTICAL HF runs read as
+    # +1.1523% apart. With a shared data order step i is the same batch on both legs, so the per-step
+    # ratio cancels content exactly; its median is also robust to the stall outliers that a
+    # sum-over-sum rate would let through. On that same HF null pair it reads -0.15%.
+    pa = _per_step(ref_probe, warm, steps)
+    pb = _per_step(cand_probe, warm, steps)
+    if pa and pb and len(pa) == len(pb):
+        same_batches = all(x[1] == y[1] for x, y in zip(pa, pb))
+        ratios = sorted(y[0] / x[0] for x, y in zip(pa, pb) if x[0] > 0 and y[0] > 0)
+        if ratios:
+            n = len(ratios)
+            med_r = ratios[n // 2] if n % 2 else 0.5 * (ratios[n // 2 - 1] + ratios[n // 2])
+            q1, q3 = ratios[n // 4], ratios[(3 * n) // 4]
+            out["paired"] = {
+                "delta_pct": round(100 * (1.0 / med_r - 1.0), 4),
+                "ratio_iqr_pct": round(100 * (q3 - q1) / med_r, 4),
+                "steps": n,
+                # The estimator is only valid if step i really is the same batch on both legs.
+                "same_batches": same_batches,
+            }
+
     notes = []
     if A["config_digest"] != B["config_digest"]:
         notes.append("WORKLOAD IDENTITY DIFFERS — the ratio is not about one configuration")

@@ -178,6 +178,16 @@ let runAcrossJobPct = 0;
 function windowMatchedLegs(spec) {
   const c = spec && spec.comparison;
   if (!c || !c.window) return null;
+  // With the paired estimator the uncertainty is that of the RATIO series, one series of n steps:
+  // its IQR already contains both legs' noise. Passing it as the ref leg with a zero-dispersion
+  // cand makes noiseBandPct's sePair collapse to exactly se(ratio). Per-leg IQR here would be the
+  // content-driven spread the paired estimator exists to remove (HF: ~25% per leg, 0.26% paired).
+  const p = c.paired;
+  if (p && p.same_batches === true && isFinite(Number(p.ratio_iqr_pct)) && Number(p.steps) > 0) {
+    return { ref: { worst_iqr_spread_pct: Number(p.ratio_iqr_pct), min_steady_steps: Number(p.steps) },
+             cand: { worst_iqr_spread_pct: 0, min_steady_steps: Number(p.steps) },
+             source: 'paired ratio' };
+  }
   const n = Number(c.window.steps_compared);
   const ri = c.ref && Number(c.ref.iqr_spread_pct);
   const ci = c.cand && Number(c.cand.iqr_spread_pct);
@@ -231,7 +241,14 @@ function legUsable(leg) {
   // 25% is far above the worst legitimate value observed on a clean leg (0.533%) and far below the
   // corrupt one, so it discriminates without guessing at a tight threshold.
   const iqr = Number(leg.worst_iqr_spread_pct);
-  if (isFinite(iqr) && iqr > 25) {
+  // EXCEPT on a VARIABLE-shape leg, where per-leg IQR measures the dataset, not the measurement. A
+  // dynamically padded stack's step time follows content -- under DDP, the content on the slowest
+  // rank -- so two IDENTICAL HF TRL legs sit at 24.8% and 25.4%, straddling this ceiling: the
+  // guard would have declared a coin-flip of clean legs unusable. For those legs the same guard is
+  // applied where it means something, to the PAIRED ratio series in gateVerdict (0.26% on an
+  // identical pair). The case it was written for -- two runs merged into one sidecar -- is refused
+  // at the source by load_rank regardless of step shape.
+  if (leg.step_shape !== 'variable' && isFinite(iqr) && iqr > 25) {
     return { ok: false,
              why: `worst_iqr_spread_pct ${iqr}% — the step-to-step spread is the same order as the ` +
                   'step itself, so this leg cannot bound anything (a band derived from it exceeds ' +
@@ -253,9 +270,31 @@ function legUsable(leg) {
  *  summarised on their OWN windows contain different samples. Measured on two runs of an identical
  *  configuration: unaligned +0.3294% (a "win" against a 0.3% band) versus aligned +0.0235% (correctly
  *  nothing) -- 93% of the apparent delta was window placement. */
+/** The delta the gate reads. Prefers the PAIRED estimator when it is valid.
+ *
+ * compare_legs reports two aligned deltas. `delta_pct` is median(useful)/median(dur) per leg, each
+ * median taken independently; `paired.delta_pct` is from the median of per-step duration ratios.
+ * They agree whenever every step has the same shape (Megatron pads every sample to SEQ), and they
+ * do not when step time follows content: on a dynamically padded stack two IDENTICAL HF TRL runs
+ * read +1.1523% apart under the per-leg medians -- a false win at any floor -- and +0.1344% paired.
+ *
+ * Adopted 2026-10-09 against two conditions stated before checking them: no worse on the null
+ * control (694 clean same-identity pairs: 0 false wins either way on Megatron, 1 -> 0 on HF) and no
+ * accepted win flipped (+12.37 -> +12.81, +12.28 -> +12.25, +7.43 -> +7.51, +1.15 -> +1.33; the
+ * known-null cold-start leg -0.024 -> -0.004).
+ *
+ * VALID ONLY IF step i is the same batch on both legs, which compare_legs checks step by step as
+ * `same_batches`. When it is false the paired number is meaningless and the per-leg one is used.
+ */
 function alignedDelta(integ) {
   const c = integ && integ.comparison;
-  return c && typeof c.delta_pct === 'number' ? c : null;
+  if (!c) return null;
+  const p = c.paired;
+  if (p && p.same_batches === true && typeof p.delta_pct === 'number') {
+    return Object.assign({}, c, { delta_pct: p.delta_pct, estimator: 'paired per-step ratio',
+                                  per_leg_delta_pct: c.delta_pct });
+  }
+  return typeof c.delta_pct === 'number' ? Object.assign({}, c, { estimator: 'per-leg medians' }) : null;
 }
 
 function comparable(ref, cand) {
@@ -323,7 +362,10 @@ function gateVerdict(spec) {
     // Which sample the band came from. Not cosmetic: the two can differ by 27x on a leg whose
     // steps straddle a quartile cliff, and a reader comparing bands across runs needs to know
     // whether they were estimated on comparable samples.
-    band_window: wm ? 'common (window-matched to the delta)' : 'per-leg summaries (no window dispersion in comparison)',
+    band_window: wm ? (wm.source === 'paired ratio' ? 'paired per-step ratio (same sample as the delta)'
+                                                    : 'common (window-matched to the delta)')
+                    : 'per-leg summaries (no window dispersion in comparison)',
+    estimator: aligned ? aligned.estimator : 'raw ratio',
     mem_delta_pct: memDeltaPct == null ? null : +memDeltaPct.toFixed(2) };
   // A raw ratio may REJECT but may never ACCEPT. Two IDENTICAL-config 7B legs (true delta zero by
   // construction) gave unaligned +4.5925% against aligned -0.0588% at a 0.914% band: window placement
@@ -332,6 +374,18 @@ function gateVerdict(spec) {
   // false REJECT costs one candidate, which can be re-gated once the Integrator reports an aligned
   // comparison; a false ACCEPT installs the candidate as the reference every later delta compounds on
   // (see `refLeg = integ.cand` below) and puts the artifact in the headline permanently.
+  // A VARIABLE-shape leg (dynamic padding) has no usable per-leg estimator: two identical HF legs
+  // read +1.15% apart on per-leg medians. Only the paired per-step ratio is a measurement there, so
+  // without one -- or with one whose ratio series is itself wildly dispersed -- it may not ACCEPT.
+  const variable = ref.step_shape === 'variable' || cand.step_shape === 'variable';
+  const pairedOk = aligned && aligned.estimator === 'paired per-step ratio' &&
+                   !(Number(spec.comparison.paired.ratio_iqr_pct) > 25);
+  if (variable && deltaPct > band && !pairedOk) {
+    return { accepted: false, klass: 'no_aligned_delta',
+             reason: `+${deltaPct.toFixed(2)}% > band ${band.toFixed(2)}%, but a variable-step-shape ` +
+                     'leg (dynamic padding) can only be judged by a PAIRED per-step comparison with ' +
+                     'same_batches true; per-leg medians put two identical runs 1.15% apart', ...base };
+  }
   if (deltaPct > band && !aligned) {
     return { accepted: false, klass: 'no_aligned_delta',
              reason: `+${deltaPct.toFixed(2)}% > band ${band.toFixed(2)}%, but this is a raw ratio: ` +

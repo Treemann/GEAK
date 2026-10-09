@@ -132,7 +132,7 @@ const leg = (o = {}) => Object.assign({
 
 // ---------------------------------------------------------------- 3./4. the gate
 {
-  const { gateVerdict } = load(['gateVerdict', 'legUsable', 'noiseBandPct', 'windowMatchedLegs', 'comparable', 'alignedDelta']);
+  const { gateVerdict, legUsable } = load(['gateVerdict', 'legUsable', 'noiseBandPct', 'windowMatchedLegs', 'comparable', 'alignedDelta']);
   const v = (o) => gateVerdict(Object.assign({ ref: leg(), cand: leg(), mode: 'fast' }, o));
 
   // An ACCEPT now requires an aligned comparison, so every accept-asserting case must supply one.
@@ -175,6 +175,39 @@ const leg = (o = {}) => Object.assign({
          comparison: { ...wmCmp, delta_pct: 0.728 } }).accepted === false,
     'a +0.73% non-win is NOT ACCEPTED once the band is window-matched (the property that matters: ' +
     'a false reject costs one candidate, a band too tight ships a win that is not there)');
+
+  // THE PAIRED ESTIMATOR. Real numbers, two IDENTICAL HF TRL legs, 2026-10-09: per-leg medians
+  // read +1.1523% (a false win at any floor); the median of per-step ratios reads +0.1344%, ratio
+  // IQR 0.2634% over 25 steps, while each leg's own step-time IQR is ~25%.
+  const hfLegs = { ref: leg({ worst_iqr_spread_pct: 24.81, min_steady_steps: 25, step_shape: 'variable' }),
+                   cand: leg({ worst_iqr_spread_pct: 25.36, min_steady_steps: 25, step_shape: 'variable' }) };
+  const hfCmp = { window: { steps_compared: 25 }, ref: { iqr_spread_pct: 24.81 },
+                  cand: { iqr_spread_pct: 25.36 }, delta_pct: 1.1523, window_artifact_pct: 0,
+                  paired: { delta_pct: 0.1344, ratio_iqr_pct: 0.2634, steps: 25, same_batches: true } };
+  const vHF = v({ ...hfLegs, comparison: hfCmp });
+  ok(vHF.delta_pct === 0.134 && /paired/.test(vHF.estimator),
+    `a valid paired comparison is what the gate reads (delta ${vHF.delta_pct}%, ${vHF.estimator})`);
+  ok(!vHF.accepted, 'two identical HF runs are NOT a win once the paired estimator is used');
+  ok(/paired/.test(vHF.band_window) && vHF.band_pct < 1,
+    `and its band comes from the ratio series, not the ~25% content-driven per-leg IQR (${vHF.band_pct}%)`);
+  const vBad = v({ ...hfLegs, comparison: { ...hfCmp, paired: { ...hfCmp.paired, same_batches: false } } });
+  ok(vBad.delta_pct === 1.152 && /per-leg/.test(vBad.estimator),
+    'if step i is NOT the same batch on both legs, the paired number is ignored, not trusted');
+  ok(!vBad.accepted, `...and is not accepted on the per-leg number (${vBad.klass})`);
+  const vBig = v({ ...hfLegs, comparison: { ...hfCmp, delta_pct: 40,
+                                           paired: { ...hfCmp.paired, same_batches: false } } });
+  ok(vBig.klass === 'no_aligned_delta' && !vBig.accepted,
+    `even a +40% per-leg delta cannot ACCEPT a variable-shape pair without a valid paired comparison (${vBig.klass})`);
+  ok(legUsable(hfLegs.cand).ok,
+    'a clean variable-shape leg at 25.36% per-leg IQR is USABLE (that spread is the dataset)');
+  ok(!legUsable(leg({ worst_iqr_spread_pct: 25.36 })).ok,
+    'while a FIXED-shape leg at the same IQR is still refused, exactly as before');
+  // Accepted wins survive. tdop0928_ref2 vs _cand2: paired +1.3010%, ratio IQR 0.563% over ~20 steps.
+  const vWin = v({ ref: leg(), cand: leg({ useful_tok_s_per_gpu: 4820 }),
+                   comparison: { window: { steps_compared: 19 }, ref: { iqr_spread_pct: 2.9 },
+                                 cand: { iqr_spread_pct: 0.1 }, delta_pct: 1.2857, window_artifact_pct: 0,
+                                 paired: { delta_pct: 12.809, ratio_iqr_pct: 1.068, steps: 19, same_batches: true } } });
+  ok(vWin.accepted, `a real +12.8% stack still clears the paired band (${vWin.band_pct}%)`);
 
   ok(!v({ l0: { pass: false, reason: 'dgrad mismatch' } }).accepted,
     'L0 (op numerics incl. backward) can reject a throughput win');
