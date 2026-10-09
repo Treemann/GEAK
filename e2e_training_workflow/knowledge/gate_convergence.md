@@ -1162,3 +1162,43 @@ accepted without an L1 result.
 
 The fused PACKED discrepancy (+4.27%, not explained by boundary targets) is still open. The
 rocm_compat THD patch only squeezes a vacuous batch dimension and is not a plausible cause.
+
+### CORRECTION (same day): step-1 grad_norm cannot compare implementations finely — the 4.3% is withdrawn
+
+Two measurements overturned the "packed backward is 4.3% off" reading.
+
+**At kernel level, packed attention is exact.** `scripts/tests/check_varlen_attention_l0.py`:
+random tensors at Qwen2.5-7B geometry (GQA 28/4, d128) and pack 0's real segment lengths through
+`flash_attn_varlen_func` versus per-segment `flash_attn_func`: out, dq, dk, dv **bit-identical**
+(difference 0.0), both within 0.21–0.33% of an independent fp32 reference.
+
+**Step-1 grad_norm is dominated by the embedding gradient, which is hypersensitive to numerics.**
+`scripts/tests/check_grad_impl_sensitivity.py`, the SAME isolated computation (no packing), only the
+attention implementation changed:
+
+| implementation | total grad_norm | non-embedding | loss |
+|---|---|---|---|
+| sdpa | 48.01 | 6.17 | 2.11727 |
+| flash_attention_2 | **54.06** | 6.46 | 2.11817 |
+| eager | 49.13 | 6.67 | 2.13870 |
+
+`embed_tokens` carries ~99% of the norm. Two implementations that are both correct at op level
+read **12.6% apart**; even without the embedding they are 4–8% apart. So:
+
+* The Megatron fused packed vs unpacked +4.27% sits inside the spread between correct
+  implementations. **Withdrawn as evidence of a packing defect.** HF FA2 packed vs FA2 isolated
+  differs by only −1.2%. Packing's backward is correct at op level, and nothing at model level
+  contradicts that once the right comparison is made.
+* The step-1 gradient detector's first null (696 SAME-implementation pairs, max 1.40%) was the
+  wrong null for a detector that judges implementation CHANGES; its 10% limit would have rejected a
+  correct attention kernel. Recalibrated to **30%**: correct changes reach 12.6% (sdpa↔FA2), accepted
+  kernel stacks 3.9–4.2%; defects start at 61%. A coarse net for gross backward defects only —
+  implementation correctness proper is L0's job, at op level, where it is sharp.
+* The flash backend's **2.7x** is far outside the 12.6% band and remains a defect by that measure.
+  Its root cause is not localised; the `flash_attn` varlen kernel itself is exact, which points at
+  TE's or Megatron's integration of it rather than the kernel. Treat flash as unsafe on this stack.
+
+**Packing status.** Forward equivalence PASSES (0.057% against a 7.86%-wide positive control).
+Kernel-level backward equivalence PASSES (bit-identical). The boundary-target semantics are a real,
+separate issue (each conversation's last token is trained toward the next `<|im_start|>`, 10–13 nats
+each) and must be masked before packing is used for training.

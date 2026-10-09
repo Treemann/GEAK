@@ -114,7 +114,7 @@ def compare_series(ref, cand):
 
 # The early window is where natural divergence is still small enough for a bug to stand out.
 EARLY_STEPS = 8
-STEP1_GN_LIMIT_PCT = 10.0     # see check 1b: null max 1.40% over 696 pairs, mildest defect 61%
+STEP1_GN_LIMIT_PCT = 30.0     # see check 1b: correct implementation changes reach 12.6%; defects 61%+
 
 # THE BAND MUST MATCH WHAT THE CANDIDATE IS. Measured, and it is not a small effect:
 #
@@ -456,20 +456,26 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
     # gradient norm is 2.7x too small (17.45 vs 47.93, fused matching HF's 47.89 to 0.08%). In the
     # production recipe the same backend reads grad_norm 26.7 against 68.0.
     #
-    # Both controls measured before the threshold was set:
-    #   null      696 clean same-identity pairs: |rel diff| p50 0.26%, p99 1.05%, MAX 1.40%
-    #             (step-1 grad_norm is not bit-reproducible -- backward atomics -- but it is tight)
-    #   positive  flash backend -61% (dropout 0.1) and -64% (dropout 0); the rejected 7B attention
-    #             candidate -88.5%
-    # 10% sits 7x above the worst null pair and 6x below the mildest known defect.
+    # THE NULL MUST BE THE KIND OF CHANGE BEING JUDGED. First calibrated on 696 clean SAME-
+    # implementation pairs (max 1.40%) at a 10% limit -- and that was the wrong null, because this
+    # detector judges IMPLEMENTATION changes. Total grad_norm at step 1 is ~99% the embedding
+    # gradient, which is hypersensitive to bf16 numerics: the SAME isolated computation through two
+    # attention implementations that are both correct at op level (dq/dk/dv within 0.3% of fp32)
+    # reads 48.01 (sdpa) vs 54.06 (flash_attention_2) -- 12.6% apart. 10% would have rejected a
+    # correct attention kernel. Measured spread of CORRECT implementation changes:
+    #   sdpa vs FA2 12.6%, FA2 vs eager 9.1%, the three accepted kernel stacks 3.9-4.2%,
+    #   Megatron fused vs HF sdpa 0.08% (per-token loss)
+    # Known defects: Megatron flash backend -61% / -64%, the rejected 7B attention candidate -88.5%.
+    # 30% sits 2.4x above the widest correct change and 2x below the mildest defect. It is a coarse
+    # net for GROSS backward defects; implementation correctness proper is L0's job, at op level.
     if rs["grad_norm"] and cs["grad_norm"] and rs["grad_norm"][0]:
         relg = 100 * abs(cs["grad_norm"][0] - rs["grad_norm"][0]) / abs(rs["grad_norm"][0])
         res["checks"]["step1_grad_norm_rel_pct"] = {"value": round(relg, 4), "limit": STEP1_GN_LIMIT_PCT,
-                                                    "null_max_pct": 1.401, "pairs": 696}
+                                                    "correct_impl_change_max_pct": 12.6}
         if relg > STEP1_GN_LIMIT_PCT:
-            failures.append(f"step-1 grad_norm differs by {relg:.2f}% (limit {STEP1_GN_LIMIT_PCT}%; "
-                            f"696 clean pairs never exceeded 1.40%): the backward computed a different "
-                            f"gradient on identical weights and an identical batch")
+            failures.append(f"step-1 grad_norm differs by {relg:.2f}% (limit {STEP1_GN_LIMIT_PCT}%; correct "
+                            f"implementation changes measured up to 12.6%): the backward computed a grossly "
+                            f"different gradient on identical weights and an identical batch")
 
     # ---- check 2: per-step envelope ------------------------------------------------------------
     # Blocking ONLY if the band proved it can tell a kernel swap from nothing (calibrate() runs that

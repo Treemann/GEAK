@@ -75,7 +75,7 @@ properly designed; it supplies a comparison basis, not a gate.
    correctness gate as a kernel or it cannot be accepted -- the orchestrator refuses a win without
    `l1`. This is not a formality: Megatron's **flash** attention backend on this stack has a forward
    within 0.11% of fused and a gradient **2.7x too small** (step-1 grad_norm 26.7 vs 68.0 in the
-   production recipe). L1's step-1 gradient probe rejects it at 60.7% against a 10% limit; a
+   production recipe). L1's step-1 gradient probe rejects it at 60.7% against a 30% limit (correct implementation changes reach 12.6%); a
    throughput-only verdict would have accepted it the moment it measured faster.
 
 5. **Expect `config_digest` to change, and say what changed.** A kernel candidate must keep the
