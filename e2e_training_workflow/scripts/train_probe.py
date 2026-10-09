@@ -137,11 +137,21 @@ class _Probe:
         self._maybe_profile_start()
         self._t0 = time.perf_counter()
 
-    def step_end(self, loss=None, grad_norm=None, skipped=None):
+    def step_end(self, loss=None, grad_norm=None, skipped=None, t_end=None):
+        """`t_end` lets a binding close the timing window BEFORE it has the step's loss.
+
+        HF fires on_step_end before on_log, so at the moment the step's compute ends the loss and
+        grad_norm do not exist yet. The HF binding synchronises and records t_end there, then calls
+        this from on_log. Without it the logging all-reduce would be timed as part of the step on HF
+        and not on Megatron, and the two stacks' step times would differ for a reason that is not
+        the stack.
+        """
         if self._t0 is None:
             return
-        torch.cuda.synchronize() if torch.cuda.is_available() else None
-        dur_ms = (time.perf_counter() - self._t0) * 1000.0
+        if t_end is None:
+            torch.cuda.synchronize() if torch.cuda.is_available() else None
+            t_end = time.perf_counter()
+        dur_ms = (t_end - self._t0) * 1000.0
         self.step += 1
         rec = {
             "record": "step", "step": self.step, "dur_ms": round(dur_ms, 3),
@@ -272,6 +282,12 @@ _IDENTITY_PAIR_KEYS = (
     # classified could never arrive. A key named in one list and absent from the other classifies
     # nothing.
     "--attention-backend", "--recompute-granularity", "--recompute-method",
+    # WHICH STACK. Workload identity, not implementation: a Megatron leg and an HF leg with otherwise
+    # identical arguments must NOT share a config_digest, or the gate would compare a Megatron
+    # reference against an HF candidate as "the same workload". Only the HF launcher passes it, so
+    # every Megatron leg on disk digests exactly as before -- the same additive property that made
+    # v3->v4 free.
+    "--geak-stack",
     # regularization + optimizer: these move the loss/grad-norm trajectory L1 gates on
     "--attention-dropout", "--hidden-dropout", "--weight-decay", "--clip-grad",
     "--lr", "--min-lr", "--lr-decay-style", "--lr-warmup-iters",
@@ -387,4 +403,74 @@ def install_megatron():
     print(f"[geak-probe] installed (rank {PROBE.rank}/{PROBE.world}) -> {PROBE.path}", flush=True)
 
 
-STEP_BINDINGS = {"megatron": install_megatron}
+def install_hf(trainer):
+    """The HF transformers / TRL binding: Trainer.training_step for batches, a callback for steps.
+
+    Called explicitly by adapters/hf_sft.py after the trainer exists, rather than by a launcher
+    shim, because HF's step boundary lives on an instance (callbacks), not on a module function
+    that can be rebound before import.
+
+    USEFUL TOKENS ARE COUNTED AS `labels[:, 1:] != -100`, NOT `labels != -100`. The model shifts
+    labels internally, so the first position of every sequence is never a target -- exactly as
+    Megatron's loss_mask counts the shifted targets. The unshifted count over-states useful tokens
+    by one per sample, which is small and is precisely the kind of small that makes two stacks'
+    useful tok/s quietly incomparable.
+
+    TIMING DIFFERENCE FROM MEGATRON, recorded rather than hidden: HF's loop prefetches all of an
+    update step's micro-batches (get_batch_samples) BEFORE on_step_begin, so data loading is outside
+    the timed window here, while Megatron's train_step pulls its batches inside. With dataloader
+    workers this is small, but it is a real asymmetry for any cross-stack step-time comparison.
+    """
+    global PROBE
+    if not _ENABLED or PROBE is not None:
+        return
+    PROBE = _Probe(_DIR)
+    from transformers import TrainerCallback
+
+    _orig_training_step = trainer.training_step
+
+    def _probed_training_step(model, inputs, *a, **kw):
+        try:
+            labels = inputs.get("labels") if isinstance(inputs, dict) else None
+            if labels is not None:
+                PROBE.note_batch({"loss_mask": (labels[:, 1:] != -100)})
+        except Exception as e:  # measurement must never break the run
+            PROBE.pending.setdefault("errors", []).append(repr(e))
+        return _orig_training_step(model, inputs, *a, **kw)
+
+    trainer.training_step = _probed_training_step
+
+    class _StepCallback(TrainerCallback):
+        def __init__(self):
+            self.t_end = None
+
+        def _flush(self, loss=None, grad_norm=None):
+            if self.t_end is not None:
+                PROBE.step_end(loss=loss, grad_norm=grad_norm, t_end=self.t_end)
+                self.t_end = None
+
+        def on_step_begin(self, args, state, control, **kw):
+            self._flush()            # a step whose log never came still gets its timing recorded
+            PROBE.step_begin()
+
+        def on_step_end(self, args, state, control, **kw):
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            self.t_end = time.perf_counter()
+
+        def on_log(self, args, state, control, logs=None, **kw):
+            logs = logs or {}
+            loss = logs.get("loss")
+            gn = logs.get("grad_norm")
+            self._flush(loss=float(loss) if loss is not None else None,
+                        grad_norm=float(gn) if gn is not None else None)
+
+        def on_train_end(self, args, state, control, **kw):
+            self._flush()
+
+    trainer.add_callback(_StepCallback())
+    print(f"[geak-probe] installed HF binding (rank {PROBE.rank}/{PROBE.world}) -> {PROBE.path}",
+          flush=True)
+
+
+STEP_BINDINGS = {"megatron": install_megatron, "hf_trl": install_hf}
