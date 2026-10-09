@@ -1015,3 +1015,19 @@ rule does not assume the defect raises loss. Otherwise NOT REJECTED.
 **Known weakness, stated up front.** B is the maximum of only six values, so it is a coarse bound
 and its own sampling error is large. A REJECT therefore needs a clear margin to mean anything; a
 marginal one (positive values within ~10% of B) will be reported as marginal, not as a pass.
+
+**Null bound, computed after the pre-registration was committed and before the fresh leg finished:**
+
+| null pair | terminal_mean_rel_pct |
+|---|---|
+| 0923_cand1 vs v2_cand2 | +0.1797% |
+| 0923_cand1 vs v2_cand3 | −0.0407% |
+| 0923_cand1 vs v2_cand4 | +1.3894% |
+| v2_cand2 vs v2_cand3 | −0.2192% |
+| v2_cand2 vs v2_cand4 | +1.2000% |
+| v2_cand3 vs v2_cand4 | +1.4399% |
+
+**B = 1.4399%.** The three largest all involve `v2_cand4`, the one clean leg whose terminal loss
+(1.4417) sits away from the other three (~1.423). That is the chaos floor showing through, and it is
+why B is a max over all six pairs rather than over the quiet ones: excluding the inconvenient clean
+leg would be choosing the null to make the test easier.
