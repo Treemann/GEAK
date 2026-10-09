@@ -982,3 +982,36 @@ reject alpha = 1.0. The soak is therefore not blind to everything: its floor sit
 alpha 0.25 (not rejected, n = 4) and 1.0 (very likely rejected). That does not revive it, because at
 alpha = 1.0 L1's sign test already rejects the defect for free inside a 30-step gate leg. The soak's
 only exclusive region would be the band between those two, and nothing measured so far lands in it.
+
+### PRE-REGISTRATION: a terminal-window token comparator (written 2026-10-09, before the test leg)
+
+Fixed here, committed, and only then measured. Nothing below may move after the fresh leg exists.
+
+**Statistic.** `trajectory_tokens.py --points 300`, field `terminal_mean_rel_pct`: the mean relative
+loss deviation over the last 10% of the shared useful-token range. 300 points ≈ one per step, so the
+window covers ~29 steps — the same scale as the soak spec's existing terminal-loss definition, which
+is where both "10%" and "mean" come from. Neither was chosen by looking at `l2soak_a10_300`.
+
+**Null.** The six pairs of the four clean overlay-ON legs (`l2soak_0923_cand1`,
+`l2soak_v2_cand{2,3,4}`), ref = the earlier-listed leg. Null bound **B = max |statistic|** over those
+six. Computed AFTER this text is committed, by a rule that does not depend on the values.
+
+**Positive.** A FRESH alpha = 1.0, 300-step stale leg — **not** `l2soak_a10_300`, which suggested the
+statistic and is therefore excluded from judging it. Compared as cand against each of the four clean
+legs as ref: four values.
+
+**Verdict rule.** REJECTED iff **at least 3 of the 4** positive |values| exceed B. Two-sided, so the
+rule does not assume the defect raises loss. Otherwise NOT REJECTED.
+
+**What each outcome licenses.**
+* REJECTED → the token comparator has a null control (6 pairs) and a positive control (a fresh
+  visible defect), and may become the Class-B trajectory gate **with the terminal statistic**, its
+  floor stated as "between alpha 0.25 and 1.0". Class B is then gated by: token-aligned throughput
+  (`compare_legs_tokens.py`) + this statistic. The step-1 probe stays unavailable for Class B.
+* NOT REJECTED → the terminal window is too noisy at 300 steps even for a defect at +6 sd on one leg;
+  Class B stays refused, and this instrument line is closed rather than retried with a third
+  statistic.
+
+**Known weakness, stated up front.** B is the maximum of only six values, so it is a coarse bound
+and its own sampling error is large. A REJECT therefore needs a clear margin to mean anything; a
+marginal one (positive values within ~10% of B) will be reported as marginal, not as a pass.

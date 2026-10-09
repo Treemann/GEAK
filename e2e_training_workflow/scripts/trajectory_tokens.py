@@ -129,6 +129,22 @@ def compare(ref_probe, cand_probe, key="loss", points=50):
     if not devs:
         return {"error": "no comparable grid points"}
 
+    # TERMINAL statistic, pre-registered 2026-10-09 BEFORE the leg that tests it existed.
+    #
+    # Why it exists: on the alpha = 1.0 stale leg the whole-trajectory median sat inside the null
+    # range while terminal loss was +6.25 sd -- a late-onset, accumulating divergence that the ~250
+    # steps where the legs agree diluted away. That observation is what SUGGESTED this statistic, so
+    # that leg is excluded from judging it; a fresh alpha = 1.0 leg does.
+    #
+    # Why THIS window and not a tuned one: "the last 10%" is the soak spec's existing definition of
+    # terminal loss (l2_soak_analyze2.terminal), fixed long before this. Re-using it is the one choice
+    # that cannot have been fitted to the leg that prompted it. Mean, not median, for the same
+    # reason the soak uses a mean: an accumulating defect shows as a shift of the late values, and
+    # there is no outlier-robustness to buy back in a window this short.
+    k = max(1, int(0.10 * len(devs)))
+    terminal = devs[-k:]
+    terminal_mean = sum(terminal) / len(terminal)
+
     devs_sorted = sorted(devs)
     n = len(devs_sorted)
     med = devs_sorted[n // 2] if n % 2 else 0.5 * (devs_sorted[n // 2 - 1] + devs_sorted[n // 2])
@@ -139,6 +155,8 @@ def compare(ref_probe, cand_probe, key="loss", points=50):
         "grid_points": n,
         "tokens_compared": int(hi - lo),
         "median_rel_pct": round(med, 4),
+        "terminal_mean_rel_pct": round(terminal_mean, 4),
+        "terminal_points": k,
         "mean_rel_pct": round(sum(devs) / n, 4),
         "max_abs_rel_pct": round(max(abs(d) for d in devs), 4),
         "p90_abs_rel_pct": round(sorted(abs(d) for d in devs)[int(0.9 * (n - 1))], 4),
