@@ -153,6 +153,39 @@ let runAcrossJobPct = 0;
 /** Noise band for a pair of legs, DERIVED from their own dispersion rather than assumed.
  *  Uses the robust (IQR) spread, because the raw spread of a clean run is dominated by isolated
  *  stalls: the same 25-step run measured 38.6% raw and 0.072% IQR. Raw would gate nothing. */
+/** The dispersion of the window the DELTA was actually measured on.
+ *
+ * The band estimates the uncertainty of the delta, so it has to come from the same sample as the
+ * delta. It did not. `compare_legs.py` forces both legs onto a COMMON window and reports the delta
+ * there; the band was being computed from each leg's bench_summary, i.e. from each leg's OWN
+ * window. Normally the two barely differ and nobody noticed.
+ *
+ * MEASURED, on the cfgrecompute reference leg of 2026-10-09, all 8 ranks: own window [5:30], 25
+ * steps, IQR 0.096%. Common window [6:30], 24 steps, IQR 2.607%. ONE step of difference, 27x the
+ * dispersion. The cause is visible in the sorted durations -- 19 values inside 11642-11660 and then
+ * a cliff to 11952, 12006, 12023, 12041, 12113, 13143 -- so the third quartile lands exactly on the
+ * edge of it and `v[3n/4]` picks the last tight value at n=25 and the first outlier at n=24.
+ *
+ * The consequence was a flipped verdict: band 0.475% (own window) made the attention-backend leg a
+ * `regression` at -0.728%, where the window-matched band of 1.978% makes it `inconclusive_noise`.
+ * The direction that matters is the other one -- the same mechanism would have called a +0.728%
+ * non-win a WIN, which is what `legUsable` already warns about: "an artificially tight band is the
+ * dangerous one: it accepts changes that are not there."
+ *
+ * Returns null when the comparison does not carry per-leg window dispersion, and the caller falls
+ * back to the per-leg summaries rather than inventing a number.
+ */
+function windowMatchedLegs(spec) {
+  const c = spec && spec.comparison;
+  if (!c || !c.window) return null;
+  const n = Number(c.window.steps_compared);
+  const ri = c.ref && Number(c.ref.iqr_spread_pct);
+  const ci = c.cand && Number(c.cand.iqr_spread_pct);
+  if (!(isFinite(n) && n > 0 && isFinite(ri) && isFinite(ci))) return null;
+  return { ref: { worst_iqr_spread_pct: ri, min_steady_steps: n },
+           cand: { worst_iqr_spread_pct: ci, min_steady_steps: n } };
+}
+
 function noiseBandPct(ref, cand, aligned = true) {
   // Sampling error of a MEDIAN over n steady steps, not the dispersion of one step. Falls back to
   // the old undivided term only when the step count is unknown, which keeps a leg summarised by an
@@ -277,14 +310,21 @@ function gateVerdict(spec) {
   // it did not, and say so, because the raw ratio carries the window artifact.
   const aligned = alignedDelta(spec);
   const deltaPct = aligned ? aligned.delta_pct : ((c - r) / r) * 100;
-  const band = noiseBandPct(ref, cand, !!aligned);
+  // The band must be estimated on the window the delta was measured on; see windowMatchedLegs.
+  const wm = aligned ? windowMatchedLegs(spec) : null;
+  const band = noiseBandPct(wm ? wm.ref : ref, wm ? wm.cand : cand, !!aligned);
   const memDeltaPct = (Number(ref.peak_reserved_mb) > 0 && Number(cand.peak_reserved_mb) > 0)
     ? ((Number(cand.peak_reserved_mb) - Number(ref.peak_reserved_mb)) / Number(ref.peak_reserved_mb)) * 100
     : null;
 
   const base = { delta_pct: +deltaPct.toFixed(3), band_pct: +band.toFixed(3),
     delta_source: aligned ? 'window-aligned' : 'raw ratio (NOT window-aligned — includes sample-composition drift)',
-    window_artifact_pct: aligned ? aligned.window_artifact_pct : null, mem_delta_pct: memDeltaPct == null ? null : +memDeltaPct.toFixed(2) };
+    window_artifact_pct: aligned ? aligned.window_artifact_pct : null,
+    // Which sample the band came from. Not cosmetic: the two can differ by 27x on a leg whose
+    // steps straddle a quartile cliff, and a reader comparing bands across runs needs to know
+    // whether they were estimated on comparable samples.
+    band_window: wm ? 'common (window-matched to the delta)' : 'per-leg summaries (no window dispersion in comparison)',
+    mem_delta_pct: memDeltaPct == null ? null : +memDeltaPct.toFixed(2) };
   // A raw ratio may REJECT but may never ACCEPT. Two IDENTICAL-config 7B legs (true delta zero by
   // construction) gave unaligned +4.5925% against aligned -0.0588% at a 0.914% band: window placement
   // alone manufactures a 5x-band "win". No floor can bound that -- the artifact scales with the data's
@@ -804,7 +844,8 @@ if (want('config')) {
       if (cv.klass === 'incomparable' && sweep.config_digest_delta) {
         log0(`ConfigSweep: digest moved as expected (${JSON.stringify(sweep.config_digest_delta)}) — ` +
              're-gating on the delta alone, since identity difference IS the experiment');
-        const band = noiseBandPct(sweep.ref, sweep.cand, true);
+        const wmC = windowMatchedLegs({ comparison: sweep.comparison });
+        const band = noiseBandPct(wmC ? wmC.ref : sweep.ref, wmC ? wmC.cand : sweep.cand, true);
         const d = alignedDelta({ comparison: sweep.comparison });
         cv.klass = d && d.delta_pct > band ? 'win' : 'no_win';
         cv.accepted = cv.klass === 'win';

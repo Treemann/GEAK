@@ -43,7 +43,7 @@ properly designed; it supplies a comparison basis, not a gate.
    |---|---|---|---|
    | **comm overlap** | `--overlap-grad-reduce`, `--overlap-param-gather` | the measured `exposed_comm_pct` — 2.27%. `comm_overlap_pct` was **0.0**, so none of it is recovered | **+0.118%** vs band 0.150% → `no_win`, and it **costs 780 MB** |
    | **recompute granularity** | `--recompute-granularity selective\|full`, `--recompute-method` | memory ↔ compute. Also the **memory converter**: the knob that spends banked memory, which is why `fast` banks and never accepts it | **−3.403%** → regression, and it **costs 838 MB** rather than freeing any |
-   | **attention backend** | `--attention-backend fused\|flash` | already a proven-comparable pair (step-1 delta 0.2917% between backends) | **−0.728%** vs band 1.978% → `no_win`; a window-immune cross-check puts the direction at −0.729%, so flash is a small regression here |
+   | **attention backend** | `--attention-backend fused\|flash` | already a proven-comparable pair (step-1 delta 0.2917% between backends) | **−0.728%** vs band **1.978%** → `inconclusive_noise`; a window-immune cross-check puts the direction at −0.729%, so flash is most likely a small regression, but the band cannot resolve it |
 
    State the ceiling with the proposal. A lever whose ceiling is below the band cannot pay, and
    proposing it anyway spends two job launches to learn nothing.

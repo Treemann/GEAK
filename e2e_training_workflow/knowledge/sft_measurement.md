@@ -414,3 +414,48 @@ quoting it alongside a sub-band delta distinguishes "too small to resolve" from 
 **And the v4 identity fix is confirmed on real legs.** On both levers `config_digest` stayed
 identical while `impl_digest` moved — the behaviour whose absence on the comm-overlap pair exposed
 the blindness in the first place.
+
+### The band was estimated on a different window than the delta (fixed 2026-10-09)
+
+The band estimates the uncertainty OF the delta, so it has to be computed from the same sample. It
+was not. `compare_legs.py` forces both legs onto a common window and reports the delta there, while
+`noiseBandPct` read `worst_iqr_spread_pct` out of each leg's `bench_summary.json` — each leg's OWN
+window. Usually the two barely differ, which is why this survived every run so far.
+
+**Measured, on the `cfgrecompute_ref` leg, identically on all 8 ranks:**
+
+| window | steps | IQR |
+|---|---|---|
+| own, `[5:30]` | 25 | **0.096%** |
+| common, `[6:30]` | 24 | **2.607%** |
+
+One step of difference, 27x the dispersion. The sorted durations show why: nineteen values inside
+11642–11660 ms and then a cliff to 11952, 12006, 12023, 12041, 12113, 13143. The third quartile
+lands exactly on the edge of it, and `v[3n/4]` picks the last tight value at n=25 and the first
+outlier at n=24.
+
+**The verdict turned on it.** The attention-backend lever at −0.728% was published as a `regression`
+against a band of 0.475%; on the window-matched band of 1.978% it is `inconclusive_noise` — the
+band cannot resolve it. Re-derived for all three levers:
+
+| lever | delta | published band | window-matched band | verdict |
+|---|---|---|---|---|
+| comm overlap | +0.118% | 0.150% | **0.150%** (unchanged — quiet in both windows) | `no_win` |
+| recompute selective | −3.403% | 0.537% | **1.979%** | `regression` (unchanged) |
+| attention flash | −0.728% | 0.475% | **1.978%** | **`inconclusive_noise`** (was `regression`) |
+
+**The direction that matters is the other one.** A band too tight produces false REJECTS here, which
+cost one candidate each. The same mechanism would have called a **+0.728% non-win a WIN** — exactly
+what `legUsable`'s own comment warns about: *"an artificially tight band is the dangerous one: it
+accepts changes that are not there."* Nothing has been accepted on a narrow band, but nothing was
+stopping it.
+
+Each verdict now carries `band_window`, naming the sample its band came from, because two bands 27x
+apart are not comparable across runs and a reader cannot tell them apart from the number alone.
+
+**The underlying fragility is NOT fixed**, and is recorded rather than quietly patched: the quartile
+estimator is nearest-rank (`v[n//4]`, `v[3n//4]`) with no interpolation, so it jumps discontinuously
+when the quartile sits on a cliff. Linear interpolation would have given 0.70% instead of 2.607% —
+smoother, still a 7x jump, because the cliff is real. Changing it would move every band in the
+system and invalidate the 0/47 false-win calibration, so it needs its own re-validation and is not
+being done as a side effect of this fix.

@@ -132,7 +132,7 @@ const leg = (o = {}) => Object.assign({
 
 // ---------------------------------------------------------------- 3./4. the gate
 {
-  const { gateVerdict } = load(['gateVerdict', 'legUsable', 'noiseBandPct', 'comparable', 'alignedDelta']);
+  const { gateVerdict } = load(['gateVerdict', 'legUsable', 'noiseBandPct', 'windowMatchedLegs', 'comparable', 'alignedDelta']);
   const v = (o) => gateVerdict(Object.assign({ ref: leg(), cand: leg(), mode: 'fast' }, o));
 
   // An ACCEPT now requires an aligned comparison, so every accept-asserting case must supply one.
@@ -146,6 +146,36 @@ const leg = (o = {}) => Object.assign({
     '+0.13% is inside the band -> no_win (not a win)');
   ok(v({ cand: leg({ useful_tok_s_per_gpu: 4700 }) }).klass === 'regression',
     '-1.26% is a regression');
+  // THE BAND MUST COME FROM THE WINDOW THE DELTA CAME FROM. Real numbers, cfgrecompute_ref vs
+  // cfgattn_flash, 2026-10-09: compare_legs forces a common window of 24 steps where the reference
+  // has an IQR of 2.607%, while that leg's own bench_summary reports 0.096% over 25 steps. One step
+  // of difference, 27x the dispersion, because 19 values sit inside 11642-11660 and then there is a
+  // cliff to six slow steps, so v[3n/4] lands on the last tight value at n=25 and the first outlier
+  // at n=24.
+  const wmLegs = { ref: leg({ worst_iqr_spread_pct: 0.096, min_steady_steps: 25 }),
+                   cand: leg({ worst_iqr_spread_pct: 0.07, min_steady_steps: 24,
+                               useful_tok_s_per_gpu: 4727 }) };   // -0.73%, as measured
+  const wmCmp = { window: { steps_compared: 24 },
+                  ref: { iqr_spread_pct: 2.607 }, cand: { iqr_spread_pct: 0.07 },
+                  delta_pct: -0.728, window_artifact_pct: 0.5243 };
+  const vWindowed = v({ ...wmLegs, comparison: wmCmp });
+  const vPerLeg = v({ ...wmLegs, comparison: { delta_pct: -0.728, window_artifact_pct: 0.5243 } });
+  ok(vWindowed.band_pct > 1.9 && vWindowed.band_pct < 2.1,
+    `the band is estimated on the COMMON window (${vWindowed.band_pct}%, expected ~1.98)`);
+  ok(vPerLeg.band_pct < 0.6,
+    `without window dispersion it falls back to the per-leg summaries (${vPerLeg.band_pct}%)`);
+  ok(vWindowed.klass === 'inconclusive_noise' && vPerLeg.klass === 'regression',
+    'and the verdict genuinely turns on it: inconclusive_noise on the matched band, regression on the narrow one');
+  ok(/common/.test(vWindowed.band_window) && /per-leg/.test(vPerLeg.band_window),
+    'each verdict says which sample its band came from');
+  // The direction that matters. A false REJECT costs one candidate; a band that is too tight
+  // ACCEPTS a win that is not there, which is what legUsable already warns about.
+  ok(v({ ...wmLegs, cand: leg({ worst_iqr_spread_pct: 0.07, min_steady_steps: 24,
+                                useful_tok_s_per_gpu: 4803 }),
+         comparison: { ...wmCmp, delta_pct: 0.728 } }).accepted === false,
+    'a +0.73% non-win is NOT ACCEPTED once the band is window-matched (the property that matters: ' +
+    'a false reject costs one candidate, a band too tight ships a win that is not there)');
+
   ok(!v({ l0: { pass: false, reason: 'dgrad mismatch' } }).accepted,
     'L0 (op numerics incl. backward) can reject a throughput win');
   ok(!v({ cand: leg({ useful_tok_s_per_gpu: 4800 }), l1: { pass: false } }).accepted,
