@@ -39,14 +39,27 @@ properly designed; it supplies a comparison basis, not a gate.
    so in `notes`** — a measured non-win on a named lever is the result being asked for. Silently
    substituting a lever you like better destroys the comparison the caller is building.
 
-   | lever | flags | ceiling, and where it comes from |
-   |---|---|---|
-   | **comm overlap** | `--overlap-grad-reduce`, `--overlap-param-gather` | the measured `exposed_comm_pct` — 2.27% on the 7B reference. `comm_overlap_pct` was **0.0**, so none of it is currently recovered |
-   | **recompute granularity** | `--recompute-granularity selective\|full`, `--recompute-method` | memory ↔ compute. This is also the **memory converter**: it is the knob that spends banked memory, which is why `fast` banks and never accepts it |
-   | **attention backend** | `--attention-backend fused\|flash` | already a proven-comparable pair (step-1 delta 0.2917% measured between backends) |
+   | lever | flags | ceiling, and where it comes from | **MEASURED on the 7B reference** |
+   |---|---|---|---|
+   | **comm overlap** | `--overlap-grad-reduce`, `--overlap-param-gather` | the measured `exposed_comm_pct` — 2.27%. `comm_overlap_pct` was **0.0**, so none of it is recovered | **+0.118%** vs band 0.150% → `no_win`, and it **costs 780 MB** |
+   | **recompute granularity** | `--recompute-granularity selective\|full`, `--recompute-method` | memory ↔ compute. Also the **memory converter**: the knob that spends banked memory, which is why `fast` banks and never accepts it | **−3.403%** → regression, and it **costs 838 MB** rather than freeing any |
+   | **attention backend** | `--attention-backend fused\|flash` | already a proven-comparable pair (step-1 delta 0.2917% between backends) | **−0.728%** vs band 1.978% → `no_win`; a window-immune cross-check puts the direction at −0.729%, so flash is a small regression here |
 
    State the ceiling with the proposal. A lever whose ceiling is below the band cannot pay, and
    proposing it anyway spends two job launches to learn nothing.
+
+   **ALL THREE HAVE NOW BEEN MEASURED ON THIS WORKLOAD AND NONE PAYS** (2026-10-09, one run, one
+   baseline, one band, so the three are comparable to each other). Do not re-propose one unless the
+   `config_diagnosis` you were handed differs materially from the one those numbers came from —
+   `exposed_comm_pct 2.27–5.3`, `idle_pct 2.61`, fused attention active, ~80.6 GB peak of ~192 GB.
+   On a different workload, parallel mapping or attention backend they are open again; on this one,
+   re-measuring them is spending two job launches to reproduce a table you are reading.
+
+   **The memory converter has nothing to convert here, and that is structural.** With NVTE fused
+   attention (`NVTE_FUSED_ATTN=1`) the core-attention path never materialises the seq×seq score
+   matrix, so the activations selective recompute exists to drop are already not stored; only its
+   workspace remains, which is why it **cost** 838 MB. If you are tempted to bank memory for this
+   knob to spend, check the attention backend first — the bank has no buyer while fused is on.
 
 3. **Measure it exactly as a kernel candidate is measured.** Same `bench_train.sh`, same
    `--workload`, same `--nproc`, same `--iters`. Reference leg = the carried stack; candidate leg =

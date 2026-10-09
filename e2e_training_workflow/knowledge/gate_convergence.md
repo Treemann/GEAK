@@ -856,7 +856,10 @@ far out — **dispersion, not location, for the third positive control running**
 as v2's bias, and the same reason the location test cannot see it: the outlier inflates the
 positive group's own variance, which is what the t statistic divides by.
 
-**The token-aligned trajectory comparator fails the same control, on the same legs.** Positive
+**The token-aligned trajectory comparator does not separate these legs either** (see the 2026-10-09
+note at the end of this file: calling that a failed positive control was wrong, because alpha = 0.25
+is the defect size chosen for being unresolvable, and the claim is withdrawn pending an alpha = 1.0
+leg at 300 steps). Positive
 medians −0.438, −1.346, +0.088, −0.493%; null medians (clean pairs) −0.021, −1.358, +0.231%. Every
 positive sits inside the null range, and one CLEAN pair separates further than any defective leg.
 So `trajectory_tokens.py` does not get promoted to a gate either, and `config_tuner` keeps refusing
@@ -896,3 +899,37 @@ thing it could buy, replicate legs, costs an order of magnitude more than the ga
 * Not that the criteria were wrong. The null control passed every time; the thresholds were never
   retuned; and the v3 run is the first to state its own MDE before its results — which is what made
   the retirement decision arithmetic rather than a judgement call.
+
+## The token comparator's positive control was tested against a defect nothing can see (2026-10-09)
+
+Correcting my own test design, because it blocks the largest remaining lever.
+
+`trajectory_tokens.py` was declared "fails its positive control" on the strength of the four
+alpha = 0.25 stale legs: positive medians −0.438, −1.346, +0.088, −0.493% all sitting inside a null
+range of −1.358 … +0.231%. That reading is accurate and the conclusion drawn from it is not.
+
+**alpha = 0.25 is the defect size chosen specifically because NOTHING resolves it.** It is where L1
+goes silent; it is where the soak's own effect (0.00576) sits at a third of its MDE (0.01587); and
+the retirement argument for the soak is precisely that no instrument can see a defect that small at
+300 steps. Handing that same defect to a second instrument and recording that it also failed is not
+a test of the second instrument. It is re-measuring the defect.
+
+**The control that was never run is alpha = 1.0 at 300 steps.** alpha = 1.0 was only ever measured
+on a 30-step leg — a window this comparator has since been *shown* blind on, and now refuses outright
+(`MIN_STEPS = 200`). So the one combination that could demonstrate sensitivity, a visible defect on a
+usable window, has no data behind it either way.
+
+Why it is worth one GPU-hour to close: Class B is refused because it has no trajectory gate, Class B
+contains **packing**, and packing is the largest unexploited lever on this workload at 70.1% padding.
+The refusal is currently resting on a test that was never properly run.
+
+What the result will mean, fixed before the leg runs so neither outcome can be read generously:
+
+* **rejected** → the comparator has both controls (null measured on three clean 300-step pairs,
+  positive on a visible defect) and may be promoted to a Class-B gate, with its sensitivity floor
+  stated as "somewhere between alpha 0.25 and 1.0", not as a bare pass.
+* **not rejected** → the comparator genuinely cannot see a maximal cross-step defect over 300 steps,
+  the earlier conclusion stands on evidence that actually supports it, and Class B stays refused.
+
+Either way the claim in the retirement note — that the comparator fails its positive control —
+is **withdrawn as unsupported** until this leg exists.
