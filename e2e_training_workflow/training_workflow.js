@@ -490,7 +490,9 @@ async function safeAgent(prompt, opts, tries = 3) {
 // ===========================================================================
 const barrier = makeBarrier(GPU_IDS.length);
 const wfReturn = {
-  schema_version: 1, mode: DEEP_MODE ? 'deep' : 'fast', stack: STACK, workload: WORKLOAD,
+  // schema 2: config_sweep is {levers:[...], accepted}, not a single record.
+  schema_version: 2,
+  mode: DEEP_MODE ? 'deep' : 'fast', stack: STACK, workload: WORKLOAD,
   gates_used: 0, tasks_used: 0, accepted: [], banked_memory: [], status: 'incomplete',
 };
 
@@ -745,26 +747,52 @@ function classOfLever(flags) {
   return hit ? { cls: 'B', key: hit } : { cls: 'A', key: null };
 }
 
+// args.config_levers names the levers to measure, comma-separated, e.g.
+// "recompute_granularity,attention_backend". Empty means one pass where the Tuner chooses from the
+// Tier-0 pack itself, which is the original behaviour.
+//
+// Measuring several levers in ONE run is not just a time saving. Every lever is then judged against
+// the SAME baseline and the SAME band, so the verdicts are comparable to each other; split across
+// two runs they would carry two baselines and two bands, and the difference between two levers
+// would be confounded with the difference between two days.
+const CONFIG_LEVERS = String(A.config_levers || '').split(',').map((x) => x.trim()).filter(Boolean);
+
 if (want('config')) {
   phase('ConfigSweep');
-  const sweep = await safeAgentStub('config_tuner', 'config',
-    { ...benchInputs(curConfig, 'config'), DIAGNOSIS: wfReturn.config_diagnosis,
-      BANDS: wfReturn.bands, CARRIED_OVERLAY: curOverlay },
-    'Propose ONE Class-A lever from the Tier-0 pack, state its ceiling from the diagnosis, and ' +
-    'measure it exactly as a kernel candidate is measured.');
+  const sweepRecords = [];
+  // One pass with `null` reproduces the single-shot behaviour exactly.
+  for (const wantLever of (CONFIG_LEVERS.length ? CONFIG_LEVERS : [null])) {
+    if (gatesUsed >= MAX_GATES) {
+      log0(`ConfigSweep: gate budget spent (${gatesUsed}/${MAX_GATES}); ` +
+           `${CONFIG_LEVERS.length - sweepRecords.length} lever(s) not measured`);
+      break;
+    }
+    const directive = wantLever
+      ? `Propose the "${wantLever}" lever SPECIFICALLY -- it is named by the caller and the other ` +
+        'Tier-0 levers are out of scope for this pass. State its ceiling from the diagnosis, and ' +
+        'measure it exactly as a kernel candidate is measured. If you believe this lever cannot ' +
+        'pay on this workload, measure it anyway and say so in notes: a measured non-win on a ' +
+        'named lever is the result being asked for, not a failure.'
+      : 'Propose ONE Class-A lever from the Tier-0 pack, state its ceiling from the diagnosis, and ' +
+        'measure it exactly as a kernel candidate is measured.';
+    const sweep = await safeAgentStub('config_tuner', 'config',
+      { ...benchInputs(curConfig, 'config'), DIAGNOSIS: wfReturn.config_diagnosis,
+        BANDS: wfReturn.bands, CARRIED_OVERLAY: curOverlay, REQUESTED_LEVER: wantLever,
+        ALREADY_MEASURED: sweepRecords.map((r) => r.lever) },
+      directive, { label: wantLever ? `config_tuner:${wantLever}` : undefined });
   if (!sweep) {
     log0('ConfigSweep produced nothing; continuing to the kernel track.');
   } else {
     const kind = classOfLever(sweep.flags_added);
     if (kind.cls === 'B') {
       // Refuse, do not silently downgrade: a Class-B result looks exactly like a Class-A one.
-      wfReturn.config_sweep = { refused: true, lever: sweep.lever, reason:
+      sweepRecords.push({ refused: true, lever: sweep.lever, requested: wantLever, reason:
         `flags_added names a CLASS B lever (${kind.key}): it changes what a step contains, so step i ` +
         `is not the same batch on both legs. The step-1 probe and the step-aligned delta are both ` +
         `invalid, and L0 does not apply because no kernel changed — this would rest on throughput ` +
         `alone. scripts/compare_legs_tokens.py supplies a comparison basis for that class; it is ` +
-        `not a gate.` };
-      log0(`ConfigSweep REFUSED: ${wfReturn.config_sweep.reason}`);
+        `not a gate.` });
+      log0(`ConfigSweep REFUSED (${sweep.lever}): Class B lever ${kind.key}`);
     } else {
       gatesUsed += 1;
       const cv = gateVerdict({ ref: sweep.ref, cand: sweep.cand, comparison: sweep.comparison,
@@ -784,14 +812,26 @@ if (want('config')) {
         cv.band_pct = +band.toFixed(3);
         cv.delta_source = d ? 'window-aligned' : 'raw ratio (NOT window-aligned)';
       }
-      wfReturn.config_sweep = { lever: sweep.lever, flags_added: sweep.flags_added,
+      sweepRecords.push({ lever: sweep.lever, requested: wantLever, flags_added: sweep.flags_added,
         ceiling_pct: sweep.ceiling_pct, verdict: cv,
         config_digest_delta: sweep.config_digest_delta || null,
-        memory_conversion: sweep.memory_conversion || null };
+        memory_conversion: sweep.memory_conversion || null });
       log0(`ConfigSweep ${sweep.lever}: ${cv.klass} (${cv.delta_pct}% vs band ${cv.band_pct}%, ` +
            `ceiling was ${sweep.ceiling_pct}%)`);
       if (cv.accepted) curConfig = { ...curConfig, config_flags: sweep.flags_added };
     }
+  }
+  }
+  // Shape: ALWAYS {levers:[...], accepted}. Not "an object when one lever and an array when
+  // several" -- a result shape that depends on the input is a reader bug waiting to happen, and
+  // this field is read by the report and the validate phases.
+  if (sweepRecords.length) {
+    wfReturn.config_sweep = {
+      levers: sweepRecords,
+      accepted: sweepRecords.find((r) => r.verdict && r.verdict.accepted) || null,
+      requested: CONFIG_LEVERS.length ? CONFIG_LEVERS : null,
+      not_measured: CONFIG_LEVERS.filter((l) => !sweepRecords.some((r) => r.requested === l)),
+    };
   }
 }
 

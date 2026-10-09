@@ -32,6 +32,13 @@ properly designed; it supplies a comparison basis, not a gate.
 2. **Propose from the Tier-0 pack, one lever at a time.** Two levers at once means a win cannot be
    attributed, and attribution is the whole point of gating.
 
+   **If `REQUESTED_LEVER` is set, measure THAT lever and no other.** The caller has named it, and the
+   orchestrator may call you once per lever in a single run so that every lever is judged against the
+   same baseline and the same band. `ALREADY_MEASURED` lists what earlier passes covered; do not
+   repeat one. If you think the named lever cannot pay on this workload, **measure it anyway and say
+   so in `notes`** — a measured non-win on a named lever is the result being asked for. Silently
+   substituting a lever you like better destroys the comparison the caller is building.
+
    | lever | flags | ceiling, and where it comes from |
    |---|---|---|
    | **comm overlap** | `--overlap-grad-reduce`, `--overlap-param-gather` | the measured `exposed_comm_pct` — 2.27% on the 7B reference. `comm_overlap_pct` was **0.0**, so none of it is currently recovered |

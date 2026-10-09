@@ -131,10 +131,45 @@ async function dryRun(args) {
     const { result, calls } = await dryRun({ ...base, deep_mode: 'true', budget: 0 });
     ok(calls.phases.includes('ConfigSweep'), 'deep mode enters ConfigSweep');
     ok(result && result.config_sweep, 'ConfigSweep records a verdict in the result');
-    ok(result.config_sweep.verdict && result.config_sweep.verdict.delta_source === 'window-aligned',
+    const cs = result.config_sweep || {};
+    // Shape is ALWAYS {levers:[...]}, never "an object when one and an array when several". The
+    // report and validate phases read this; a shape that depends on the input is a reader bug
+    // waiting to happen, and this assertion is what caught the change when the loop went in.
+    ok(Array.isArray(cs.levers) && cs.levers.length === 1,
+      `one lever by default, as a list (got ${Array.isArray(cs.levers) ? cs.levers.length : typeof cs.levers})`);
+    ok(cs.levers[0] && cs.levers[0].verdict &&
+       cs.levers[0].verdict.delta_source === 'window-aligned',
       'the config verdict carries an aligned delta, like a kernel verdict');
+    ok('accepted' in cs, 'the sweep names its accepted lever (or null) rather than leaving it implied');
   } catch (e) {
     ok(false, `deep mode threw: ${e && e.message}`);
+  }
+
+  // A sweep that sweeps. Named levers are measured in ONE run so they share a baseline and a band.
+  try {
+    const { result } = await dryRun({ ...base, deep_mode: 'true', budget: 0, max_gates: 4,
+                                      config_levers: 'recompute_granularity,attention_backend' });
+    const cs = (result && result.config_sweep) || {};
+    ok(Array.isArray(cs.levers) && cs.levers.length === 2,
+      `two named levers produce two records (got ${Array.isArray(cs.levers) ? cs.levers.length : typeof cs.levers})`);
+    ok(cs.levers[0].requested === 'recompute_granularity' &&
+       cs.levers[1].requested === 'attention_backend',
+      'each record remembers which lever was REQUESTED, not only what the Tuner returned');
+    ok(Array.isArray(cs.not_measured) && cs.not_measured.length === 0,
+      'nothing silently dropped: not_measured is explicit');
+  } catch (e) {
+    ok(false, `multi-lever sweep threw: ${e && e.message}`);
+  }
+
+  // The gate budget must bound the sweep, not be bounded by it.
+  try {
+    const { result } = await dryRun({ ...base, deep_mode: 'true', budget: 0, max_gates: 1,
+                                      config_levers: 'recompute_granularity,attention_backend' });
+    const cs = (result && result.config_sweep) || {};
+    ok(cs.levers.length === 1 && cs.not_measured.includes('attention_backend'),
+      'a spent gate budget stops the sweep and SAYS which lever went unmeasured');
+  } catch (e) {
+    ok(false, `budget-bounded sweep threw: ${e && e.message}`);
   }
 
   console.log();
