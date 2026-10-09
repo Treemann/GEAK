@@ -12,18 +12,22 @@
 # a smaller number and look like an honest disappointment.
 #
 # Usage:
-#   measure_stack.sh --bundles <dir1>,<dir2>,... --out-prefix <dir> [--iters 30] [--reps 2]
+#   measure_stack.sh --bundles <dir1>,<dir2>,... --out-prefix <dir> [--iters 30] [--reps 2] [--data <jsonl>]
 set -euo pipefail
 
 GEAK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_HOST="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
-BUNDLES="" ; OUT_PREFIX="" ; ITERS=30 ; REPS=2
+BUNDLES="" ; OUT_PREFIX="" ; ITERS=30 ; REPS=2 ; DATA=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --bundles) BUNDLES="$2"; shift 2;;
     --out-prefix) OUT_PREFIX="$2"; shift 2;;
     --iters) ITERS="$2"; shift 2;;
     --reps) REPS="$2"; shift 2;;
+    # The dataset BOTH arms run on. Added to answer whether kernel wins measured on padded data
+    # survive packing: several of them (the unmasked-gather LM head, the rowslice variants) earn
+    # their speed by skipping padding, and packing removes 97% of it.
+    --data) DATA="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -91,7 +95,8 @@ EOF
       --workload "$GEAK_ROOT/workloads/qwen2_5_math_7b.env" \
       --stack megatron --nproc 8 --iters "$ITERS" \
       --out "$OUT" --tag "stack_$MODE$i" \
-      ${EXTRA:+--extra-env "$EXTRA"}
+      ${EXTRA:+--extra-env "$EXTRA"} \
+      ${DATA:+--data "$DATA"}
   done
 done
 
