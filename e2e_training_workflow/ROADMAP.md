@@ -332,6 +332,28 @@ And a recipe finding the comparison surfaced: the Megatron reference trains with
 while Qwen2.5's own config is 0.0 — worth +7.3% throughput at 0.5B from attention dropout alone.
 Recorded as an open question in `knowledge/sft_measurement.md`; the reference is not changed.
 
+**First GPU results (2026-10-09), 0.5B, 2 GPUs, both stacks at dropout 0, same day:**
+
+| | useful tok/s/GPU | nominal | pad | step median | step IQR |
+|---|---|---|---|---|---|
+| HF TRL | **10,396** | 10,396 | 0% | 459 ms | 22.6% |
+| Megatron | 5,210 | 17,846 | 70.8% | 918 ms | 0.30% |
+
+HF delivers **2.0x the useful throughput** while Megatron's kernels are 1.72x faster per token
+processed — Megatron spends 70.8% of its work on padding. That is the packing lever, measured.
+
+The second stack immediately broke two gate assumptions, both now fixed **stack-neutrally**:
+per-leg medians read two identical HF runs +1.15% apart (the gate now reads a paired per-step
+ratio, validated on 694 null pairs and every accepted win), and the per-leg 25% IQR ceiling would
+have declared a coin-flip of clean HF legs unusable (step shape is now detected from the data).
+A third leak — the dispatcher labels every stack's self-reported figure TFLOP/s — is recorded and
+waits on the review of `bench_train.sh`'s pending changes.
+
+It also raised and then cleared a fidelity alarm: HF's loss sat ~1.8x below an old Megatron 0.5B
+leg. Weights compared tensor-by-tensor are bit-identical, the same sample gives 2.0169 (HF) vs
+2.0232 (Megatron), and a same-day Megatron leg matches HF (1.553 vs 1.601). The old leg was from a
+different era of the setup. Cross-stack comparisons must be same-code, same-day.
+
 ### A second training stack (original entry)
 
 `scripts/adapters/<stack>.sh` still has exactly one implementation, so the seam is **unvalidated**.

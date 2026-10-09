@@ -276,6 +276,21 @@ kernel 优化只能缩短 `step_time`——剩下的 head 每个约值 1%。
 
 ## 四、第二个月：适配不同 case 与训练框架
 
+### 第二个训练栈 —— **进行中（2026-10-09 开始）：HF TRL**
+
+选 HF TRL 而不是 TorchTitan：同一镜像、同一 HF 权重、同一数据集，测出的差异就是栈本身；它自报 token 数，可检验 probe 是否真正栈无关；配置词汇与 Megatron 完全不同。TorchTitan 没有 SFT 路径，测它等于测我们自己写的数据管线。
+
+已完成：`adapters/hf_trl.sh`、`adapters/hf_sft.py`、`train_probe.install_hf`；**useful token 口径逐条一致**（两个栈各自真实的分词、截断、移位、掩码代码，300/300 条样本、355,287 个 token 完全相同）；栈已纳入工作负载身份。
+
+**首批 GPU 结果**（0.5B，2 卡，两栈 dropout 都为 0，同一天）：HF useful 吞吐 **10,396** tok/s/GPU，Megatron **5,210**——HF 是 **2.0 倍**；而 Megatron 每处理一个 token 的 kernel 反而快 1.72 倍，它 70.8% 的工作量花在 padding 上。这就是 packing 杠杆的实测量级。
+
+第二个栈立刻打破了门控的两个假设，均已以**栈无关**的方式修复：按单腿中位数，两条完全相同的 HF 运行相差 +1.15%（门控现在读成对的逐步比值，已在 694 对零对照和全部已接受的赢上验证）；单腿 25% 的 IQR 上限会把一半干净的 HF 腿判为不可用（step 形状现由数据判定）。第三处泄漏（dispatcher 把所有栈的自报指标都标成 TFLOP/s）已记录，等 `bench_train.sh` 那批待审改动处理后再修。
+
+它还引出并排除了一次保真度警报：HF 的 loss 比一条老 Megatron 0.5B 腿低约 1.8 倍。逐张量比对权重完全相同；同一条样本 HF 2.0169、Megatron 2.0232；同一天的 Megatron 腿与 HF 一致（1.553 对 1.601）。老腿来自另一个时期的设置。**跨栈比较必须同代码、同一天。**
+
+**配方问题（未改动参考）**：Megatron 参考默认 dropout 0.1/0.1，Qwen2.5 自身配置是 0.0；0.5B 上仅 attention dropout 就值 +7.3% 吞吐。已作为待决问题记入 `knowledge/sft_measurement.md`。
+
+
 第二个月假定第一个月交付了**可信的门**与**每轮 ≥3 个 head**。**若未达成，不要开始第二个月**——把一个
 不能判别的仪器适配到多个栈上，只会把虚构复制多份。
 
