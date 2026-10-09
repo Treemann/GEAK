@@ -58,6 +58,39 @@ _mcu.get_thd_batch_on_this_cp_rank = _thd_squeeze_batch_dim
 print("[rocm-compat] patched get_thd_batch_on_this_cp_rank (squeeze vacuous batch dim)", flush=True)
 
 # ---------------------------------------------------------------------------
+# Fix 3: packed SFT trains each conversation's last token toward the NEXT conversation.
+# SFTDataset shifts labels across the whole pack (labels = pack_targets[1:]), so the last position of
+# conversation i is given conversation i+1's first token as its target. Unpacked, that position's
+# target is the padding token and is masked. Measured on a real 5-conversation pack of the 7B
+# dataset: those targets cost 10.6, 10.1, 10.7 and 13.4 nats (the model expects <|endoftext|>, the
+# label says <|im_start|>) -- 0.1% of the tokens, 0.37% of the loss, and a training signal to keep
+# going into a new conversation instead of stopping.
+# Masking loss_mask at every INTERNAL boundary (cu_seqlens[1:-1] - 1) makes a packed sample's
+# objective exactly the unpacked one. An unpacked sample has no internal boundary, so this is a
+# no-op on every existing workload.
+# ---------------------------------------------------------------------------
+try:
+    import megatron.training.datasets.sft_dataset as _sftds
+
+    _orig_sft_getitem = _sftds.SFTDataset.__getitem__
+
+    def _sft_getitem_mask_boundaries(self, idx):
+        item = _orig_sft_getitem(self, idx)
+        cu = item.get("cu_seqlens")
+        lm = item.get("loss_mask")
+        if cu is not None and lm is not None and cu.numel() > 2:
+            for b in cu[1:-1].tolist():
+                if 0 < b <= lm.numel():
+                    lm[b - 1] = 0.0
+        return item
+
+    _sft_getitem_mask_boundaries._rocm_compat = True
+    _sftds.SFTDataset.__getitem__ = _sft_getitem_mask_boundaries
+    print("[rocm-compat] patched SFTDataset: packed-conversation boundary targets are masked", flush=True)
+except Exception as _e:  # an SFT-less Megatron build has nothing to patch
+    print(f"[rocm-compat] SFT boundary mask not installed: {_e!r}", flush=True)
+
+# ---------------------------------------------------------------------------
 # GEAK measurement probe (Seam 2). No-op unless GEAK_PROBE_DIR is set, so a run without it is
 # unaffected. Installed here, before the trainer is imported, exactly as the reversible overlay
 # will do it later.
