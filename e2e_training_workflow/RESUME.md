@@ -1,75 +1,42 @@
-> **RESUMED AND COMPLETED 2026-10-09.** The interrupted run's validate phase finished from cache; the
-> alpha = 1.0 300-step leg ran and is recorded in `knowledge/gate_convergence.md`. Nothing below is
-> pending any more — this file is kept as the record of the pause.
+# Paused 2026-10-09 (second pause) — GPUs released for another task
 
-# Paused 2026-10-09 — GPUs released for another task
+GPUs free (`rocm-smi --showpids`: no KFD PIDs). No container of this project is running; the other
+32 containers on the box were not touched. Nothing is queued and nothing restarts on its own.
 
-Stopped at the user's request. **The GPUs are free**: `rocm-smi --showpids` reports no KFD PIDs, and
-no container of this project is running. Nothing is queued and nothing will restart on its own.
+## What was running
 
-## What was running when it stopped
+`measure_stack.sh` — does the accepted +12.36% kernel stack (lmhead_ce_unmasked_gather +
+mlp_fc2_down) still pay ON TOP OF PACKING? Two arms × 2 reps on the packed dataset. Stopped after
+**1 of 4 legs**: `runs/stackPK1009_ref1` (packed, no overlays) completed cleanly; the other three
+never started. The partial result proves nothing on its own — re-run all four.
 
-A `deep` ConfigSweep run measuring the two levers that had never been measured. It got through
-Setup, Profile, Strategize, **both ConfigSweep legs**, Finalize and Report, and was interrupted in
-the last phase, `training_director:validate`.
-
-**The measurements survived.** They are in the run journal, not only in memory:
-
-```
-/home/treemann/.claude/projects/-home-treemann-treemann-github-AMD-AGI-GEAK-claude-e2e-training-workflow/
-  cb433b82-735d-4533-ac61-d16e8af2836c/subagents/workflows/wf_ad87f338-2c1/journal.jsonl
-```
-
-Run ID `wf_ad87f338-2c1`. Both lever records are complete; only the final validation leg is missing.
-
-## Results, already obtained (see the summary in chat for the full reading)
-
-Reference leg `useful_tok_s_per_gpu` 837.5, both candidates measured against it, same band.
-
-| lever | flags | aligned delta | memory | verdict |
-|---|---|---|---|---|
-| `recompute_granularity` | `--recompute-granularity selective` | **−3.403%** | **COSTS 838 MB** (80578 → 81416) | regression |
-| `attention_backend` | `--attention-backend flash`, `NVTE_FLASH_ATTN=1` | **−0.7284%** (band 1.978%) | — | `no_win` / inconclusive_noise |
-
-Both carry a window-aligned delta; window placement alone accounted for 0.51% and 0.52%, so the
-unaligned numbers would have been mostly artifact in both cases.
-
-**The v4 identity fix is confirmed working.** On both levers `config_digest` stayed identical
-(`d1548a7a764bdada`, same workload) while `impl_digest` MOVED (`49d9009f…` → `545a0456…` and
-`c1b6712f…`). That is exactly the behaviour the comm-overlap run showed was missing, where neither
-digest moved. The Tuner also diffed the captured snapshots directly and found exactly one differing
-key for recompute and three for attention-backend, nothing else.
+Why it matters: several accepted kernels earn their speed by skipping padding, and packing removes
+97% of it. Kernel work after packing should be prioritised on a PACKED profile, and this run says
+whether the old wins survive.
 
 ## To resume
 
-Nothing needs repairing first. Three options, cheapest first.
+```
+R=/home/treemann/geak_train/runs
+bash scripts/measure_stack.sh --bundles $R/finalize_bundle_lmhead_0922,$R/finalize_bundle_fc2_0924 \
+  --out-prefix $R/stackPK1010 --iters 30 --reps 2 \
+  --data /work/data/sft_ultrachat20k_packed_7b_cfg1009.jsonl
+```
+(~45 min, 8 GPUs). Use a NEW --out-prefix: one probe dir is one leg, and the old prefix already has
+a ref1.
 
-1. **Just finish the validation leg** of the interrupted run — completed agents replay from cache,
-   only `validate` runs live:
+Then, by value:
+1. Re-profile the PACKED stack and re-rank kernel heads on it (the current queue — mlp_fc1_rowslice
+   +14.7%, attn_fmha_true_seqlen +8.9% — was ranked on padded data).
+2. Choose GBS in packs (16 or 24) to keep samples per optimizer step; a recipe decision for the
+   workload owner.
+3. Flash attention backend: root-cause the 2.7x gradient (the varlen kernel itself is exact).
+4. Second stack exit criterion: one kernel accepted on HF TRL through the same gates.
 
-   ```
-   Workflow({scriptPath: ".../training_workflow.js", resumeFromRunId: "wf_ad87f338-2c1"})
-   ```
+## State at pause (all committed; last commit 5af40231)
 
-   Caveat: the orchestrator reads the clock through `args.t0_epoch_ms`, which was
-   `1791513468747` for that run. A resume re-uses it, so the time budget will look mostly spent.
-   Pass a fresh `t0_epoch_ms` if the budget matters.
-
-2. **Accept the two measurements as they are** and move on. The lever verdicts do not depend on the
-   validate phase, which checks the final bundle rather than the sweep; and with zero accepted
-   changes the bundle is empty anyway.
-
-3. **Continue the roadmap.** Month 1 (P0–P5) is complete. Next is Month 2, starting with the second
-   training-stack adapter — see `ROADMAP.md`.
-
-## Loose ends, unchanged by the pause
-
-* Five scripts have been modified in the working tree since **09-24** and are still uncommitted:
-  `bench_train.sh`, `build_task_dir.py`, `capture_train_shapes.py`, `l0_gate.py`, `rocm_compat.py`.
-  They are the agent-authored changes set aside for separate review. Nothing in this session touched
-  them. They are coherent improvements (an MLP capture target added to the measurement-validity
-  guard; an explicit engagement contract for composite ops), but they are not mine to commit.
-* `runs/l2soak_v3_ref4` is a partial leg whose files are root-owned and cannot be deleted from the
-  host. Harmless: every analyzer refuses a short window and names it.
-* `scripts/trajectory_tokens.py` is a characterised instrument, not a gate — it still owes a
-  positive control it can actually fail.
+* Packing ACCEPTED by the workflow on its own (run wf_01fab37a-6da): +258.11%, Validate +256.75%
+  (3,042.3 vs 839.2 useful tok/s/GPU at 7B). Bundle: `runs/finalize_bundle_1009_pack`.
+* Tests all pass, preflight GO.
+* Still uncommitted and NOT mine: the 09-24 agent changes to bench_train.sh, build_task_dir.py,
+  capture_train_shapes.py, l0_gate.py, rocm_compat.py, and the untracked capture_mlp_fc1_swiglu.py.
