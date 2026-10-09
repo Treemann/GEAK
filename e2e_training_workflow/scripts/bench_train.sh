@@ -61,7 +61,7 @@ if [ ! -d "${MLM_DIR:-/workspace/Primus/third_party/Megatron-LM}" ] && [ -z "${G
     -e GEAK_IN_CONTAINER=1 -e GEAK_HOST_WORK="$WORK" \
     -e HIP_VISIBLE_DEVICES="${HIP_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}" \
     ${ATTENTION_BACKEND:+-e ATTENTION_BACKEND="$ATTENTION_BACKEND"} \
-    ${RETRY_CONTAMINATED:+-e RETRY_CONTAMINATED="$RETRY_CONTAINATED"} \
+    ${RETRY_CONTAMINATED:+-e RETRY_CONTAMINATED="$RETRY_CONTAMINATED"} \
     --entrypoint bash "$IMAGE" \
     /repo/e2e_training_workflow/scripts/bench_train.sh "${_ARGS[@]}"
 fi
