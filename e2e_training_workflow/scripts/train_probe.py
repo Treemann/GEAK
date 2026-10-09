@@ -288,6 +288,10 @@ _IDENTITY_PAIR_KEYS = (
     # every Megatron leg on disk digests exactly as before -- the same additive property that made
     # v3->v4 free.
     "--geak-stack",
+    # Optimizer/master precision is part of the recipe, like dropout: it changes the training run,
+    # not just how fast it goes. Only the HF launcher passes it; Megatron's --bf16 implies fp32 main
+    # params and every Megatron leg digests as before.
+    "--master-weights",
     # regularization + optimizer: these move the loss/grad-norm trajectory L1 gates on
     "--attention-dropout", "--hidden-dropout", "--weight-decay", "--clip-grad",
     "--lr", "--min-lr", "--lr-decay-style", "--lr-warmup-iters",

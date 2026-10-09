@@ -562,3 +562,25 @@ One classification leak fixed: ROCm AOTriton's flash-attention backward kernels 
 match no attention pattern. The classifier now falls back to the parent op
 (`aten::_flash_attention_backward`), which is stack-neutral vocabulary. Megatron's classification is
 unchanged.
+
+### HF trained pure bf16 at first, and identity could not see it (fixed 2026-10-09)
+
+The HF launcher first loaded the model with `torch_dtype=bfloat16`. With that, HF's Trainer trains in
+**pure bf16** — weights and AdamW states in bf16, no fp32 master copy — while Megatron's `--bf16`
+with the distributed optimizer keeps **fp32 main params and fp32 Adam state**. A different training
+recipe. Every parity check passed anyway, because step-1 loss is a forward on identical weights and
+cannot see the optimizer: 1.68850 pure-bf16 vs 1.68960 fp32-master.
+
+Fixed: weights load in fp32 and `bf16=True` autocasts the compute. Cost: useful throughput
+10,396 → **9,367** tok/s/GPU (−9.9%) at 0.5B.
+
+**The second defect is the one worth remembering.** The switch was made in launcher CODE, and argv
+did not change — so the two legs carried identical `config_digest` (`325fbe030fd6f6b7`) and identical
+`impl_digest`. The "digest reads argv, not the realized config" limitation recorded long ago,
+actually biting, on the very first stack where the recipe lives in code rather than flags. The
+launcher now states the choice as `--master-weights fp32|bf16`, captured as workload identity
+(legs since: `fbb87a9ee13c16db`).
+
+Rule for any future launcher: **every recipe choice must appear in argv**, or identity cannot see
+it. HF legs digested `325fbe030fd6f6b7` are ambiguous between the two recipes and must not be paired
+across that boundary; `hf_smoke_1009` and `hf_null_b` are both pure bf16 and remain a valid null pair.

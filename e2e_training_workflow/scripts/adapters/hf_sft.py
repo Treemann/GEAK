@@ -66,6 +66,11 @@ def parse():
     ap.add_argument("--bf16", action="store_true")
     ap.add_argument("--sft", action="store_true")
     ap.add_argument("--geak-stack", default="hf_trl")
+    # Every recipe choice this launcher makes must be VISIBLE IN ARGV, because identity is captured
+    # from argv. The first version switched pure-bf16 -> fp32-master in code with argv unchanged, and
+    # two legs training different recipes carried identical config_digest AND impl_digest.
+    ap.add_argument("--master-weights", choices=("fp32", "bf16"), default="fp32",
+                    help="fp32 = fp32 master weights + bf16 autocast (Megatron --bf16); bf16 = pure bf16")
     ap.add_argument("--output-dir", required=True)
     return ap.parse_args()
 
@@ -105,8 +110,14 @@ def main():
                      "refusing to run a leg that would measure the original implementation")
 
     tok = AutoTokenizer.from_pretrained(a.tokenizer_model)
+    # FP32 MASTER WEIGHTS, bf16 compute -- the recipe Megatron's --bf16 actually runs. Loading the
+    # model in bf16 (as this launcher first did) makes HF's Trainer train in PURE bf16: weights and
+    # AdamW states in bf16, no fp32 master copy. Step-1 loss cannot tell the difference (it is a
+    # forward on identical weights), so the parity checks passed; the optimizer is what differs,
+    # and it shows up over hundreds of steps as a different training run under the same name.
+    # With fp32 weights, `bf16=True` in TrainingArguments enables bf16 autocast for the compute.
     model = AutoModelForCausalLM.from_pretrained(
-        a.load, torch_dtype=torch.bfloat16 if a.bf16 else torch.float32,
+        a.load, torch_dtype=torch.float32 if a.master_weights == "fp32" else torch.bfloat16,
         attn_implementation=a.attention_backend)
 
     ds = load_dataset("json", data_files=a.train_data_path, split="train")
