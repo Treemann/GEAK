@@ -102,8 +102,16 @@ _DUMP = re.compile(r"^\s+([a-z_0-9]+) \.+ (.*)$")
 _ENUM = re.compile(r"^[A-Za-z_]+\.([A-Za-z_0-9]+)$")
 
 
+# Another process's log tag spliced onto a dump line. Eight ranks share one stdout, and a line of the
+# realized table can be interrupted mid-write: measured on stackPK1010_ref1, a clean leg,
+#   num_query_groups ........ 4[geak-probe] installed (rank 4/8) -> /work/runs/...
+# which read as "captured 4, realized 4[geak-probe]..." -- a FALSE mismatch, and legUsable would have
+# refused a clean leg. Tags this repo prints all look like `[geak-...]` / `[rocm-compat]` / `[rank..]`.
+_SPLICE = re.compile(r"\[(geak-[a-z]+|rocm-compat|rank\d*)\].*$")
+
+
 def _norm(x):
-    x = str(x).strip().strip("'\"")
+    x = _SPLICE.sub("", str(x)).strip().strip("'\"")
     m = _ENUM.match(x)
     if m:
         x = m.group(1)                                   # AttnBackend.fused -> fused

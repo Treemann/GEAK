@@ -323,6 +323,11 @@ it unaided -- pack, gate on a fresh pack, measure, compare -- and accepted packi
 Validate reproduced +256.75% (3,042.3 vs 839.2) through the bundle's own launcher and re-gated on
 another pack. The 3.66x is now a result the workflow produces, not one a person produced.
 
+**And it absorbs the kernel track.** The accepted +12.36% kernel stack measures **+0.08–0.28%,
+no_win,** on packed data: every kernel win on this workload was a padding win. The packed profile is
+~78% dense GEMM with attention backward down to 6.3%; heads are now worth ~1–2% each, and the kernel
+queue must be re-ranked on the packed profile before any more lane time is spent.
+
 ## Month 2 — adaptation: other stacks, other cases, tuning
 
 Gated, as before: if the gates are not trustworthy, adapting the instrument multiplies the fiction

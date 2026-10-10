@@ -772,3 +772,37 @@ sha256, and refuses to overwrite a pack whose hash does not match. The Training 
 three v3 baselines and re-measured, for reasons that turned out to be a mistake of mine (DECISIONS
 4.10b). The result now also carries `accepted_config` at the top level, because `accepted: []`
 read as "nothing was accepted".
+
+### The accepted kernel stack does NOT survive packing (2026-10-10)
+
+`measure_stack.sh --data <packed>`: the +12.36% stack (lmhead_ce_unmasked_gather + mlp_fc2_down),
+both arms on the packed dataset, 2 reps each, engagement re-proved on all 8 ranks
+(1,792 / 107,520 fwd = bwd per overlay):
+
+| pair | paired delta | band |
+|---|---|---|
+| ref1 vs cand1 | +0.170% | 0.250% |
+| ref2 vs cand2 | +0.076% | 0.478% |
+| ref1 vs cand2 | +0.277% | 0.460% |
+| ref2 vs cand1 | +0.111% | 0.258% |
+| ref1 vs ref2 (null) | +0.067% | 0.250% |
+
+**Every pair is `no_win`.** On padded data the same stack measured +12.81% / +12.25%. The wins were
+padding wins: the unmasked-gather LM head skips loss-masked rows, fc2-down slices its backward GEMMs
+to the live-row prefix. Packing removes the rows they skipped, and the +258% from packing absorbs
+them entirely. **Every kernel result on this workload to date was harvesting padding.**
+
+**The packed profile** (7B, ranks 0+4, steps 10–12): compute 93.5%, exposed comm 3.7% (0%
+overlapped), idle 2.8%; GEMMs ~78% of the span, attention backward down to 6.3% (from 14.5%
+unpacked — varlen attention costs Σ Lᵢ²), SwiGLU elementwise 3.0%. The previous queue
+(`mlp_fc1_rowslice` +14.7%, `attn_fmha_true_seqlen` +8.9%) was ranked on dead rows that no longer
+exist. What is left is dense GEMM efficiency, where re-selecting hipBLASLt solutions has measured
+~1.07x isolated — so each head is now worth ~1–2% end to end. Kernel work must be ranked on THIS
+profile from here on.
+
+A false positive found in the new realized-identity check on these legs: eight ranks share one
+stdout, and a dump line was spliced by another rank's tag (`4[geak-probe] installed (rank 4/8)`), so
+a clean leg read as `captured 4, realized 4[geak-probe]...` and would have been refused. Tags are
+now stripped before comparing; over all 237 legs, 2 had a spliced line and only the one genuine
+mismatch is still flagged. Legs summarised before the fix carry the false entry in their
+`bench_summary.json` until re-summarised.
