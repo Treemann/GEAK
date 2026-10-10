@@ -1,42 +1,27 @@
-# Paused 2026-10-09 (second pause) — GPUs released for another task
+# Resume notes — updated 2026-10-10
 
-GPUs free (`rocm-smi --showpids`: no KFD PIDs). No container of this project is running; the other
-32 containers on the box were not touched. Nothing is queued and nothing restarts on its own.
+## Running now
+Fast-mode kernel track on the PACKED 7B descriptor — run `wf_3593b41a-adb`, launched with
+`workloads/qwen2_5_math_7b_packed.env`, budget 2, max_gates 4, kernel_budget 3,
+baseline_dirs = the three packed null legs (`bench_qwen2_5_math_7b_packed_{nullA,nullB,gbs16}_*`),
+t0_epoch_ms 1791601614016. Question it answers: does kernel work still pay once padding is gone?
+(Every earlier kernel win was a padding win: +12.36% on padded data, +0.1-0.3% packed.)
 
-## What was running
+If it must be stopped: `TaskStop` the workflow, then stop ONLY containers whose command is
+`/repo/e2e_training_workflow/scripts/bench_train.sh` (by ID — never `docker ps -q | xargs`), and
+never `pkill -f` a pattern that also matches the calling shell. Resume with
+`Workflow({scriptPath, resumeFromRunId: "wf_3593b41a-adb", args: <same args>})`.
 
-`measure_stack.sh` — does the accepted +12.36% kernel stack (lmhead_ce_unmasked_gather +
-mlp_fc2_down) still pay ON TOP OF PACKING? Two arms × 2 reps on the packed dataset. Stopped after
-**1 of 4 legs**: `runs/stackPK1009_ref1` (packed, no overlays) completed cleanly; the other three
-never started. The partial result proves nothing on its own — re-run all four.
+## Done since the last pause (all committed)
+* Kernel stack on packed data: +0.08-0.28%, no_win -> kernel wins were padding wins.
+* Packed profile: GEMM ~78%, attention bwd 6.3%, exposed comm 3.7% (0% overlap).
+* GBS trade-off measured: 64 / 24 / 16 packs -> 3.64x / 3.50x / 3.43x unpacked.
+* TE flash attention is correct at op level; Megatron's flash-path 2.7x gradient gap is elsewhere
+  (time-boxed, flash quarantined).
+* identity_vs_realized false positive from interleaved rank logs fixed.
+* `workloads/qwen2_5_math_7b_packed.env` (GBS 16 PENDING owner confirmation, floor 0.25%).
 
-Why it matters: several accepted kernels earn their speed by skipping padding, and packing removes
-97% of it. Kernel work after packing should be prioritised on a PACKED profile, and this run says
-whether the old wins survive.
-
-## To resume
-
-```
-R=/home/treemann/geak_train/runs
-bash scripts/measure_stack.sh --bundles $R/finalize_bundle_lmhead_0922,$R/finalize_bundle_fc2_0924 \
-  --out-prefix $R/stackPK1010 --iters 30 --reps 2 \
-  --data /work/data/sft_ultrachat20k_packed_7b_cfg1009.jsonl
-```
-(~45 min, 8 GPUs). Use a NEW --out-prefix: one probe dir is one leg, and the old prefix already has
-a ref1.
-
-Then, by value:
-1. Re-profile the PACKED stack and re-rank kernel heads on it (the current queue — mlp_fc1_rowslice
-   +14.7%, attn_fmha_true_seqlen +8.9% — was ranked on padded data).
-2. Choose GBS in packs (16 or 24) to keep samples per optimizer step; a recipe decision for the
-   workload owner.
-3. Flash attention backend: root-cause the 2.7x gradient (the varlen kernel itself is exact).
-4. Second stack exit criterion: one kernel accepted on HF TRL through the same gates.
-
-## State at pause (all committed; last commit 5af40231)
-
-* Packing ACCEPTED by the workflow on its own (run wf_01fab37a-6da): +258.11%, Validate +256.75%
-  (3,042.3 vs 839.2 useful tok/s/GPU at 7B). Bundle: `runs/finalize_bundle_1009_pack`.
-* Tests all pass, preflight GO.
-* Still uncommitted and NOT mine: the 09-24 agent changes to bench_train.sh, build_task_dir.py,
-  capture_train_shapes.py, l0_gate.py, rocm_compat.py, and the untracked capture_mlp_fc1_swiglu.py.
+## Decisions waiting on the user / workload owner
+1. GBS after packing: 16 (as in the descriptor), 24, or 64 packs.
+2. Whether the reference recipe should drop dropout to the model's own 0.0.
+3. Review of the uncommitted agent changes (09-24 batch + knowledge/critical_path.md from 10-09).
