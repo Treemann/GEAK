@@ -135,6 +135,16 @@ def main():
     ok(snap.get("lr") == "0.0", f"a repeated flag records the LAST value, as argparse uses (got {snap.get('lr')})")
     ok(snap.get("hf-fsdp") == "full_shard", f"`--flag=value` is captured too (got {snap.get('hf-fsdp')})")
 
+    # NO SECOND COPY. trajectory_gate.py kept its own literal implementation set and missed v4's keys,
+    # so L1 refused every overlap/recompute lever as "a different workload". It must import the one
+    # definition; a literal set of implementation keys there is exactly the defect returning.
+    tg = open(os.path.join(SCRIPTS, "trajectory_gate.py")).read()
+    ok("from probe_summarize import IMPL_KEYS" in tg and 'IMPL = {"attention-backend"' not in tg,
+       "trajectory_gate imports IMPL_KEYS instead of keeping its own copy")
+    ok(any(isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "IMPL_KEYS"
+           for n in ast.parse(open(os.path.join(SCRIPTS, "probe_summarize.py")).read()).body),
+       "IMPL_KEYS is defined at MODULE level in probe_summarize, where it can be imported")
+
     print()
     if fails:
         print(f"{fails} check(s) FAILED")

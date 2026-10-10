@@ -45,6 +45,8 @@ import os
 import statistics
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # probe_summarize, for IMPL_KEYS
+
 
 def _series(probe_dir, rank=0):
     """loss/grad_norm are global (already reduced across DP), so one rank carries the trajectory."""
@@ -409,12 +411,13 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
     # Compare WORKLOAD IDENTITY only. A candidate is supposed to change the implementation; requiring
     # the whole config to match refuses every backend swap as "incomparable" without ever looking at
     # the trajectory -- which is the evidence that actually decides whether the swap is safe.
-    # SECOND COPY of probe_summarize.py's filter -- keep the two in step. identity is the COMPLEMENT
-    # of IMPL here too, so an unlisted new key becomes workload identity and this returns "legs
-    # trained a different WORKLOAD" for every overlay candidate. snapshot_keys is record metadata and
+    # The implementation set is IMPORTED from probe_summarize -- it was a hand-kept second copy until
+    # 2026-10-10, missed v4's overlap/recompute/hf-fsdp keys, and refused every such config lever as
+    # "a different workload". snapshot_keys is record metadata and
     # belongs to neither half (a v2-vs-v3 pair is caught by digest_schema, with a remedy that says
     # RE-MEASURE rather than the impossible re-summarise).
-    IMPL = {"attention-backend", "GEAK_OVERLAY", "GEAK_OVERLAY_SHA"}
+    from probe_summarize import IMPL_KEYS          # the single definition; never copy it here again
+    IMPL = set(IMPL_KEYS)
     META = {"snapshot_keys"}
     ident = lambda c: {k: v for k, v in (c or {}).items()
                        if k not in IMPL and k not in META and not k.startswith("NVTE_")}
@@ -422,9 +425,11 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
         return {"pass": False, "reason": "legs trained a different WORKLOAD (batch/seq/mapping/data "
                                          "differ); step-aligned trajectories are not comparable",
                 "checks": {}}
-    impl_delta = {k: (v, (cs.get("config") or {}).get(k))
-                  for k, v in (rs.get("config") or {}).items()
-                  if (k in IMPL or k.startswith("NVTE_")) and (cs.get("config") or {}).get(k) != v}
+    # Over the UNION of both legs' keys: a lever that only the candidate passes (--overlap-grad-reduce)
+    # is absent from the reference, and iterating the reference alone reported an empty delta for it.
+    rc, cc = rs.get("config") or {}, cs.get("config") or {}
+    impl_delta = {k: (rc.get(k), cc.get(k)) for k in sorted(set(rc) | set(cc))
+                  if (k in IMPL or k.startswith("NVTE_")) and rc.get(k) != cc.get(k)}
     n = min(len(rs["loss"]), len(cs["loss"]))
     if n < 3:
         return {"pass": False, "reason": "fewer than 3 comparable steps", "checks": {}}

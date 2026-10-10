@@ -841,3 +841,22 @@ The same run's profile also re-ranks the config levers for the packed recipe: at
 micro-batches per step on DP 8) the DP grad all-reduce is **11.6% exposed, 0% overlapped** -- one
 ~300 ms collective per step that no kernel can hide. At GBS 64 unpacked it was 2–3% and comm overlap
 measured no win; at GBS 16 packed it is the largest remaining lever. Next to measure.
+
+### Comm overlap on the packed recipe: still no win, and an L1 defect it exposed (2026-10-10)
+
+`--overlap-grad-reduce --overlap-param-gather` on `qwen2_5_math_7b_packed.env` (GBS 16), two
+candidate legs against the two null legs: paired **−0.76 to −0.96%** against bands of 0.88–0.96%,
++778 MB. The profile's 11.6% exposed all-reduce is not recoverable this way here: with 2
+micro-batches per step the bucketed reduce can only overlap the last micro-batch's backward, and on
+this stack the overlapped collective appears to slow the compute it overlaps. Not a lever on this
+recipe either; recorded so it is not re-run.
+
+**The defect it exposed is worth more than the measurement.** L1 refused both legs as "a different
+WORKLOAD". `trajectory_gate.py` kept a hand-maintained SECOND COPY of the implementation-key set,
+and v4 had updated `probe_summarize` and not it -- so every overlap, recompute and hf-fsdp lever read
+as a workload change to L1. Combined with the rule that config levers must pass L1, every such lever
+was unacceptable by construction. The copy is gone: `IMPL_KEYS` is a module-level definition in
+`probe_summarize.py` that `trajectory_gate.py` imports, and `test_identity_keys.py` fails if a
+literal implementation set reappears. With it, both overlap legs pass L1 (step-1 loss identical) and
+the implementation delta is reported correctly (it iterated only the reference's keys and showed
+`{}` for flags only the candidate passes). Digests on disk unchanged.

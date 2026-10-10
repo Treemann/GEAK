@@ -182,6 +182,25 @@ def _step_shape(series_by_rank):
     return "variable" if _cv_pct(series_by_rank) > 1.0 else "fixed"
 
 
+# THE implementation half of a config snapshot -- the ONE definition. trajectory_gate.py imports it.
+# It used to keep a hand-maintained SECOND COPY, which v4 updated here and not there: L1 then
+# treated overlap-grad-reduce as WORKLOAD identity and refused every comm-overlap and recompute
+# candidate as 'a different workload' -- unacceptable by construction once config levers had to
+# pass L1. A key is implementation if it is listed here or starts with NVTE_.
+IMPL_KEYS = ("attention-backend", "GEAK_OVERLAY", "GEAK_OVERLAY_SHA",
+             # v4. A ConfigSweep run compared two comm-overlap legs and BOTH digests were
+             # identical, because no overlap-* key was captured or classified anywhere. Listing
+             # them here without capturing them in train_probe would fix nothing -- that is
+             # exactly the state `attention-backend` was in, named here and captured nowhere.
+             "overlap-grad-reduce", "overlap-param-gather",
+             # recompute changes HOW a step is computed, not what is trained, so it belongs in
+             # this half. It sat in the workload half until v4; the move is free because the
+             # flag is absent from every leg on disk.
+             "recompute-granularity", "recompute-method",
+             # HF's parallel strategy: HOW the step is computed, like the distributed optimizer.
+             "hf-fsdp")
+
+
 def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
     ranks = {}
     for p in sorted(glob.glob(os.path.join(dirpath, "probe_rank*.jsonl"))):
@@ -246,18 +265,6 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
     # GEAK_OVERLAY_SHA is IMPLEMENTATION, and listing it here is mandatory, not cosmetic: `identity`
     # is the COMPLEMENT of `impl`, so an unlisted new key silently becomes WORKLOAD IDENTITY and
     # every overlay candidate would be refused as "a different workload" before it could be gated.
-    IMPL_KEYS = ("attention-backend", "GEAK_OVERLAY", "GEAK_OVERLAY_SHA",
-                 # v4. A ConfigSweep run compared two comm-overlap legs and BOTH digests were
-                 # identical, because no overlap-* key was captured or classified anywhere. Listing
-                 # them here without capturing them in train_probe would fix nothing -- that is
-                 # exactly the state `attention-backend` was in, named here and captured nowhere.
-                 "overlap-grad-reduce", "overlap-param-gather",
-                 # recompute changes HOW a step is computed, not what is trained, so it belongs in
-                 # this half. It sat in the workload half until v4; the move is free because the
-                 # flag is absent from every leg on disk.
-                 "recompute-granularity", "recompute-method",
-                 # HF's parallel strategy: HOW the step is computed, like the distributed optimizer.
-                 "hf-fsdp")
     # Snapshot-format metadata is NEITHER half: it describes the record, not the run. It is excluded
     # from both digests and surfaces as digest_schema below.
     META_KEYS = ("snapshot_keys",)
