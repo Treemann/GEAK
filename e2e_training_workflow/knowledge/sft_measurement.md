@@ -806,3 +806,23 @@ a clean leg read as `captured 4, realized 4[geak-probe]...` and would have been 
 now stripped before comparing; over all 237 legs, 2 had a spliced line and only the one genuine
 mismatch is still flagged. Legs summarised before the fix carry the false entry in their
 `bench_summary.json` until re-summarised.
+
+### Packing and the recipe: what preserving samples-per-update costs (2026-10-10)
+
+After packing `--global-batch-size` counts packs (3.31 conversations each). The unpacked recipe runs
+64 conversations per optimizer step. Packed legs at three GBS, 7B, 30 iters, all ok and clean:
+
+| GBS (packs) | conversations / step | useful tok/s/GPU | vs GBS 64 | vs unpacked (839.2) |
+|---|---|---|---|---|
+| 64 | ~212 | 3,052 | — | 3.64x |
+| 24 | ~79 | 2,941 | −3.6% | **3.50x** |
+| 16 | ~53 | 2,875 | −5.8% | **3.43x** |
+
+The original 64 conversations per step sits between GBS 16 and 24. Keeping the recipe costs 4–6% of
+the packing gain -- fewer micro-batches amortise each optimizer step less -- and leaves 3.4–3.5x.
+
+**Not decided here; a recipe decision for the workload owner.** Recommendation, stated as one: GBS 16
+(53 conversations, the closer of the two to the original 64 without exceeding it) or GBS 24 (79,
+slightly above) if a larger effective batch is acceptable; GBS 64 only if a 3.3x larger batch is a
+deliberate change to the recipe. Learning rate was tuned for 64 conversations; a larger batch usually
+wants it revisited.
