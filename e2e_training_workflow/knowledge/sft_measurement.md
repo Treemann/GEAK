@@ -826,3 +826,18 @@ the packing gain -- fewer micro-batches amortise each optimizer step less -- and
 slightly above) if a larger effective batch is acceptable; GBS 64 only if a 3.3x larger batch is a
 deliberate change to the recipe. Learning rate was tuned for 64 conversations; a larger batch usually
 wants it revisited.
+
+### Kernel work on the packed stack: the first win is real GEMM efficiency (2026-10-10)
+
+Fast-mode run `wf_3593b41a-adb` on `qwen2_5_math_7b_packed.env` (36 agents, 0 errors, 2.9 h after a
+directory-scope fix). One head through the lane: `mlp_fc1_gemm` -- exact-shape hipBLASLt solution
+selection for fc1 forward/dgrad/wgrad plus an overlapped wgrad. Throughput **+1.601% paired** against
+a 0.25% band; L0 exactly as accurate as the incumbent on all four outputs. The run rejected it on the
+step-1 gradient probe (+64%); a control showed any accuracy-neutral 1-ulp fc1 forward solution moves
+that number 44–64% on this workload, so the probe was retired from voting (DECISIONS 3.4h) and the
+candidate re-gated to PASS. On padded data the kernel wins were padding wins; this one is not.
+
+The same run's profile also re-ranks the config levers for the packed recipe: at GBS 16 (2
+micro-batches per step on DP 8) the DP grad all-reduce is **11.6% exposed, 0% overlapped** -- one
+~300 ms collective per step that no kernel can hide. At GBS 64 unpacked it was 2–3% and comm overlap
+measured no win; at GBS 16 packed it is the largest remaining lever. Next to measure.

@@ -472,10 +472,24 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
         relg = 100 * abs(cs["grad_norm"][0] - rs["grad_norm"][0]) / abs(rs["grad_norm"][0])
         res["checks"]["step1_grad_norm_rel_pct"] = {"value": round(relg, 4), "limit": STEP1_GN_LIMIT_PCT,
                                                     "correct_impl_change_max_pct": 12.6}
+        # RETIRED FROM VOTING 2026-10-10: its null control failed on the packed reference workload.
+        # The control the Convergence Auditor asked for when it rejected mlp_fc1_gemm (+1.52%):
+        # perturb the REFERENCE's fc1 forward by an equally accurate GEMM solution and see whether
+        # step-1 grad_norm moves too. Three fwd solutions, everything else identical:
+        #   81426 (bit-identical to the heuristic)    141.97   (reference 139.9-141.8)
+        #   90114 (1 ulp on a few elements)            202.87   +44%
+        #   83027 (1 ulp, another kernel family)       227.51   +62%
+        #   90000 (the rejected candidate)             228-231  +64%
+        # Accuracy-neutral changes reach +64%; known defects start at 61%. No threshold separates
+        # them, so by the rule every gate is held to -- a null it must pass, a positive it must
+        # fail -- this cannot vote. Reported as an advisory; L0 owns op correctness.
+        res["checks"]["step1_grad_norm_rel_pct"]["blocking"] = False
         if relg > STEP1_GN_LIMIT_PCT:
-            failures.append(f"step-1 grad_norm differs by {relg:.2f}% (limit {STEP1_GN_LIMIT_PCT}%; correct "
-                            f"implementation changes measured up to 12.6%): the backward computed a grossly "
-                            f"different gradient on identical weights and an identical batch")
+            advisories.append(
+                f"step-1 grad_norm differs by {relg:.2f}% -- REPORTED, NOT BLOCKING: on the packed 7B "
+                f"workload an accuracy-neutral 1-ulp change to one forward GEMM moves it 44-64%, so "
+                f"this number cannot tell a defect from a different GEMM solution")
+
 
     # ---- check 2: per-step envelope ------------------------------------------------------------
     # Blocking ONLY if the band proved it can tell a kernel swap from nothing (calibrate() runs that
