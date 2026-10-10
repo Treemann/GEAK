@@ -1,16 +1,14 @@
 # Resume notes — updated 2026-10-10
 
 ## Running now
-Fast-mode kernel track on the PACKED 7B descriptor — run `wf_3593b41a-adb`, launched with
-`workloads/qwen2_5_math_7b_packed.env`, budget 2, max_gates 4, kernel_budget 3,
-baseline_dirs = the three packed null legs (`bench_qwen2_5_math_7b_packed_{nullA,nullB,gbs16}_*`),
-t0_epoch_ms 1791601614016. Question it answers: does kernel work still pay once padding is gone?
-(Every earlier kernel win was a padding win: +12.36% on padded data, +0.1-0.3% packed.)
+Fast-mode kernel track on the PACKED 7B descriptor, remaining heads -- run `wf_cc06b402-312`,
+`skip_heads: mlp_fc1_gemm` (already measured: +1.601% paired, L0/L1 PASS after re-gate), budget 2,
+max_gates 4, kernel_budget 3, same baseline_dirs as before, t0_epoch_ms 1791615479170.
+Requires `kernel_workflow/` in the session's directory scope (see RUN.md).
 
 If it must be stopped: `TaskStop` the workflow, then stop ONLY containers whose command is
-`/repo/e2e_training_workflow/scripts/bench_train.sh` (by ID — never `docker ps -q | xargs`), and
-never `pkill -f` a pattern that also matches the calling shell. Resume with
-`Workflow({scriptPath, resumeFromRunId: "wf_3593b41a-adb", args: <same args>})`.
+`/repo/e2e_training_workflow/scripts/bench_train.sh` (by ID), and never `pkill -f` a pattern that
+also matches the calling shell. Resume with `resumeFromRunId: "wf_cc06b402-312"` and the same args.
 
 ## Done since the last pause (all committed)
 * Kernel stack on packed data: +0.08-0.28%, no_win -> kernel wins were padding wins.
