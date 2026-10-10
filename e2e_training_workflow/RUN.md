@@ -280,3 +280,19 @@ bash scripts/bench_train.sh --stack hf_trl --workload workloads/qwen2_5_math_7b.
   exactly this reason; per-leg medians put two identical HF runs 1.15% apart.
 * Compare stacks only same-code, same-day, same recipe (dropout, master-weight precision). An old
   Megatron leg once made HF look 1.8x "better" in loss for reasons that had nothing to do with HF.
+
+## The session must be able to read `kernel_workflow/` (found 2026-10-10)
+
+The kernel track calls `kernel_workflow/kernel_lane.js` as a child workflow, and the runtime only loads
+a child script from the session's working directory or a directory added to it. A session started IN
+`e2e_training_workflow/` cannot see its sibling, and the run dies at the first lane call -- after an
+hour of Setup, Profile and Strategize. Either start the session one level up (`GEAK-claude/`), or add
+the directory: `/add-dir ../kernel_workflow`, or in `.claude/settings.local.json`:
+
+```json
+{"permissions": {"additionalDirectories": ["/abs/path/to/GEAK-claude/kernel_workflow"]}}
+```
+
+(The first attempt to fix this normalised the `..` out of the path, commit 8ffdaa71. That was a wrong
+diagnosis: the normalised path was refused identically. The normalisation is kept because it is
+harmless and makes the path readable in logs; the fix is the directory.)
