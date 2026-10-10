@@ -1202,3 +1202,26 @@ read **12.6% apart**; even without the embedding they are 4–8% apart. So:
 Kernel-level backward equivalence PASSES (bit-identical). The boundary-target semantics are a real,
 separate issue (each conversation's last token is trained toward the next `<|im_start|>`, 10–13 nats
 each) and must be masked before packing is used for training.
+
+### The flash backend: the attention OP is correct; the model-level gap is unexplained (2026-10-10)
+
+`scripts/tests/check_te_attention_l0.py` runs TE's `DotProductAttention` directly -- THD, GQA 28/4,
+d128, pack 0's real segment lengths and a single 4096 segment -- under each backend, against an
+independent fp32 reference:
+
+| backend | dq / dk / dv rel. error vs fp32 | grad-norm ratio vs fp32 |
+|---|---|---|
+| fused | 0.63–0.65% | 0.9945 |
+| flash | **0.25–0.30%** | **1.0000** |
+
+TE's flash attention is correct at op level, and more accurate than fused. So the 2.7x lower TOTAL
+step-1 grad_norm of Megatron's flash path is not the attention kernel. "Flash's backward is broken"
+overstated it; the accurate statement is **an unexplained model-level gradient difference, with the
+attention op ruled out.** Total step-1 grad_norm is ~99% the embedding gradient, which moves 12.6%
+between two correct implementations, so a large but benign shift is not excluded either -- though
+2.7x is far outside anything a correct change has shown.
+
+Time-boxed here. Settling it needs per-parameter step-1 gradients from Megatron, which the
+distributed optimizer shards. Flash stays quarantined: the reference runs fused, the attention-
+backend lever measured no win anyway (−0.73%, inconclusive), and L1's step-1 gradient probe rejects
+flash at 60.7%. Revisit if anyone needs flash on this stack.
