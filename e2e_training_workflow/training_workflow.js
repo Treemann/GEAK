@@ -49,7 +49,20 @@ const STACK = A.stack || 'megatron';
 const GPU_IDS = String(A.gpu_ids || '0,1,2,3,4,5,6,7').split(',').map((s) => s.trim()).filter(Boolean);
 const NPROC = parseInt(A.nproc != null ? A.nproc : GPU_IDS.length, 10);
 const ITERS = parseInt(A.iters != null ? A.iters : 40, 10);
-const KERNEL_WF_DIR = (A.kernel_workflow_dir || `${WORKFLOW_DIR}/../kernel_workflow`).replace(/\/+$/, '');
+// Collapse `.` and `..` segments. The runtime only loads a child scriptPath it can verify as readable,
+// and it did not accept `<wf>/../kernel_workflow/kernel_lane.js` even though the normalized path is a
+// readable file: a packed-stack fast run (wf_3593b41a-adb) died at the first lane call after five
+// agents of good work. Pure string handling -- the sandbox has no path module.
+function normPath(p) {
+  const out = [];
+  for (const seg of String(p).split('/')) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') { out.pop(); continue; }
+    out.push(seg);
+  }
+  return (String(p).startsWith('/') ? '/' : '') + out.join('/');
+}
+const KERNEL_WF_DIR = normPath(A.kernel_workflow_dir || `${WORKFLOW_DIR}/../kernel_workflow`);
 // Call the WORKER lane directly, not the dispatcher. kernel_workflow.js is a dispatcher: in
 // mode=optimize/author (the default) it is a pure pass-through that forwards every arg unchanged to
 // kernel_lane.js, and in mode=bakeoff it fans out to lanes itself. Either way it spends a nesting

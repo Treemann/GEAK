@@ -94,7 +94,10 @@ async function dryRun(args) {
     log: () => {},
     phase: (t) => calls.phases.push(t),
     agent: async (prompt) => { calls.agent++; return stubFor(prompt); },
-    workflow: async () => { calls.workflow++; return { eval_dir: '/work/exp', final_patch: 'p', final_geomean: 2.0 }; },
+    workflow: async (ref) => {
+      calls.workflow++; calls.lanePaths = (calls.lanePaths || []).concat([ref && ref.scriptPath]);
+      return { eval_dir: '/work/exp', final_patch: 'p', final_geomean: 2.0 };
+    },
     parallel: async (thunks) => Promise.all(thunks.map((t) => t())),
     pipeline: async (items, ...stages) => Promise.all(items.map(async (it) => {
       let v = it; for (const s of stages) v = await s(v, it, 0); return v;
@@ -124,6 +127,10 @@ async function dryRun(args) {
       `every phase runs: ${calls.phases.join(' -> ')}`);
     ok(result && result.status, `a result is assembled (status=${result.status})`);
     ok(!calls.phases.includes('ConfigSweep'), 'fast mode does NOT enter ConfigSweep');
+    // The runtime refuses a child scriptPath it cannot verify as readable, and it refused one that
+    // contained `..` -- killing a 7B run at its first lane call after five agents of good work.
+    ok((calls.lanePaths || []).length > 0 && calls.lanePaths.every((p) => p && !/(^|\/)\.\.?(\/|$)/.test(p)),
+      `lane scriptPath is normalized, no '.' or '..' segments (${(calls.lanePaths || [])[0]})`);
   } catch (e) {
     ok(false, `fast mode threw: ${e && e.message}`);
   }
