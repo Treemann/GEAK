@@ -860,3 +860,27 @@ was unacceptable by construction. The copy is gone: `IMPL_KEYS` is a module-leve
 literal implementation set reappears. With it, both overlap legs pass L1 (step-1 loss identical) and
 the implementation delta is reported correctly (it iterated only the reference's keys and showed
 `{}` for flags only the candidate passes). Digests on disk unchanged.
+
+### Two kernels accepted on the packed stack: +7.19% validated (2026-10-10, run wf_cc06b402-312)
+
+Fast mode on `qwen2_5_math_7b_packed.env`, fc1 skipped (measured the run before). 71 agents, 0
+errors, 5.8 h. Two heads through the lane, both accepted:
+
+| head | gate delta (paired) | L0 | L1 |
+|---|---|---|---|
+| `rope_fused_qk` | **+3.89%** vs band 0.38% | PASS; forward ~3x MORE accurate than the original (fp32 throughout, one rounding) | PASS; step-1 loss +0.044% (kernel_swap limit 2%), grad_norm +13.9% reported only |
+| `swiglu_bwd_fwd_bw` | **+3.15%** vs band 0.25% | PASS; errors equal to the original's | PASS |
+
+**Validate: 2,874.2 -> 3,081.8 useful tok/s/GPU, +7.19%, confirmed**, and the assembled bundle
+(`runs/finalize_bundle_1010_rope_swiglu`) engages both overlays forward and backward on 8/8 ranks
+for 30/30 steps with no fallback. These are compute-efficiency wins, not padding wins -- the first
+of their kind on this workload apart from fc1 (+1.60%, re-gated, not yet in a bundle).
+
+Cumulative against the original unpacked reference (839.2), at the recipe-preserving GBS 16:
+**3,081.8 / 839.2 = 3.67x**.
+
+The retired step-1 gradient probe reported +13.9% on rope and did not vote; at the old 10% limit it
+would have rejected a kernel that is three times more accurate than what it replaces.
+
+Remaining queue on this profile: `mlp_fc1_wgrad` (14.2% share, +1.52% expected), `mlp_fc2_gemm`
+(20.4%), and fc1 to be stacked with the two accepted overlays.
