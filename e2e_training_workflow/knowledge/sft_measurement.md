@@ -1057,3 +1057,40 @@ its own fp32 wgrad). Queue exhausted in 3.9 h:
 * attn compiles its CK instances under its own `build/ckfa`.
 
 No combined seven-kernel bundle exists; `measure_packed_stack.sh` is the reproducible recipe.
+
+### Profile ON the seven-kernel stack (2026-10-13)
+
+**How it was taken.**
+* `measure_packed_stack.sh --conds s7 --reps 1 --name pprof --profile 12:13` (leg
+  `runs/pprof_1013_162241_s71`). This is a profiler leg, not a throughput leg.
+* Rank 0 window: 4,673 ms span, 4,615 ms busy, idle 1.2%.
+
+**What it showed first: the instrument was wrong for multi-stream steps.**
+* Kernel time summed to 129% of the span. The side-stream fc1 wgrad (224 fp32-accumulate `addmm`
+  calls, 1,316 ms) read 28.2% "critical path share", yet the main stream was busy under all but
+  3.3% of it.
+* Fixed in `parse_train_profile.py` (DECISIONS 4.16): side-stream kernels count only their exposed
+  time.
+
+**Corrected critical-path ranking** (main stream = stream 4, 4,454 ms busy):
+
+| item | share | note |
+|---|---|---|
+| GEMMs on the main stream (fc1/fc2/o_proj/qkv fwd+dgrad, lm-head, fp32-out wgrads) | ~75% | 125–175 TFLOP/s each (e.g. fc1 fwd 1.11 TFLOP in 6.4 ms = 174 TFLOP/s) |
+| exposed DP grad all-reduce | **7.4%** | 0% overlapped; overlap levers measured −0.8% on this recipe (above) |
+| CK attention fwd+bwd | 5.3% | already the accepted CK kernel |
+| side-stream exposure (fc1 wgrad tail, lm-head second stream) | ~3.5% | |
+| optimizer / grad-norm / zero-fill on the 7.6 G-element fp32 buffer | ~2.6% | |
+| RMSNorm bwd | 1.8% | |
+| swiglu fwd+bwd, residual+dropout | ~1.7% | |
+
+**Reading.**
+* The kernel queue is exhausted for a reason. Every remaining head is either a GEMM already on a
+  tuned hipBLASLt solution, or under 2%.
+* The two items that are not kernels:
+  * the exposed all-reduce (7.4%, and growing as compute shrinks);
+  * GBS. At GBS 64 the same collective is amortized over 4x the tokens. The GBS trade-off (3.64x vs
+    3.43x on the bare stack) is now worth more, because kernels made compute shorter. This is still
+    the workload owner's call.
+* The next kernel-side gain would have to come from GEMM efficiency itself, beyond solution
+  selection, which is outside what the overlays do today.

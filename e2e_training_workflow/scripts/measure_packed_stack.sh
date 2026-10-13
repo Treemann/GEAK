@@ -30,16 +30,18 @@
 # changes; the kernel bytes L0 judged are copied verbatim and their sha256 printed.
 #
 # Usage: measure_packed_stack.sh [--conds ref,s3,s4,s5 | ref,s5,s6,s7] [--reps 3] [--iters 30] [--name pstack]
+#                                [--profile 12:13]   (profiler window on ranks 0,4: NOT a throughput leg)
 set -euo pipefail
 GEAK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_HOST="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
-CONDS="ref,s3,s4,s5"; REPS=3; ITERS=30; NAME=pstack
+CONDS="ref,s3,s4,s5"; REPS=3; ITERS=30; NAME=pstack; PROFILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --conds) CONDS="$2"; shift 2;;
     --reps) REPS="$2"; shift 2;;
     --iters) ITERS="$2"; shift 2;;
     --name) NAME="$2"; shift 2;;
+    --profile) PROFILE="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -142,7 +144,8 @@ EOF
     [ -n "$LIST" ] && EXTRA="GEAK_OVERLAY=$LIST TORCH_EXTENSIONS_DIR=$OVL_CTR/build"
     echo ">>> $(date +%H:%M:%S) leg $LEG -> $OUT_HOST"
     "$GEAK_ROOT/scripts/bench_train.sh" --workload "$WORKLOAD" --stack megatron --nproc 8 \
-      --iters "$ITERS" --out "$OUT_HOST" --tag "${NAME}_${LEG}" ${EXTRA:+--extra-env "$EXTRA"}
+      --iters "$ITERS" --out "$OUT_HOST" --tag "${NAME}_${LEG}" ${EXTRA:+--extra-env "$EXTRA"} \
+      ${PROFILE:+--profile-steps "$PROFILE" --profile-ranks 0,4}
   done
 done
 echo ">>> legs under $WORK_HOST/runs/${NAME}_${STAMP}_*  (overlays: $OVL_HOST)"

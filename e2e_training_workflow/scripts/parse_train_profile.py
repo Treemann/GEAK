@@ -100,6 +100,30 @@ def _subtract_ms(a, b):
     return total / 1000.0
 
 
+def _main_stream(kernels):
+    """The compute stream with the most busy time -- the step's critical path. None if unknown."""
+    by = defaultdict(list)
+    for k in kernels:
+        if k.get("stream") is not None and not COMM_PAT.search(k["name"]):
+            by[k["stream"]].append((k["ts"], k["ts"] + k["dur"]))
+    return max(by, key=lambda s: _union_ms(by[s])) if by else None
+
+
+def _side_stream_exposed_ms(kernels, main):
+    """Per kernel name: ms of its SIDE-stream calls not covered by any main-stream kernel.
+
+    A kernel on a side stream (an overlapped wgrad, a two-stream lm-head) only lengthens the step
+    where the main stream has nothing running -- the same rule as exposed comm. Summing its full
+    duration double-counts: on the 7-kernel packed stack the side-stream fc1 wgrad read 28% of the
+    span while the main stream was busy for all of it."""
+    main_iv = [(k["ts"], k["ts"] + k["dur"]) for k in kernels if k.get("stream") == main]
+    side = defaultdict(list)
+    for k in kernels:
+        if main is not None and k.get("stream") not in (None, main) and not COMM_PAT.search(k["name"]):
+            side[k["name"]].append((k["ts"], k["ts"] + k["dur"]))
+    return {n: _subtract_ms(iv, main_iv) for n, iv in side.items()}
+
+
 def load_trace(path):
     with open(path) as f:
         data = json.load(f)
@@ -141,11 +165,15 @@ def decompose(trace_path):
     busy_ms = _union_ms(comp + comm)
     idle_ms = max(0.0, span_ms - busy_ms)
 
-    agg = defaultdict(lambda: {"ms": 0.0, "calls": 0, "family": None, "shapes": None})
+    main = _main_stream(kernels)
+    side_exposed = _side_stream_exposed_ms(kernels, main)
+    agg = defaultdict(lambda: {"ms": 0.0, "calls": 0, "family": None, "shapes": None, "side_ms": 0.0})
     for k in kernels:
         a = agg[k["name"]]
         a["ms"] += k["dur"] / 1000.0
         a["calls"] += 1
+        if main is not None and k.get("stream") not in (None, main) and not COMM_PAT.search(k["name"]):
+            a["side_ms"] += k["dur"] / 1000.0
         if a["family"] is None:
             a["family"] = "comm" if COMM_PAT.search(k["name"]) else _family(k["name"])
         if a["shapes"] is None and k.get("ext") in shapes_by_ext:
@@ -156,11 +184,14 @@ def decompose(trace_path):
     topn = sorted(
         ({"kernel": n, "ms": round(v["ms"], 3), "calls": v["calls"], "family": v["family"],
           "pct_span": round(100 * v["ms"] / span_ms, 3) if span_ms else 0.0,
-          # THE ranking input: only the part on the critical path is recoverable. Compute kernels
-          # sit on it; a communication kernel only contributes its EXPOSED fraction.
-          "critical_path_share_pct": round(
-              100 * v["ms"] / span_ms * (exposed_ms / comm_ms if v["family"] == "comm" and comm_ms else 1.0), 3)
+          # THE ranking input: only the part on the critical path is recoverable. Main-stream compute
+          # kernels sit on it; a communication kernel only contributes its EXPOSED fraction, and so
+          # does a side-stream compute kernel (its time not covered by the main stream).
+          "critical_path_share_pct": round(100 * (
+              v["ms"] * exposed_ms / comm_ms if v["family"] == "comm" and comm_ms
+              else v["ms"] - v["side_ms"] + side_exposed.get(n, 0.0)) / span_ms, 3)
           if span_ms else 0.0,
+          "side_stream_ms": round(v["side_ms"], 3),
           "op": (v["shapes"] or {}).get("op"), "input_dims": (v["shapes"] or {}).get("dims")}
          for n, v in agg.items()),
         key=lambda d: -d["critical_path_share_pct"])
@@ -179,6 +210,7 @@ def decompose(trace_path):
             "comm_overlap_pct": round(100 * (1 - exposed_ms / comm_ms), 2) if comm_ms else None,
         },
         "kernels_total": len(kernels),
+        "main_stream": main,
         "top_n": topn[:25],
     }
 

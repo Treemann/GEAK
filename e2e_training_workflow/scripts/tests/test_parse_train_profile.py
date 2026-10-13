@@ -9,7 +9,9 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from parse_train_profile import _subtract_ms, _union_ms, config_diagnosis  # noqa: E402
+import json  # noqa: E402
+import tempfile  # noqa: E402
+from parse_train_profile import _subtract_ms, _union_ms, config_diagnosis, decompose  # noqa: E402
 
 fails = []
 def ok(cond, msg):
@@ -65,6 +67,24 @@ ok(d["verdict"] == "config_first" and "skew" in d["blocking"][0]["finding"],
 
 ok(all("READ-ONLY" in config_diagnosis({"exposed_comm_pct": x, "idle_pct": 0}, {}, 0)["note"]
        for x in (1, 50)), "the diagnosis always declares itself read-only (it never treats)")
+
+# ---- side streams: an overlapped kernel is NOT on the critical path (found on the 7-kernel stack) ----
+def _k(name, ts, dur, stream):
+    return {"cat": "kernel", "name": name, "ts": ts, "dur": dur, "args": {"stream": stream}}
+ev = [_k("main_gemm", 0, 1000, 7), _k("main_gemm", 1000, 1000, 7),          # main stream busy 0..2000
+      _k("side_wgrad", 100, 800, 9),                                          # fully hidden
+      _k("side_tail", 1800, 400, 9)]                                          # 200us past the main stream
+with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+    json.dump({"traceEvents": ev}, f)
+r = decompose(f.name)
+os.unlink(f.name)
+share = {t["kernel"]: t["critical_path_share_pct"] for t in r["top_n"]}
+ok(r["main_stream"] == 7, "the busiest compute stream is the main stream")
+ok(abs(share["main_gemm"] - 100 * 2.0 / 2.2) < 1e-3, "main-stream kernels count in full")
+ok(share["side_wgrad"] == 0.0, "a side-stream kernel fully covered by the main stream has ZERO share, "
+   "not its 36% of GPU time")
+ok(abs(share["side_tail"] - 100 * 0.2 / 2.2) < 1e-3, "a side-stream kernel counts only the part that "
+   "sticks out past the main stream")
 
 print(f"\n{len(fails)} FAILURE(S)" if fails else "\nall checks passed")
 sys.exit(1 if fails else 0)

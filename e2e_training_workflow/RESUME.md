@@ -33,9 +33,11 @@ Stacked re-measure `measure_packed_stack.sh --conds ref,s5,s6,s7 --reps 3` (legs
 outlier leg) -- analysed in `knowledge/gate_convergence.md` "Stacked correct kernels".
 
 **Next:**
-1. The packed-profile kernel queue is exhausted. Remaining levers: exposed grad all-reduce (6.3%,
-   0% overlap; overlap levers measured no-win earlier), and a re-profile ON the seven-kernel stack to
-   re-rank heads (the shares above are bare-reference shares).
+1. DONE: re-profiled ON the seven-kernel stack (`runs/pprof_1013_162241_s71`). It exposed and fixed a
+   profiler defect (side-stream kernels were counted as critical path; DECISIONS 4.16). Corrected:
+   main-stream GEMMs ~75%, exposed all-reduce 7.4%, nothing else above 5.3%. Kernel queue exhausted;
+   the open levers are GBS (owner decision, now worth more) and GEMM efficiency beyond solution
+   selection.
 2. L1: calibrate the strict sign rule's null on correct-implementation-change pairs (first sample:
    the 18 pstack cross pairs).
 3. A combined seven-kernel bundle (launch script + sums), modelled on `measure_packed_stack.sh`.
