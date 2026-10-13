@@ -8,22 +8,28 @@
 #   s2  -- rope_fused_qk + swiglu_bwd_fwd_bw      (bundle finalize_bundle_1010_rope_swiglu)
 #   s3  -- + mlp_fc1_gemm                          (gated 2026-10-10)
 #   s4  -- + lmhead_ce_dense_gemm                  (bundle finalize_bundle_1013_lmhead_dense)
-#   s5  -- + mlp_fc2_oproj_gemm                    (2026-10-13, inconclusive_noise: +1.78% in a 2.0% band)
+#   s5  -- + mlp_fc2_oproj_gemm                    (2026-10-13, inconclusive_noise: +1.78% in a 2.0% band;
+#                                                    stacked re-measure +1.74% -> win)
+#   s6  -- + attn_fmha_ck_varlen                   (bundle finalize_bundle_1013_attn_ck_varlen)
+#   s7  -- + qkv_lnlinear_gemm                     (2026-10-13, inconclusive_noise: +0.88% in a 1.22% band)
 # s<k> vs s<k-1> is that kernel's increment on the stack; s<k> vs ref is the total. Legs of one rep run
 # back to back in the --conds order, so node drift cannot align with condition.
 #
 # Overlay coexistence (checked 2026-10-13): targets are disjoint (rope: attention.apply_rotary_pos_emb,
 # swiglu: mlp.bias_swiglu_impl, fc1: TE _LayerNormLinear, lmhead: GPTModel._postprocess, fc2/o_proj:
-# TE _Linear). Each writes its proof next to its OWN manifest's engagement_out (fc1 needs the patch
+# TE _Linear, attn: TE FusedAttnFunc) except qkv, which also rebinds _LayerNormLinear and CHAINS: it
+# captures the binding current at its import as _PREV and delegates every non-QKV call to it, so it
+# must come AFTER fc1 in GEAK_OVERLAY (fc1 then handles the MLP call site, qkv the attention one). Each writes its proof next to its OWN manifest's engagement_out (fc1 needs the patch
 # below; the others match by __file__ or by their directory name in "replacement"). fc1 and fc2 both
 # ship gemm_select.py / lt_gemm.cpp: fc2 pins its gemm_select into sys.modules only while its kernel.py
-# loads, and the extensions are named fc1_lt_gemm / fc2oproj_lt_gemm.
+# loads (qkv pins its four helper modules the same way), and the extensions are named fc1_lt_gemm /
+# fc2oproj_lt_gemm / qkv_lt_gemm.
 #
 # WHY fc1's impl.py IS PATCHED (and why that does not ungate it): it writes its proof next to the FIRST
 # manifest in GEAK_OVERLAY, which stacked is rope's. Only impl.py -- the training-side rebind --
 # changes; the kernel bytes L0 judged are copied verbatim and their sha256 printed.
 #
-# Usage: measure_packed_stack.sh [--conds ref,s3,s4,s5] [--reps 3] [--iters 30] [--name pstack]
+# Usage: measure_packed_stack.sh [--conds ref,s3,s4,s5 | ref,s5,s6,s7] [--reps 3] [--iters 30] [--name pstack]
 set -euo pipefail
 GEAK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_HOST="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
@@ -38,12 +44,14 @@ while [ $# -gt 0 ]; do
   esac
 done
 for c in ${CONDS//,/ }; do
-  case "$c" in ref|s2|s3|s4|s5) ;; *) echo "unknown condition: $c" >&2; exit 2;; esac
+  case "$c" in ref|s2|s3|s4|s5|s6|s7) ;; *) echo "unknown condition: $c" >&2; exit 2;; esac
 done
 RS_BUNDLE="$WORK_HOST/runs/finalize_bundle_1010_rope_swiglu"
 LM_BUNDLE="$WORK_HOST/runs/finalize_bundle_1013_lmhead_dense"
+AT_BUNDLE="$WORK_HOST/runs/finalize_bundle_1013_attn_ck_varlen"
 FC1_SRC="$WORK_HOST/overlays/mlp_fc1_gemm_1010_054626"
 FC2_SRC="$WORK_HOST/overlays/mlp_fc2_oproj_gemm_1013_072624"
+QKV_SRC="$WORK_HOST/overlays/qkv_lnlinear_gemm_1013_145001"
 WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed.env"
 STAMP="$(date +%m%d_%H%M%S)"
 OVL_HOST="$WORK_HOST/overlays/${NAME}_$STAMP"
@@ -53,8 +61,8 @@ mkdir -p "$OVL_HOST/build"
 
 # ---- bundles: copy, then verify the installed bytes against the gated sums ---------------------
 cp -r "$RS_BUNDLE/overlays/rope_fused_qk" "$RS_BUNDLE/overlays/swiglu_bwd_fwd_bw" \
-      "$LM_BUNDLE/overlays/lmhead_ce_dense_gemm" "$OVL_HOST/"
-for B in "$RS_BUNDLE" "$LM_BUNDLE"; do
+      "$LM_BUNDLE/overlays/lmhead_ce_dense_gemm" "$AT_BUNDLE/overlays/attn_fmha_ck_varlen" "$OVL_HOST/"
+for B in "$RS_BUNDLE" "$LM_BUNDLE" "$AT_BUNDLE"; do
   ( cd "$OVL_HOST" && sha256sum -c --quiet "$B/SHA256SUMS.overlay" ) || {
     echo "!!! installed bytes differ from $B/SHA256SUMS.overlay -- refusing" >&2; exit 3; }
   echo ">>> bytes verified against $B/SHA256SUMS.overlay"
@@ -72,6 +80,12 @@ copy_overlay() {  # $1 src, $2 dest name
 }
 copy_overlay "$FC1_SRC" mlp_fc1_gemm
 copy_overlay "$FC2_SRC" mlp_fc2_oproj_gemm
+# qkv's gate dir carries its own sums (absolute paths): check the source, then the copy.
+sha256sum -c --quiet "$QKV_SRC/SHA256SUMS.overlay" || { echo "!!! $QKV_SRC differs from its sums" >&2; exit 3; }
+copy_overlay "$QKV_SRC" qkv_lnlinear_gemm
+( cd "$OVL_HOST/qkv_lnlinear_gemm" && sed "s#  $QKV_SRC/#  #" "$QKV_SRC/SHA256SUMS.overlay" | sha256sum -c --quiet ) || {
+  echo "!!! installed qkv bytes differ from the gated ones -- refusing" >&2; exit 3; }
+mkdir -p "$OVL_HOST/attn_fmha_ck_varlen/build"
 python3 - "$OVL_HOST/mlp_fc1_gemm/impl.py" <<'PY'
 import sys
 p = sys.argv[1]; s = open(p).read()
@@ -104,8 +118,10 @@ OVERLAYS=(
   "mlp_fc1_gemm|transformer_engine.pytorch.module.layernorm_linear:_LayerNormLinear|lnlinear_apply|fc1"
   "lmhead_ce_dense_gemm|megatron.core.models.gpt.gpt_model:GPTModel._postprocess|postprocess|lmhead"
   "mlp_fc2_oproj_gemm|transformer_engine.pytorch.module.linear:_Linear|linear_apply|fc2op"
+  "attn_fmha_ck_varlen|transformer_engine.pytorch.attention.dot_product_attention.backends:FusedAttnFunc|fused_attn_apply|attn"
+  "qkv_lnlinear_gemm|transformer_engine.pytorch.module.layernorm_linear:_LayerNormLinear|lnlinear_apply|qkv"
 )
-n_overlays() { case "$1" in ref) echo 0;; s2) echo 2;; s3) echo 3;; s4) echo 4;; s5) echo 5;; esac; }
+n_overlays() { case "$1" in ref) echo 0;; s2) echo 2;; s3) echo 3;; s4) echo 4;; s5) echo 5;; s6) echo 6;; s7) echo 7;; esac; }
 
 for i in $(seq 1 "$REPS"); do
   for MODE in ${CONDS//,/ }; do

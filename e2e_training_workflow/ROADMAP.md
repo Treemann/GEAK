@@ -344,8 +344,17 @@ in a noisy 2.0% band). The interleaved stacked re-measure (`measure_packed_stack
 * fc2_oproj: +1.74% on top of that, with a 0.13–0.18% per-step IQR. That resolves its noise verdict
   as a win.
 
-L1 passes on every stacked pair. Next heads: `lmhead_wgrad_reselect`, `attn_fmha_ck_varlen`,
-`qkv_lnlinear_gemm`. Exposed comm (6.7%, 0% overlap) is now the largest single non-GEMM item.
+L1 passes on every stacked pair.
+
+**Seven stacked (2026-10-13): +20.7%** over the packed reference, **4.12x** the unpacked reference
+(2,866 -> 3,460 useful tok/s/GPU).
+* Fast run `wf_def62c9e-e34` accepted `attn_fmha_ck_varlen` (+4.27% validated). It returned
+  `qkv_lnlinear_gemm` as inconclusive_noise.
+* On the stack, attn adds **+5.25%** and qkv **+1.05%** (per-step IQR 0.18% on its quiet reps).
+* L1 has one false reject (a single outlier leg; see `knowledge/gate_convergence.md`). It shows the
+  strict sign rule's null was calibrated on same-implementation pairs only.
+* The packed-profile kernel queue is exhausted. The remaining non-GEMM item is exposed comm
+  (6.3%, 0% overlap).
 
 ## Month 2 — adaptation: other stacks, other cases, tuning
 

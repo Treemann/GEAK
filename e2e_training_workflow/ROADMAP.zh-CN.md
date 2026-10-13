@@ -297,7 +297,12 @@ kernel 优化只能缩短 `step_time`——剩下的 head 每个约值 1%。
 - fc2_oproj 在此基础上再加 +1.74%，逐步 IQR 只有 0.13–0.18%，原来的噪声判定由此确认为真实收益。
 - 所有叠加对比的 L1 均通过。
 
-下一批 kernel：`lmhead_wgrad_reselect`、`attn_fmha_ck_varlen`、`qkv_lnlinear_gemm`。暴露的通信（6.7%，零重叠）现在是 GEMM 之外占比最大的单项。
+**七者叠加（2026-10-13）：相对打包参考 +20.7%，相对未打包参考 4.12 倍**（2,866 → 3,460 useful tok/s/GPU）。
+
+- 快速模式运行 `wf_def62c9e-e34` 接受了 `attn_fmha_ck_varlen`（验证 +4.27%），`qkv_lnlinear_gemm` 判为 inconclusive_noise。
+- 叠加复测：attn 在已有栈上再加 **+5.25%**，qkv 再加 **+1.05%**（两次安静重复的逐步 IQR 均为 0.18%）。
+- L1 出现了一次误拒，原因是一条离群的测量腿，详见 `knowledge/gate_convergence.md`。这说明严格符号规则的零假设只用"同一实现"的对子校准过。
+- 打包 profile 上的 kernel 队列已经跑完。GEMM 之外剩下的最大单项是暴露的通信（6.3%，零重叠）。
 
 ## 四、第二个月：适配不同 case 与训练框架
 

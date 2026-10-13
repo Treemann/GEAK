@@ -1225,3 +1225,48 @@ Time-boxed here. Settling it needs per-parameter step-1 gradients from Megatron,
 distributed optimizer shards. Flash stays quarantined: the reference runs fused, the attention-
 backend lever measured no win anyway (−0.73%, inconclusive), and L1's step-1 gradient probe rejects
 flash at 60.7%. Revisit if anyone needs flash on this stack.
+
+### Stacked correct kernels: two L1 facts the stand-alone gates never saw (2026-10-13)
+
+The seven-kernel interleaved stack measurement (`measure_packed_stack.sh --conds ref,s5,s6,s7 --reps
+3`, legs `runs/pstack_1013_154204_*`; see `sft_measurement.md`) produced 12 legs of four
+implementations whose every kernel passed L0 on its own. Read as an L1 sample:
+
+**1. Step-1 grad_norm is a numerics hash, not a correctness signal.**
+* Values per condition (rank 0, reproducible within a condition to ~1%):
+  * ref 140.7
+  * s3 118.9
+  * s5 219.6 / 221.5
+  * s6 172.9 / 176.1
+  * s7 132.1 / 132.7
+* Step-1 loss agrees to 0.02% across all of them.
+* Correct changes therefore move it by up to **85%** (s3 -> s5), against the "12.6% max for a correct
+  change" recorded above and the 30% limit derived from it.
+* The probe is already advisory (4.15 / 2026-10-10). This retires the 30% figure as a threshold of
+  any kind: the field is reported only.
+
+**2. The strict early-loss sign rule fires more often on implementation-change pairs than on its
+calibrated null.**
+* Its 5.1% false-reject rate was measured on 693 SAME-implementation pairs.
+* Here, within-condition nulls fired **0/12** (sign balance 0.125–0.75).
+* Cross-condition pairs fired **3/18**:
+  * s6->s7: 2/9, both against leg s63.
+  * s5->s6: 1/9, s53->s62 at 0.0, the opposite direction.
+* Every firing traces to one leg whose early-window mean loss sits at the edge of its condition's
+  spread. Per-condition mean loss over steps 2-9: ref 2.99–3.06, s5 2.90–2.95, s6 2.89–3.02,
+  s7 2.93–3.02.
+* The window means show no systematic shift between conditions (s7−s6 = +0.03, inside the
+  within-condition spread). Late-window means and final losses show none either.
+* So the rep-3 failure of s7 vs s6 is a false reject, and the documented remedy (re-gate) clears it:
+  7/9 cross pairs pass.
+
+**The open problem this exposes.** A different-but-correct implementation decorrelates the
+bf16/dropout trajectory more than a re-run of the same implementation does. Two consequences:
+* The rule's real false-reject rate on correct kernels is higher than 5.1%. It is about 17% on these
+  correlated pairs, which is an upper-ish estimate because rows share legs.
+* A single-pair gate on a correct kernel has a fair chance of a false reject.
+
+The right null is "correct implementation change" pairs. These 18 cross pairs, and the
+`step1_grad_norm` table above, are its first sample. Until it is calibrated, a single strict-sign
+failure on a kernel with a clean L0 should be re-gated on a second pair before it is read as a
+defect. That is what the workflow's verdict text already says ("a re-gate is the remedy").

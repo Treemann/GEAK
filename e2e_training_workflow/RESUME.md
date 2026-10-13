@@ -1,4 +1,4 @@
-# Resume notes — updated 2026-10-10
+# Resume notes — updated 2026-10-13
 
 ## State (2026-10-10, after run wf_cc06b402-312 completed)
 Run `wf_cc06b402-312` finished: `rope_fused_qk` +3.89% and `swiglu_bwd_fwd_bw` +3.15% ACCEPTED,
@@ -24,13 +24,21 @@ first leg when the session's permission mode switched; it produced nothing and w
 (IQR 0.13-0.18% -> its inconclusive_noise resolves as a win), all five **+13.8%**, 3,264 useful
 tok/s/GPU, **3.89x** unpacked. L1 passes on every stacked pair. Details: `knowledge/sft_measurement.md`.
 
+**Done 2026-10-13:** fast-mode run `wf_def62c9e-e34` (skip the five + `lmhead_wgrad_reselect`, queue
+exhausted, 3.9 h): `attn_fmha_ck_varlen` ACCEPTED (+4.27% validated, bundle
+`runs/finalize_bundle_1013_attn_ck_varlen`); `qkv_lnlinear_gemm` inconclusive_noise (+0.88% in 1.22%).
+Stacked re-measure `measure_packed_stack.sh --conds ref,s5,s6,s7 --reps 3` (legs
+`runs/pstack_1013_154204_*`): attn +5.25% on the five, qkv +1.05% on top -> **seven kernels +20.7%,
+3,460 useful tok/s/GPU, 4.12x unpacked**. One L1 false reject (s7 vs s6 rep 3, strict sign rule, one
+outlier leg) -- analysed in `knowledge/gate_convergence.md` "Stacked correct kernels".
+
 **Next:**
-1. Unexplored heads: fast mode on the packed descriptor with `skip_heads:
-   mlp_fc1_gemm,rope_fused_qk,swiglu_bwd_fwd_bw,lmhead_ce_dense_gemm,mlp_fc2_oproj_gemm`
-   (candidates `lmhead_wgrad_reselect`, `attn_fmha_ck_varlen`, `qkv_lnlinear_gemm`). Note
-   `lmhead_wgrad_reselect` may overlap the accepted lmhead overlay (same `_postprocess` site): it
-   must be measured on top of it, not against the bare reference.
-2. No combined five-kernel bundle exists yet; `measure_packed_stack.sh` is the reproducible recipe.
+1. The packed-profile kernel queue is exhausted. Remaining levers: exposed grad all-reduce (6.3%,
+   0% overlap; overlap levers measured no-win earlier), and a re-profile ON the seven-kernel stack to
+   re-rank heads (the shares above are bare-reference shares).
+2. L1: calibrate the strict sign rule's null on correct-implementation-change pairs (first sample:
+   the 18 pstack cross pairs).
+3. A combined seven-kernel bundle (launch script + sums), modelled on `measure_packed_stack.sh`.
 
 **Where files go (user instruction, 2026-10-13):** development files in this repo; the run workspace
 stays at `/home/treemann/geak_train`. One-off debugging scripts are not added to the repo unless

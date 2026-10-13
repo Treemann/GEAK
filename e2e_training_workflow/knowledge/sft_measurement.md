@@ -987,3 +987,73 @@ Paired per-step ratios (`compare_legs.py`, same batches, per rep; IQR is the per
     restores the previous entry.
   * The C++ extensions have different names (`fc1_lt_gemm` / `fc2oproj_lt_gemm`).
   * A bundle shipping both must keep both properties.
+
+### Seven kernels stacked: +20.7% on the packed reference, 4.12x cumulative (2026-10-13)
+
+**The run.** Fast-mode run `wf_def62c9e-e34`, packed 7B, skipping the five accepted heads and
+`lmhead_wgrad_reselect` (same `_postprocess` site as the accepted lmhead overlay, which already does
+its own fp32 wgrad). Queue exhausted in 3.9 h:
+
+* `attn_fmha_ck_varlen` (CK varlen FMHA fwd+bwd with the incumbent's dropout mask reproduced):
+  **accepted**.
+  * Gate +3.55% paired, band 2.38%. Director-validated **+4.27%** (supersedes the gate figure).
+  * L0: the backward is numerically the incumbent's (dq/dk max_abs identical to 8 digits); the
+    forward is not bit-identical.
+  * L1 passes as kernel_swap.
+  * Bundle `runs/finalize_bundle_1013_attn_ck_varlen`.
+* `qkv_lnlinear_gemm` (QKV LayerNormLinear GEMMs + triton RMSNorm/dbias): **inconclusive_noise**.
+  +0.88% sat in a 1.22% band set by leg dispersion. L0 and L1 pass.
+
+**The stacked re-measure.**
+* `measure_packed_stack.sh --conds ref,s5,s6,s7 --reps 3`: s6 = s5 + attn, s7 = s6 + qkv.
+* 12 legs `runs/pstack_1013_154204_*`, all ok and clean.
+* Engagement is exact on every s7 leg, 8/8 ranks, 0 fallback:
+  * attn 1,680 fwd/bwd.
+  * qkv 1,680, delegating the 1,680 MLP calls down the chain to fc1.
+  * fc1 1,680, now with 0 delegated: qkv takes the attention call site.
+
+| useful tok/s/GPU | ref | s5 | s6 (+attn) | s7 (+qkv) |
+|---|---|---|---|---|
+| rep 1 | 2,859.8 | 3,262.0 | 3,434.6 | 3,470.2 |
+| rep 2 | 2,871.6 | 3,264.1 | 3,429.8 | 3,439.6 |
+| rep 3 | 2,865.2 | 3,263.5 | 3,439.3 | 3,469.2 |
+| peak reserved MB | 80,598 | 77,472 | 77,584 | 77,818 |
+
+| increment (paired, per rep) | rep 1 | rep 2 | rep 3 | ratio IQR |
+|---|---|---|---|---|
+| s5 vs ref | +13.73% | +13.73% | +13.88% | 0.7–1.4% (reproduces the earlier +13.8%) |
+| **s6 vs s5 (attn)** | **+4.56%** | **+5.49%** | **+5.53%** | 2.1–2.8% |
+| **s7 vs s6 (qkv)** | **+1.11%** | **+0.99%** | **+1.05%** | 0.18% / 1.72% / 0.18% |
+| s7 vs ref (all seven) | +21.24% | +20.27% | +21.55% | 2.9–3.9% |
+
+**Reading.**
+* **attn adds +5.25% per leg on the stack, more than its bare +4.27%.** The step is shorter, so the
+  saving is a larger fraction.
+  * Its per-step ratio IQR is wide (2–3%) because attention cost follows each step's pack
+    composition: a varlen kernel's saving is not a constant per step.
+  * The three per-leg ratios still agree within 0.3%.
+* **qkv resolves as a win: ~+1.05%.**
+  * On the two quiet reps the per-step IQR is 0.18%, 4x clear of the 0.25% floor.
+  * Rep 2's s7 leg was noisy (IQR 1.95%; per-leg ratio only +0.28%), but its paired estimate still
+    reads +0.99%. The paired estimator is what the gate uses.
+* **L1.**
+  * s6 vs s5 passes on all three same-rep pairs.
+  * s7 vs s6 passes on reps 1 and 2. Rep 3 FAILS on the strict early-loss sign rule (8/8 one-sided).
+  * The 9 cross pairs show it is the s63 leg: both failing cross pairs involve s63. No systematic
+    loss shift exists between s6 and s7 in the early window, late window, or final loss.
+  * Read as a false reject; the analysis is in `gate_convergence.md`, "Stacked correct kernels".
+* **Cumulative:** 2,865.5 -> 3,459.7 useful tok/s/GPU.
+  * **+20.7%** per-leg, +21.0% paired, over the packed reference.
+  * **3,459.7 / 839.2 = 4.12x** the original unpacked reference at GBS 16.
+  * Peak reserved memory is 2.7 GB/GPU below the reference.
+
+**Coexistence.**
+* qkv and fc1 both rebind TE `_LayerNormLinear.apply`. qkv was written to chain: at import it
+  captures the current binding as `_PREV` and delegates non-QKV calls to it.
+* So the order in `GEAK_OVERLAY` matters: fc1 must come before qkv, and `measure_packed_stack.sh`
+  fixes that order.
+* qkv pins its four helper modules (`gemm_select`, `bwd_overlap`, `rmsnorm_triton`, `dbias_triton`)
+  only while it loads. Its extension is `qkv_lt_gemm`.
+* attn compiles its CK instances under its own `build/ckfa`.
+
+No combined seven-kernel bundle exists; `measure_packed_stack.sh` is the reproducible recipe.
