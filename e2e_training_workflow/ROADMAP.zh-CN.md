@@ -284,7 +284,20 @@ kernel 优化只能缩短 `step_time`——剩下的 head 每个约值 1%。
 
 **已重排并运行（2026-10-10）：打包后的栈上有真实的 kernel 收益。** `rope_fused_qk` +3.89%、`swiglu_bwd_fwd_bw` +3.15% 被接受，合并验证为 **+7.19%**（2,874.2 → 3,081.8）；`mlp_fc1_gemm` +1.60% 已单独重新门控。在 GBS 16 下相对未打包参考累计 **3.67 倍**。
 
-**三者叠加（2026-10-13）：相对打包参考 +9.1%**（fc1 在 rope+swiglu 之上再加 +1.62–1.66%，完整保留了它单独的收益）：2,872 → 3,132 useful tok/s/GPU，相对未打包参考 **3.73 倍**。打包 profile 上的下一批方向：`mlp_fc1_wgrad`、`mlp_fc2_gemm`。
+**三者叠加（2026-10-13）：相对打包参考 +9.1%**（fc1 在 rope+swiglu 之上再加 +1.62–1.66%，完整保留了它单独的收益）：2,872 → 3,132 useful tok/s/GPU，相对未打包参考 **3.73 倍**。
+
+**五者叠加（2026-10-13）：相对打包参考 +13.8%，相对未打包参考 3.89 倍**（2,870 → 3,264 useful tok/s/GPU）。
+
+快速模式运行 `wf_6d27fb7e-e69` 的结果：
+- 接受了 `lmhead_ce_dense_gemm`：验证 +2.27%，显存 −4.65%。
+- `mlp_fc2_oproj_gemm` 判为 inconclusive_noise：+1.78%，落在因测量腿噪声而偏宽的 2.0% 噪声带内。
+
+随后用 `measure_packed_stack.sh` 做了交错叠加复测（12 条腿）：
+- lmhead 在 rope+swiglu+fc1 之上再加 +2.5%。
+- fc2_oproj 在此基础上再加 +1.74%，逐步 IQR 只有 0.13–0.18%，原来的噪声判定由此确认为真实收益。
+- 所有叠加对比的 L1 均通过。
+
+下一批 kernel：`lmhead_wgrad_reselect`、`attn_fmha_ck_varlen`、`qkv_lnlinear_gemm`。暴露的通信（6.7%，零重叠）现在是 GEMM 之外占比最大的单项。
 
 ## 四、第二个月：适配不同 case 与训练框架
 

@@ -334,7 +334,18 @@ and `swiglu_bwd_fwd_bw` +3.15% accepted, validated together at **+7.19%** (2,874
 
 **All three stacked (2026-10-13): +9.1%** over the packed reference (fc1 adds +1.62–1.66% on top of
 rope + swiglu, its full stand-alone gain): 2,872 -> 3,132 useful tok/s/GPU, **3.73x** the unpacked
-reference. Next heads on the packed profile: `mlp_fc1_wgrad`, `mlp_fc2_gemm`.
+reference.
+
+**Five stacked (2026-10-13): +13.8%** over the packed reference, **3.89x** the unpacked reference
+(2,870 -> 3,264 useful tok/s/GPU). Fast run `wf_6d27fb7e-e69` accepted `lmhead_ce_dense_gemm`
+(+2.27% validated, −4.65% memory). It returned `mlp_fc2_oproj_gemm` as inconclusive_noise (+1.78%
+in a noisy 2.0% band). The interleaved stacked re-measure (`measure_packed_stack.sh`, 12 legs) gives:
+* lmhead: +2.5% on top of rope + swiglu + fc1.
+* fc2_oproj: +1.74% on top of that, with a 0.13–0.18% per-step IQR. That resolves its noise verdict
+  as a win.
+
+L1 passes on every stacked pair. Next heads: `lmhead_wgrad_reselect`, `attn_fmha_ck_varlen`,
+`qkv_lnlinear_gemm`. Exposed comm (6.7%, 0% overlap) is now the largest single non-GEMM item.
 
 ## Month 2 — adaptation: other stacks, other cases, tuning
 

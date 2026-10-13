@@ -914,3 +914,76 @@ locate its own manifest (as swiglu already does); fc1's proof landed in its own 
 leg, and `kernel_src/` was copied verbatim (sha256 printed in the log). A bundle that ships fc1 with
 rope must carry that patch. Per-leg `impl_digest` values differ between reps because the manifest
 basenames differ per leg (they are part of impl_digest), not because the implementation does.
+
+### Five kernels stacked: +13.8% on the packed reference, 3.89x cumulative (2026-10-13)
+
+**The run.** Fast-mode run `wf_6d27fb7e-e69`, packed 7B, skipping the three accepted heads, 2 gates
+in 5.0 h, both heads measured against the BARE packed reference:
+
+* `lmhead_ce_dense_gemm` (dense lm-head GEMM + fused CE, fp32 `addmm` wgrad into `main_grad`):
+  **accepted**. Gate +2.25% paired, band 0.40%. Director-validated +2.27%. Peak reserved memory
+  −4.65%. L0 is equal to the original on every max_abs. L1 passes as both kernel_swap and overlay.
+  The audit's apparent late-loss drift is within the spread of 15 clean same-identity refs: the
+  candidate's late-window mean has z = +0.52, rank 10/16. The drift came from that session's ref
+  leg being low, not from the candidate.
+* `mlp_fc2_oproj_gemm` (hipBLASLt solution reselection for fc2 and o_proj, fwd/dgrad/wgrad):
+  **inconclusive_noise**, not no_win. +1.78% paired sat inside a 2.01% band, which was 8x the floor
+  because both legs were noisy (IQR 1.7% / 2.6%). L0 and L1 passed. The verdict asked for a quiet
+  re-measure.
+* Not reached (task budget): `lmhead_wgrad_reselect` (+1.51% expected), `attn_fmha_ck_varlen`
+  (+0.98%), `qkv_lnlinear_gemm` (+0.39%).
+
+**The stacked re-measure.**
+* Script: `scripts/measure_packed_stack.sh --conds ref,s3,s4,s5 --reps 3`. It generalizes
+  `measure_stack3.sh`, and conditions are cumulative.
+* Conditions: ref; s3 = rope + swiglu + fc1; s4 = s3 + lmhead; s5 = s4 + fc2_oproj.
+* 12 legs interleaved, legs `runs/pstack_1013_111120_*`.
+* All legs ok and clean.
+* Engagement is exact on every s5 leg, 8/8 ranks, with 0 fallback and 0 delegation. Per rank:
+  rope 3,360, swiglu and fc1 1,680, lmhead 60, fc2 and o_proj 1,680 each.
+
+| useful tok/s/GPU | ref | s3 | s4 (+lmhead) | s5 (+fc2_oproj) |
+|---|---|---|---|---|
+| rep 1 | 2,866.3 | 3,131.4 | 3,207.2 | 3,261.6 |
+| rep 2 | 2,870.2 | 3,124.8 | 3,206.5 | 3,266.6 |
+| rep 3 | 2,872.7 | 3,129.4 | 3,213.6 | 3,265.1 |
+| peak reserved MB | 80,598 | 80,892 | 77,178 | 77,472 |
+
+Paired per-step ratios (`compare_legs.py`, same batches, per rep; IQR is the per-step ratio's):
+
+| increment | rep 1 | rep 2 | rep 3 | ratio IQR |
+|---|---|---|---|---|
+| s3 vs ref (rope+swiglu+fc1) | +9.10% | +9.05% | +9.06% | 1.1–1.5% |
+| **s4 vs s3 (lmhead)** | **+2.51%** | **+2.49%** | **+2.55%** | 0.18–0.61% |
+| **s5 vs s4 (fc2_oproj)** | **+1.74%** | **+1.76%** | **+1.72%** | 0.13–0.18% |
+| **s5 vs ref (all five)** | +13.80% | +13.90% | +13.79% | 0.7–1.4% |
+
+**Reading.**
+* s3 reproduces the stack3 measurement (+9.1%).
+* lmhead adds slightly MORE on the stack (+2.5%) than against the bare reference (+2.27%). The rest
+  of the step got shorter, so its fixed saving is a larger fraction.
+* **fc2_oproj's quiet re-measure resolves it as a win.** On the stack it gives +1.74% with three
+  reps within 0.04% of each other and a per-step ratio IQR of 0.13–0.18%. That is 7x the 0.25% floor
+  and nowhere near its noise band. The workflow's `inconclusive_noise` (rather than no_win) was the
+  right call.
+* L1 (`trajectory_gate.py --kind kernel_swap`, packed band `baseline_packed7b_bands_1013`) passes
+  s4 vs s3 and s5 vs s4 on all three reps. That is in addition to each head's own L0/L1 against the
+  bare reference.
+* lmhead's memory saving carries over: −3.7 GB reserved per GPU at s4. fc2_oproj costs +294 MB.
+* **Cumulative: 2,869.7 → 3,264.4 useful tok/s/GPU = +13.75% per-leg (+13.8% paired) over the packed
+  reference, and 3,264.4 / 839.2 = 3.89x the original unpacked reference** at GBS 16.
+
+**Coexistence.**
+* Targets are disjoint:
+  * rope: `apply_rotary_pos_emb`
+  * swiglu: `bias_swiglu_impl`
+  * fc1: TE `_LayerNormLinear`
+  * lmhead: `GPTModel._postprocess`
+  * fc2/o_proj: TE `_Linear`
+* Each overlay writes its proof next to its own manifest. lmhead and fc2_oproj find their manifest
+  by their directory name, so they need no patch. fc1 still needs the patch from stack3.
+* fc1 and fc2_oproj both ship modules named `gemm_select` / `lt_gemm.cpp`:
+  * fc2_oproj pins its own `gemm_select` into `sys.modules` only while its `kernel.py` loads, then
+    restores the previous entry.
+  * The C++ extensions have different names (`fc1_lt_gemm` / `fc2oproj_lt_gemm`).
+  * A bundle shipping both must keep both properties.

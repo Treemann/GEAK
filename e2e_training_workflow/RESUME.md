@@ -10,13 +10,27 @@ reference (fc1 keeps its full +1.6% on top), 3,132 useful tok/s/GPU, **3.73x** t
 reference. Legs `runs/stack3_1013_031326_*`. (A first attempt on 10-12 was killed at step 11 of its
 first leg when the session's permission mode switched; it produced nothing and was re-run.)
 
+**Done 2026-10-13:** fast-mode run `wf_6d27fb7e-e69` (packed 7B, skip rope/swiglu/fc1, 2 gates, 5.0 h):
+* `lmhead_ce_dense_gemm` **ACCEPTED**: gate +2.25% paired (band 0.40%), Director-validated +2.27%
+  (2,874 -> 2,937 vs the BARE packed reference), peak reserved -4.65%. L0 equal-to-original; L1 pass as
+  kernel_swap and overlay. Bundle `runs/finalize_bundle_1013_lmhead_dense`.
+* `mlp_fc2_oproj_gemm` **inconclusive_noise**: +1.78% paired inside a 2.01% band (both legs noisy,
+  IQR 1.7% / 2.6%); L0 and L1 pass. Not a no_win -- needs a quiet re-measure.
+* Unexplored (task budget): `lmhead_wgrad_reselect` (exp. +1.51%), `attn_fmha_ck_varlen` (+0.98%),
+  `qkv_lnlinear_gemm` (+0.39%). Profile: exposed comm 6.7%, 0% grad all-reduce overlap.
+
+**Done 2026-10-13:** `scripts/measure_packed_stack.sh --conds ref,s3,s4,s5 --reps 3` (legs
+`runs/pstack_1013_111120_*`, 40 min): lmhead +2.5% on rope+swiglu+fc1, fc2_oproj +1.74% on top
+(IQR 0.13-0.18% -> its inconclusive_noise resolves as a win), all five **+13.8%**, 3,264 useful
+tok/s/GPU, **3.89x** unpacked. L1 passes on every stacked pair. Details: `knowledge/sft_measurement.md`.
+
 **Next:**
-1. Commit the doc edits for the stack3 result if not yet committed (`knowledge/sft_measurement.md`,
-   `ROADMAP.md`, `ROADMAP.zh-CN.md`, this file).
-2. Remaining packed-profile heads: `mlp_fc1_wgrad` (+1.52% expected), `mlp_fc2_gemm` -- a fast-mode
-   run on `workloads/qwen2_5_math_7b_packed.env` with `skip_heads: mlp_fc1_gemm,rope_fused_qk,swiglu_bwd_fwd_bw`.
-   Note: a fresh run measures heads against the BARE packed reference, so their deltas then need a
-   stacked re-measure like this one.
+1. Unexplored heads: fast mode on the packed descriptor with `skip_heads:
+   mlp_fc1_gemm,rope_fused_qk,swiglu_bwd_fwd_bw,lmhead_ce_dense_gemm,mlp_fc2_oproj_gemm`
+   (candidates `lmhead_wgrad_reselect`, `attn_fmha_ck_varlen`, `qkv_lnlinear_gemm`). Note
+   `lmhead_wgrad_reselect` may overlap the accepted lmhead overlay (same `_postprocess` site): it
+   must be measured on top of it, not against the bare reference.
+2. No combined five-kernel bundle exists yet; `measure_packed_stack.sh` is the reproducible recipe.
 
 **Where files go (user instruction, 2026-10-13):** development files in this repo; the run workspace
 stays at `/home/treemann/geak_train`. One-off debugging scripts are not added to the repo unless
