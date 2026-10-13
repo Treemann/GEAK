@@ -5,14 +5,22 @@ Run `wf_cc06b402-312` finished: `rope_fused_qk` +3.89% and `swiglu_bwd_fwd_bw` +
 validated together at +7.19% (2,874.2 -> 3,081.8 useful tok/s/GPU); bundle
 `runs/finalize_bundle_1010_rope_swiglu`. Cumulative vs the unpacked reference at GBS 16: 3.67x.
 
-**Pending when Bash came back (the auto-mode safety classifier was unavailable for a stretch):**
-1. Commit the doc edits already on disk: `knowledge/sft_measurement.md`, `ROADMAP.md`,
-   `ROADMAP.zh-CN.md` (the two-kernel result), plus this file and `scripts/measure_stack3.sh`.
-2. Run `bash scripts/measure_stack3.sh` (~6 legs x ~4 min): ref / rope+swiglu / rope+swiglu+fc1,
-   interleaved, 2 reps -- does fc1 (+1.60% alone) add on top of the accepted stack? The script patches
-   ONLY fc1's impl.py proof path (rope and fc1 both wrote their proof next to the FIRST manifest and
-   would overwrite each other when stacked); kernel_src bytes are copied verbatim.
-3. Then the remaining packed-profile heads: `mlp_fc1_wgrad` (+1.52% expected), `mlp_fc2_gemm`.
+**Done 2026-10-13:** `measure_stack3.sh` -- rope + swiglu + fc1 stacked = **+9.1%** over the packed
+reference (fc1 keeps its full +1.6% on top), 3,132 useful tok/s/GPU, **3.73x** the unpacked
+reference. Legs `runs/stack3_1013_031326_*`. (A first attempt on 10-12 was killed at step 11 of its
+first leg when the session's permission mode switched; it produced nothing and was re-run.)
+
+**Next:**
+1. Commit the doc edits for the stack3 result if not yet committed (`knowledge/sft_measurement.md`,
+   `ROADMAP.md`, `ROADMAP.zh-CN.md`, this file).
+2. Remaining packed-profile heads: `mlp_fc1_wgrad` (+1.52% expected), `mlp_fc2_gemm` -- a fast-mode
+   run on `workloads/qwen2_5_math_7b_packed.env` with `skip_heads: mlp_fc1_gemm,rope_fused_qk,swiglu_bwd_fwd_bw`.
+   Note: a fresh run measures heads against the BARE packed reference, so their deltas then need a
+   stacked re-measure like this one.
+
+**Where files go (user instruction, 2026-10-13):** development files in this repo; the run workspace
+stays at `/home/treemann/geak_train`. One-off debugging scripts are not added to the repo unless
+needed.
 
 Stopping a run: `TaskStop` the workflow, then stop ONLY containers whose command is
 `/repo/e2e_training_workflow/scripts/bench_train.sh` (by ID), and never `pkill -f` a pattern that

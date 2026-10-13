@@ -332,6 +332,10 @@ queue must be re-ranked on the packed profile before any more lane time is spent
 and `swiglu_bwd_fwd_bw` +3.15% accepted, validated together at **+7.19%** (2,874.2 -> 3,081.8);
 `mlp_fc1_gemm` +1.60% re-gated separately. Cumulative vs the unpacked reference at GBS 16: **3.67x**.
 
+**All three stacked (2026-10-13): +9.1%** over the packed reference (fc1 adds +1.62–1.66% on top of
+rope + swiglu, its full stand-alone gain): 2,872 -> 3,132 useful tok/s/GPU, **3.73x** the unpacked
+reference. Next heads on the packed profile: `mlp_fc1_wgrad`, `mlp_fc2_gemm`.
+
 ## Month 2 — adaptation: other stacks, other cases, tuning
 
 Gated, as before: if the gates are not trustworthy, adapting the instrument multiplies the fiction

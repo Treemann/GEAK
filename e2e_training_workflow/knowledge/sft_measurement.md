@@ -884,3 +884,33 @@ would have rejected a kernel that is three times more accurate than what it repl
 
 Remaining queue on this profile: `mlp_fc1_wgrad` (14.2% share, +1.52% expected), `mlp_fc2_gemm`
 (20.4%), and fc1 to be stacked with the two accepted overlays.
+
+### fc1 stacks on top of rope + swiglu: three kernels, +9.1% (2026-10-13)
+
+`scripts/measure_stack3.sh`, packed 7B descriptor, three conditions interleaved, 2 reps (legs
+`runs/stack3_1013_031326_*`): ref (no overlay), s2 (rope + swiglu, the accepted bundle's bytes,
+sha256-verified), s3 (rope + swiglu + fc1, fc1's kernel bytes the ones L0 judged). All six legs ok,
+clean, `identity_vs_realized` empty. Engagement exact on every candidate leg, 8/8 ranks, 0 fallback:
+rope 26,880 = 8 x 30 x 112, swiglu and fc1 13,440 = 8 x 30 x 56 each.
+
+| leg | ref | s2 (rope+swiglu) | s3 (+fc1) |
+|---|---|---|---|
+| rep 1 useful tok/s/GPU | 2,874.8 | 3,080.4 | 3,131.6 |
+| rep 2 | 2,868.9 | 3,082.9 | 3,132.8 |
+
+* s2 vs ref: +7.15% / +7.46% -- reproduces the +7.19% Validate measured on 10-10.
+* **fc1's increment, s3 vs s2: +1.66% / +1.62% (cross pairs +1.70% / +1.58%)** -- it keeps its whole
+  stand-alone +1.60% when stacked; nothing overlaps.
+* **s3 vs ref: +8.93% / +9.20%, ~+9.1%.** Null pairs within condition: −0.21%, +0.08%, +0.04%.
+* Cumulative against the original unpacked reference (839.2) at GBS 16: **3,132 / 839.2 = 3.73x**.
+
+(Ratios here are of per-leg headlines. On the packed stack every step has the same shape, so they
+track the paired estimator closely -- for fc1 alone 1.514% per-leg vs 1.601% paired.)
+
+Stacking needed one change outside the gated kernel bytes: rope's and fc1's `impl.py` both wrote
+their per-call proof next to the FIRST manifest in `GEAK_OVERLAY`, so stacked they would have
+overwritten each other's `engagement_fused.json`. `measure_stack3.sh` patches only fc1's impl.py to
+locate its own manifest (as swiglu already does); fc1's proof landed in its own directory on every
+leg, and `kernel_src/` was copied verbatim (sha256 printed in the log). A bundle that ships fc1 with
+rope must carry that patch. Per-leg `impl_digest` values differ between reps because the manifest
+basenames differ per leg (they are part of impl_digest), not because the implementation does.
