@@ -1,7 +1,21 @@
 # e2e_training_workflow — End-to-End LLM SFT Training-Throughput Optimizer (AMD Instinct MI GPUs)
 
 A second system layer over the **UNCHANGED** single-kernel `kernel_workflow`, aimed at **SFT training
-throughput** instead of serving throughput. Same fractal two-altitude doctrine as `../e2e_workflow/`,
+throughput** instead of serving throughput.
+
+**Where it stands (2026-10-14), Megatron, Qwen2.5-Math-7B, 8x MI308X:**
+* Useful throughput went **839 -> 3,460 tok/s/GPU (4.12x)**.
+* Packing gives 3.42x. It was accepted by `deep` mode through a structural gate.
+* Seven kernels stacked on top give **+20.7%** (`knowledge/sft_measurement.md`).
+
+Every number is useful (non-pad, loss-unmasked) tokens, paired against an interleaved reference.
+
+What is NOT established yet:
+* Long-horizon training quality of the seven-kernel stack. L1 judges 30 steps only.
+* A single deployable bundle for all seven.
+* Any accepted kernel on the second stack (HF TRL).
+
+Priorities: `ROADMAP.md`, "Near-term priorities". Same fractal two-altitude doctrine as `../e2e_workflow/`,
 but the metric, the bottleneck model and the correctness gate are different enough that it is a
 separate workflow rather than a mode of the inference one.
 
@@ -13,16 +27,18 @@ separate workflow rather than a mode of the inference one.
 |---|---|---|
 | headline | serving tok/s | **useful** (non-pad, loss-unmasked) tok/s/GPU |
 | bottleneck model | `pct_gpu_time x achievable_speedup` | **critical-path share** — a fully overlapped collective is worth zero |
-| correctness | byte-identical greedy output | **L0** (fwd+bwd numerics) + **L1** (trajectory envelope) |
+| correctness | byte-identical greedy output | **L0** (fwd+bwd op numerics vs a frozen oracle) + **L1** (step-1 forward probe + strict early sign rule; the per-step envelope and step-1 grad_norm are advisory) |
 | concurrency | lanes and the serving slot coexist | **a gate needs the whole box** — lanes drain first |
 | scarce resource | agent time | **gates** (one A/B = two job launches, exclusive) |
-| noise band | 2-3% | **measured 0.12-0.13%** |
+| noise band | 2-3% | **paired per-step ratio; across-job floor 0.25% at 7B** (measured on null pairs) |
 
 **`DECISIONS.md` records every framework-level choice with the measurement that forced it.**
 `PLAN.md` carries the narrative; `RUNBOOK.md` the commands.
 
 ## Measured facts this design rests on
-All from 8x MI308X (gfx942), `rocm/primus:v26.4`, bare Megatron `pretrain_gpt.py --sft`.
+All from 8x MI308X (gfx942), `rocm/primus:v26.4`, bare Megatron `pretrain_gpt.py --sft`. These are
+the facts the design was built on (September). Later ones that changed it are summarised at the end of
+this list and recorded in `DECISIONS.md`.
 
 - **71.6% of tokens are padding** on the reference workload: the stack-conventional nominal tokens/s
   overstates useful work by **3.5x**. Hence the headline counts `loss_mask.sum()`.
@@ -40,6 +56,17 @@ All from 8x MI308X (gfx942), `rocm/primus:v26.4`, bare Megatron `pretrain_gpt.py
 - **The top head by critical path is a BACKWARD kernel** (`FusedAttnFuncBackward`, 21.5%), which is
   why an extracted task is fwd+bwd or it is nothing.
 
+Later measurements that changed the design:
+- **Per-leg medians are not a valid estimator.** Window placement alone made +4.59%, and two
+  identical HF legs read 1.15% apart. The gate reads a PAIRED per-step ratio over the same batches.
+- **The per-step envelope cannot discriminate** under bf16 chaos: out-of-sample null legs fail it.
+  It is advisory. Step-1 grad_norm moves up to 85% between correct implementations and is advisory
+  too.
+- **Every kernel win on the padded workload was a padding win.** Packing (3.42x, 1% padding) erased
+  the old +12.36% stack. The packed profile is ~75% dense GEMM.
+- **Overlays use side streams.** A side-stream kernel is on the critical path only where the main
+  stream is idle (DECISIONS 4.16).
+
 ## Layout
 ```
 training_workflow.js          orchestration: fast/deep modes, lane/gate barrier, gate arithmetic,
@@ -48,23 +75,32 @@ roles/                        6 agent prompts (director, architect, profiler, ex
                               convergence auditor, integrator)
 knowledge/                    the doctrine, carrying measured numbers rather than advice
 scripts/bench_train.sh        stack-neutral dispatcher: lifecycle, occupancy guard, hang watchdog
-scripts/adapters/megatron.sh  the ONLY framework-specific layer (+ capability manifest)
+scripts/adapters/megatron.sh  framework adapter: Megatron-LM --sft + TE (+ capability manifest)
+scripts/adapters/hf_trl.sh    framework adapter: HF Transformers + TRL (hf_sft.py; FSDP at 7B)
 scripts/train_probe.py        torch-level probe: steps, useful tokens, memory, grad norm, profiler
 scripts/probe_summarize.py    policy: warmup detection, steady window, dispersion, config digest
 scripts/parse_train_profile.py  step decomposition + Top-N + the read-only config diagnosis
-scripts/trajectory_gate.py    L1: calibrate a step-indexed envelope, then judge against it
+scripts/compare_legs.py       throughput delta: window-aligned + paired per-step ratio
+scripts/calibrate_band.py     across-job floor from null pairs
+scripts/trajectory_gate.py    L1: step-1 forward probe + strict sign rule (envelope advisory)
+scripts/pack_sft.py           packing (pure data transform) / pack_gate.py: its structural gate
+scripts/measure_packed_stack.sh  interleaved cumulative re-measure of the accepted packed stack
 scripts/capture_train_shapes.py  fwd+bwd capture -> immutable L0 oracle
 scripts/overlay_train.py      reversible rebind + per-half engagement proof
 scripts/gpu_occupancy.py      isolation guard for a shared node
 scripts/rocm_compat.py        ROCm/upstream patches + probe/capture install point
-workloads/*.env               pinned workload descriptors (config IR, descriptor role)
+workloads/*.env               pinned workload descriptors (config IR, descriptor role, floor);
+                              qwen2_5_math_7b_packed.env is the current reference
 ```
 
 ## Modes
 `fast` (default) = fixed config, kernel track only, bounded by wall clock **and** gate count.
-`deep` = adds ConfigSweep; **not implemented**, and it refuses to run rather than reporting a
-fast-mode result under a deep label. Its six integration hooks already exist in fast mode, so it is
-additive rather than a rewrite.
+`deep` = adds ConfigSweep (`deep_mode: "true"`, `config_levers`).
+* Class-A levers (overlap, recompute, attention backend) must pass L1.
+* Packing is the one Class-B lever with a gate (`pack_gate.py`).
+* GBS/MBS/seq stay refused in code.
+
+See `RUN.md` for both.
 
 ## Running the pieces today
 ```bash
@@ -79,17 +115,31 @@ python3 scripts/parse_train_profile.py <run>/probe <run>/bench_summary.json
 python3 scripts/trajectory_gate.py calibrate <probeA> <probeB> -o band.json
 python3 scripts/trajectory_gate.py compare <ref_probe> <cand_probe> --band band.json
 
-# tests (no GPU)
+# the accepted packed stack, interleaved and cumulative (ref, s5, s6 +attn, s7 +qkv)
+bash scripts/measure_packed_stack.sh --conds ref,s5,s6,s7 --reps 3
+
+# tests (no GPU; the .js ones need node)
 node scripts/tests/test_training_gate.js
-python3 scripts/tests/test_parse_train_profile.py
+node scripts/tests/test_workflow_dryrun.js
+for t in scripts/tests/test_*.py; do python3 $t; done
 ```
 
 ## Status
-Measurement, profiling, extraction, the overlay, both gates, and the deterministic orchestration are
-implemented and validated on real runs — including an identity-rebind overlay that proves forward and
-backward engagement separately at 0.109% throughput cost (inside the measured band). The agent phases are wired to the role prompts but have not been executed
-end to end: that needs the Workflow/agent runtime, not `node`. `PLAN.md` records what is measured,
-what is assumed, and the open gaps — including the one in L1's step-1 floor.
+Implemented and exercised end to end on real runs (Megatron, 0.5B and 7B; more than ten Workflow
+runs with `agents_error: 0`): measurement, profiling, extraction, the recursive kernel lane, overlays
+(stackable, with per-rank engagement proof), L0, L1, the packing gate, ConfigSweep, independent
+validation, and bundle delivery.
+
+The HF TRL adapter measures and profiles, and an overlay engages on it unchanged. No kernel has been
+gated on it yet.
+
+Open, in priority order (`ROADMAP.md`):
+* long-horizon quality of the seven-kernel stack;
+* one deployable bundle;
+* a stacked-baseline option in the workflow;
+* L1's null for implementation-change pairs;
+* GEMM efficiency;
+* the HF exit criterion.
 
 ## Launching a full `fast` run from Claude Code
 
@@ -129,7 +179,7 @@ Workflow({
   scriptPath: "<REPO>/e2e_training_workflow/training_workflow.js",
   args: {
     workflow_dir: "<REPO>/e2e_training_workflow",   // REQUIRED
-    workload:     "<REPO>/e2e_training_workflow/workloads/qwen2_5_math_7b.env",  // REQUIRED, no default
+    workload:     "<REPO>/e2e_training_workflow/workloads/qwen2_5_math_7b_packed.env",  // REQUIRED, no default (the packed descriptor is the current reference)
     nproc: 8, gpu_ids: "0,1,2,3,4,5,6,7",
     iters: 30,             // steady-state steps per leg (warmup is detected, not assumed)
     budget: 2,             // kernel tasks for a first run
@@ -151,12 +201,15 @@ cheaply — a 0.5B leg is ~1 s/step against ~11.6 s at 7B.
 
 **What it will do, and where it will stop**
 * Setup measures the TRUE baseline **twice** and derives this run's bands from those two legs.
-* Profile emits the step decomposition plus a **read-only** config diagnosis. On this workload it
-  returns `config_first` (70.6% padding), and `fast` mode cannot fix that — it says so and proceeds.
+* Profile emits the step decomposition plus a **read-only** config diagnosis. On the unpacked
+  workload it flags padding (70.6%) as the opportunity that `fast` mode cannot take. On the packed
+  descriptor it returns `kernel_work_can_pay`.
 * The kernel loop runs lanes on the GPU pool, then **drains them** for each gate: a training A/B
   needs every GPU.
-* `deep_mode: true` **refuses to run** — ConfigSweep is not implemented, and reporting a fast-mode
-  result under a deep label would be worse than failing.
+* `deep_mode: "true"` adds ConfigSweep after Strategize. See `RUN.md` "Deep mode".
+* `skip_heads` excludes heads already accepted; `baseline_dirs` reuses measured null legs.
+* Every head is still gated against the BARE reference. Re-measure an accepted head on top of the
+  others with `scripts/measure_packed_stack.sh`, because increments change when stacked.
 * A leg contaminated by a foreign GPU process is re-measured (bounded); exhausting the retries stops
   the run rather than quietly spending the remaining gates on a busy node.
 

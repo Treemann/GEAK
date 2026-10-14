@@ -3,10 +3,18 @@
 > Chinese version: `ROADMAP.zh-CN.md`. Both are maintained together; the numbers here are
 > authoritative if the two ever drift.
 
-Status, revised **2026-10-08** (first written 2026-09-24). `fast` mode runs end to end. **Five real
-runs** (0.5B/2GPU ×1, 7B/8GPU ×4) plus 12 soak legs and a 4-leg stack measurement.
+Status, revised **2026-10-14** (first written 2026-09-24). Both `fast` and `deep` run end to end.
+All results below are **Megatron** unless marked HF TRL.
 
-**Two kernels accepted, and the combined stack is MEASURED at +12.36%** — four ref/cand pairings
+**Headline (Megatron, Qwen2.5-Math-7B, 8x MI308X): 839 -> 3,460 useful tok/s/GPU, 4.12x.**
+* Packing: 3.42x, accepted by `deep` mode.
+* Seven kernels stacked on the packed reference: **+20.7%**, re-measured interleaved and cumulative.
+
+The packed-profile kernel queue is exhausted. What is open is listed under "Near-term priorities"
+below. The section that follows is the 2026-10-08 status, kept for the record: its +12.36% stack was
+later shown to be a padding win, worth +0.08–0.28% on packed data.
+
+*(2026-10-08)* **Two kernels accepted, and the combined stack is MEASURED at +12.36%** — four ref/cand pairings
 spanning 0.12 points, null control +0.0706%, and a window-immune `step_median_ms` cross-check at
 +12.324%. The savings **compound** (adding predicts +12.00%, compounding +12.34%, measured +12.36%),
 so the two kernels shorten disjoint parts of the step.
@@ -31,6 +39,25 @@ Assumptions (flag if wrong — they change the plan materially): one 8×MI308X n
 primarily this workflow rather than the kernel layer underneath it.
 
 ---
+
+## Near-term priorities (2026-10-14)
+
+Ordered by what goes wrong if each is left undone. The ordering is: whether the result can be
+trusted, then whether it can be shipped, then the remaining throughput, then breadth.
+
+| P | task | why | depends on | done when |
+|---|---|---|---|---|
+| **P0-1** | **Fix GBS (16/24/64 packs) and dropout (0.1 vs the model's 0.0)** | Both move every baseline, band and stacked delta. Every later measurement waits on them | workload owner | descriptor no longer PENDING; baseline, floor and L1 band re-measured |
+| **P0-2** | **Review the uncommitted agent changes** (`bench_train.sh`, `build_task_dir.py`, `capture_train_shapes.py`, `l0_gate.py`, `rocm_compat.py`, `critical_path.md`, two capture scripts) | The code that produced results must be the code in the repo | — | clean tree, tests pass |
+| **P0-3** | **One bundle for the seven kernels** | The result is not usable while three overlays install from gate directories and the stacking constraints live only in a measurement script | P0-1 | one `launch.sh` + sums; fc1 patch, qkv-after-fc1 order and module isolation built in; two cold runs reproduce ~+20%; per-overlay engagement exact |
+| **P0-4** | **Long-horizon quality of the stack, by OUTCOME** | L1 sees 30 steps. Seven kernels, four of them changing wgrad, have never been trained together for longer. The retired soak tested trajectories; this tests a result | P0-1, P0-3 | pre-registered: held-out eval loss after 1–2k steps, 3 seeds per arm, difference within the seed spread, plus a positive control (an injected small bias) that the method detects |
+| **P1-1** | **Stacked baseline in the workflow** (gate a new head on top of the accepted stack) | Increments change when stacked (attn +4.27% bare vs +5.25% stacked); today every win needs a manual re-measure | P0-3 | a `baseline_overlay` arg; dry run + one real run |
+| **P1-2** | **L1's null for implementation-change pairs** | The strict sign rule's 5.1% was measured on same-implementation pairs. On correct-implementation-change pairs it fired 3/18 | 18 pairs exist; ~50 wanted | measured rate; the rule revised or demoted (`knowledge/gate_convergence.md`) |
+| **P1-3** | **GBS trade-off ON the seven-kernel stack** | Exposed all-reduce is 7.4% and grows as compute shrinks | P0-1, P0-3 | throughput and exposed-comm table at GBS 16/24/64 |
+| **P2-1** | **GEMM efficiency beyond solution selection** | ~75% of the main stream, at 125–175 TFLOP/s | P1-1 | per-GEMM attainable gain first; work only GEMMs worth >2% end to end |
+| **P2-2** | **HF TRL exit criterion** | Second-stack generality | an HF L1 band | 7B HF profile; one kernel re-bound to an HF symbol through the same gates |
+| **P2-3** | **Comm levers other than overlap** (bucket size, bf16 grad reduce) | 7.4% exposed; overlap measured −0.8% | P1-3 | measured; numerics-changing options gated |
+| P3 | TP>1 / multi-node / MoE; shorter runs | breadth, not blocking | hardware, demand | — |
 
 ## Where this is now — the design as built
 
@@ -140,8 +167,9 @@ Built and **verified on real runs** (~260 agents across five training runs, `age
   downhill**, and it rejected a candidate L0 rates *strictly more accurate* than the incumbent.
 - **L2 soak** — tooling and a pre-registered spec exist; still has never issued a verdict with weight.
 
-**Not built:** ConfigSweep / `deep` mode · `mode=bakeoff` from this layer (structurally unreachable)
-· multi-node · TP > 1 (refused, not supported) · a second stack adapter.
+**Not built (as of 2026-10-08; since then ConfigSweep / `deep` and the HF TRL adapter HAVE been
+built):** `mode=bakeoff` from this layer (structurally unreachable) · multi-node · TP > 1 (refused,
+not supported).
 
 ### What is actually open on these two
 
@@ -187,7 +215,7 @@ the answer is: the step-1 probe, plus a sign test that cannot tell a fix from a 
 | W1 | decide the L1 envelope's fate | ✅ **retired from voting**, on 4-run evidence |
 | W1 | feed the attention defect back to the kernel layer | ✅ both channels (in-run constraint, cross-run KB card) |
 | W1 | rejection diagnostics become KB inputs | ⚠️ **gap**: fires on L0/L1 failure only, so the *inf-gradient* candidate — the most catastrophic failure available — produced no card |
-| W2 | ConfigSweep / `deep` mode | ❌ not started |
+| W2 | ConfigSweep / `deep` mode | ✅ built 2026-10-08 (status was ❌ at the time of this table); packing accepted through it 2026-10-09 |
 | W3 | L2 soak with a correct positive-control class | ❌ not started |
 | W4 | iteration speed | ⚠️ 10.6 h → 7.9 h, head count unchanged; criterion was wrong (see above) |
 | W4 | TP > 1, packed coverage | ❌ still refused / untouched |

@@ -1,4 +1,4 @@
-# Resume notes — updated 2026-10-13
+# Resume notes — updated 2026-10-14
 
 ## State (2026-10-10, after run wf_cc06b402-312 completed)
 Run `wf_cc06b402-312` finished: `rope_fused_qk` +3.89% and `swiglu_bwd_fwd_bw` +3.15% ACCEPTED,
@@ -32,15 +32,15 @@ Stacked re-measure `measure_packed_stack.sh --conds ref,s5,s6,s7 --reps 3` (legs
 3,460 useful tok/s/GPU, 4.12x unpacked**. One L1 false reject (s7 vs s6 rep 3, strict sign rule, one
 outlier leg) -- analysed in `knowledge/gate_convergence.md` "Stacked correct kernels".
 
-**Next:**
-1. DONE: re-profiled ON the seven-kernel stack (`runs/pprof_1013_162241_s71`). It exposed and fixed a
-   profiler defect (side-stream kernels were counted as critical path; DECISIONS 4.16). Corrected:
-   main-stream GEMMs ~75%, exposed all-reduce 7.4%, nothing else above 5.3%. Kernel queue exhausted;
-   the open levers are GBS (owner decision, now worth more) and GEMM efficiency beyond solution
-   selection.
-2. L1: calibrate the strict sign rule's null on correct-implementation-change pairs (first sample:
-   the 18 pstack cross pairs).
-3. A combined seven-kernel bundle (launch script + sums), modelled on `measure_packed_stack.sh`.
+**Next:** the prioritised list is `ROADMAP.md` "Near-term priorities (2026-10-14)". In short:
+* P0-1: GBS + dropout decision (owner).
+* P0-2: review the uncommitted agent changes.
+* P0-3: seven-kernel bundle.
+* P0-4: long-horizon quality by outcome (held-out eval loss, 3 seeds, positive control).
+* P1: stacked baseline in the workflow; L1 null for implementation-change pairs; GBS on the stack.
+
+Done 2026-10-13 and recorded: re-profile ON the seven-kernel stack (`runs/pprof_1013_162241_s71`),
+side-stream profiler fix (DECISIONS 4.16). Kernel queue exhausted.
 
 **Where files go (user instruction, 2026-10-13):** development files in this repo; the run workspace
 stays at `/home/treemann/geak_train`. One-off debugging scripts are not added to the repo unless

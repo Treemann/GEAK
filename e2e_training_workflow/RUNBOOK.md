@@ -122,12 +122,35 @@ python3 .../scripts/trajectory_gate.py compare <ref>/probe <cand>/probe \
   --band band_kernel_swap.json --kind kernel_swap      # or --kind overlay
 ```
 
+## 9b. Throughput delta (what the gate reads)
+```bash
+python3 .../scripts/compare_legs.py <ref>/probe <cand>/probe
+# read .paired.delta_pct when .paired.same_batches is true (ratio IQR = its band); else .delta_pct
+```
+
+## 9c. Pack the data, and gate the pack (Megatron)
+```bash
+python /repo/e2e_training_workflow/scripts/pack_sft.py <src.jsonl> <packed.jsonl> \
+  --tokenizer /models/qwen2_5_math_7b --seq 4096                       # inside the image
+python3 .../scripts/pack_gate.py --workload workloads/qwen2_5_math_7b.env \
+  --source <src.jsonl> --packed <packed.jsonl> --model /models/qwen2_5_math_7b --pack-index 1
+```
+
+## 9d. Re-measure the accepted packed stack (interleaved, cumulative)
+```bash
+bash .../scripts/measure_packed_stack.sh --conds ref,s5,s6,s7 --reps 3   # ~40 min, 12 legs
+bash .../scripts/measure_packed_stack.sh --conds s7 --reps 1 --name pprof --profile 12:13
+python3 .../scripts/parse_train_profile.py <leg>/probe <leg>/bench_summary.json
+```
+
 ## 10. Tests (no GPU)
 ```bash
 NODE=~/.cursor-server/bin/linux-x64/*/node            # this box has no system node
 $NODE .../scripts/tests/test_training_gate.js
 $NODE .../scripts/tests/test_pipeline_integration.js <runA> <runB>
 python3 .../scripts/tests/test_parse_train_profile.py
+$NODE .../scripts/tests/test_workflow_dryrun.js
+for t in .../scripts/tests/test_*.py; do python3 $t; done
 ```
 
 ## Two rules learned the hard way

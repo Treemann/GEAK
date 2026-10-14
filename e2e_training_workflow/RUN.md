@@ -25,7 +25,37 @@ re-measurement contradicts; quote `validated_delta_pct` when it is true. The ban
 or was demoted to advisory. `unexplored_heads` and `stop_reason` say what the run never got to —
 Stage 2 stopped on the wall clock with 3 of 4 heads untried, and nothing used to record that.
 
-## The 7B queue as of 2026-10-08 (five runs in)
+## The current reference and queue (2026-10-14): packed 7B, Megatron
+
+Run against `workloads/qwen2_5_math_7b_packed.env`. GBS 16 packs is still PENDING owner
+confirmation, and dropout 0.1 is an open recipe question.
+
+**Accepted** (each gated against the BARE packed reference; increments measured stacked, in order):
+
+| head | gated | stacked increment |
+|---|---|---|
+| `rope_fused_qk` + `swiglu_bwd_fwd_bw` | +3.89% / +3.15% | +7.2% together |
+| `mlp_fc1_gemm` | +1.60% | +1.64% |
+| `lmhead_ce_dense_gemm` | +2.27% | +2.5% |
+| `mlp_fc2_oproj_gemm` | inconclusive_noise | +1.74% |
+| `attn_fmha_ck_varlen` | +4.27% | +5.25% |
+| `qkv_lnlinear_gemm` (chains after fc1) | inconclusive_noise | +1.05% |
+
+All seven stacked: **+20.7%** (2,866 -> 3,460 useful tok/s/GPU).
+
+**Queue: exhausted.** The re-profile on the stack shows main-stream GEMMs at ~75%, exposed
+all-reduce at 7.4%, and nothing else above 5.3%. A follow-up `fast` run would need
+`skip_heads: mlp_fc1_gemm,rope_fused_qk,swiglu_bwd_fwd_bw,lmhead_ce_dense_gemm,mlp_fc2_oproj_gemm,attn_fmha_ck_varlen,qkv_lnlinear_gemm,lmhead_wgrad_reselect`.
+`lmhead_wgrad_reselect` is subsumed by the accepted lm-head overlay, which binds the same site.
+
+**After any acceptance, re-measure on the stack.** The workflow gates against the bare reference.
+`scripts/measure_packed_stack.sh --conds ref,s5,s6,s7 --reps 3` is the interleaved, cumulative
+re-measure: it verifies sha256 for every overlay and fixes the stacking order. Add a condition there
+for a new head. `--profile 12:13` turns one leg into a profiler leg.
+
+## The 7B queue as of 2026-10-08 (five runs in) — UNPACKED workload, historical
+
+Superseded: on packed data the +12.36% stack below measured +0.08–0.28% (padding wins).
 
 Expected gain is computed the way the orchestrator does it, `cp_share × (1 − 1/attainable)`, which
 has now been validated twice: predicted 3.94% → measured **+4.66%** (lmhead), and the fc2 head
