@@ -18,6 +18,15 @@ Read `knowledge/sft_measurement.md` before doing anything.
    `dispersion_reliable: true`, not `profiled_run`, not `captured_run`. Any leg failing any of those
    is dropped and replaced by a fresh measurement — report which and why. If fewer than `REPEAT`
    legs survive, measure the shortfall.
+   **With `BASE_OVERLAY_CMD` set, the baseline is the STACK, not the bare workload.**
+   * Every fresh leg runs through the command (see STACKED BASELINE).
+   * A reused leg qualifies only if it ran the same stack. Two checks:
+     * its probe identity carries the same `GEAK_OVERLAY` manifest basenames and `GEAK_OVERLAY_SHA`
+       as a leg taken through the command;
+     * every per-overlay proof shows fallback 0.
+   * A bare leg is not a baseline for a stacked run. It would turn every delta into "stack + head vs
+     bare".
+   * The L1 band and the across-job floor come from these stacked legs too.
    This is worth doing carefully rather than quickly: a baseline is the denominator of every later
    number in the run, and a stale or foreign leg silently rescales all of them. It is safe now only
    because `config_digest` schema 3 covers 33 identity fields; under schema 2 it covered five, and
@@ -69,7 +78,9 @@ Return JSON:
 ## PHASE=validate
 
 Re-measure the accepted stack against the TRUE baseline **yourself**, in one session, at the run's
-serving configuration, and arbitrate. You are not confirming the Integrator's number; you are taking
+serving configuration, and arbitrate. With `BASE_OVERLAY_CMD` set, the TRUE baseline is the base
+stack, and the accepted stack is the base stack plus this run's overlays. Report the delta as an
+increment on the base, and say so. You are not confirming the Integrator's number; you are taking
 your own.
 
 - Same `--workload`, `--nproc`, and the same GBS/seq/mapping. A different `config_digest` means the

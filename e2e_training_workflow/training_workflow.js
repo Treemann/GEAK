@@ -17,6 +17,16 @@ export const meta = {
 const A = args || {};
 const log0 = (m) => log(`[training] ${m}`);
 
+// A STACKED BASELINE (added 2026-10-14). Without it every run gates its heads against the BARE
+// reference, and a kernel's increment on the accepted stack has to be re-measured by hand afterwards
+// -- increments change when stacked (attn_fmha_ck_varlen: +4.27% bare, +5.25% on the five-kernel
+// stack). `baseline_overlay` is a COMMAND that, given `--out <leg dir>`, installs/verifies the accepted
+// stack and prints the one `--extra-env` line a bench_train.sh leg needs (scripts/stack_overlay_env.sh
+// is the reference implementation: "<wf>/scripts/stack_overlay_env.sh --cond s7"). It becomes part of
+// EVERY leg of the run -- baseline, profile, gate ref AND cand, finalize, validate -- so the reference
+// the whole run measures against is the accepted stack, not the bare workload.
+const BASE_OVERLAY_CMD = String(A.baseline_overlay || '').trim() || null;
+
 // ===========================================================================
 // SKELETON STATUS — read this before trusting a result from this file.
 // The DETERMINISTIC half (mode gating, the lane/gate barrier, gate arithmetic, the noise band, the
@@ -517,12 +527,17 @@ const bankedMemory = [];              // hook 5 input
 
 function benchInputs(config, tag) {   // hook 2: config is ALWAYS an explicit argument
   return { WORKLOAD, STACK, NPROC, ITERS, EXP_ROOT, CONFIG: config, TAG: tag,
-           GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts`, GPU_IDS: GPU_IDS.join(',') };
+           GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts`, GPU_IDS: GPU_IDS.join(','),
+           ...(BASE_OVERLAY_CMD ? { BASE_OVERLAY_CMD } : {}) };
 }
 
-async function reprofile(config, round) {          // hook 3: independently callable
+async function reprofile(config, round, overlay) { // hook 3: independently callable
   requireRole('profiler');
-  return safeAgentStub('profiler', 'reprofile', { ...benchInputs(config, `reprofile_${round}`) });
+  // The CARRIED overlay goes with it. Without it the "re-profile after an acceptance" profiled the
+  // BARE stack again, so the re-ranked queue never reflected the shares the accepted kernel moved
+  // (found 2026-10-14: the 10-13 Architect report said "measured here at their bare-reference shares").
+  return safeAgentStub('profiler', 'reprofile', { ...benchInputs(config, `reprofile_${round}`),
+                                                  ...(overlay ? { CARRIED_OVERLAY: overlay } : {}) });
 }
 async function restrategize(config, profile) {      // hook 3
   requireRole('system_architect');
@@ -553,7 +568,18 @@ tokens/s: on this workload 71.6% of tokens are padding, so the nominal figure ov
 by ~3.5x. Never change the parallel mapping, global batch size, sequence length or data order between
 a reference leg and a candidate leg — that changes the workload identity and makes the delta fiction.
 A leg whose occupancy_verdict is not "clean", or whose status is not "ok", is NOT a measurement:
-re-run it, do not report it.
+re-run it, do not report it.${BASE_OVERLAY_CMD ? `
+
+## STACKED BASELINE (this run's reference is NOT the bare workload)
+Every bench_train.sh leg you take -- baseline, profile, gate reference AND candidate, finalize,
+validate -- runs on top of the accepted stack. For each leg, BEFORE launching it, run
+    ${BASE_OVERLAY_CMD} --out <that leg's --out dir>
+and pass its stdout (one line, GEAK_OVERLAY=... TORCH_EXTENSIONS_DIR=...) as --extra-env. It installs
+or re-verifies the gated bytes and exits non-zero on any mismatch: then STOP, do not measure. A
+candidate overlay (and any CARRIED_OVERLAY) is APPENDED to that GEAK_OVERLAY list, after the stack's
+manifests -- never instead of them, and keep its TORCH_EXTENSIONS_DIR unless your overlay needs its own.
+Check the stack's per-overlay engagement proofs under the leg dir (engagement_fused.json.rank*:
+fallback 0) as well as your own: a stacked leg whose base overlays silently fell back is a bare leg.` : ''}
 
 ## INPUTS
 ${JSON.stringify(inputs, null, 2)}`;
@@ -611,6 +637,8 @@ const wfReturn = {
   schema_version: 2,
   mode: DEEP_MODE ? 'deep' : 'fast', stack: STACK, workload: WORKLOAD,
   gates_used: 0, tasks_used: 0, accepted: [], banked_memory: [], status: 'incomplete',
+  // Every delta in this result is relative to THIS reference. null = the bare workload.
+  baseline_overlay: BASE_OVERLAY_CMD,
 };
 
 if (!WORKLOAD) {
@@ -620,6 +648,9 @@ if (!WORKLOAD) {
 
 log0(`mode=${wfReturn.mode} stack=${STACK} workload=${WORKLOAD} nproc=${NPROC} ` +
      `budget=${BUDGET} max_gates=${MAX_GATES} band_floor=${ACROSS_JOB_FLOOR_PCT}%`);
+log0(BASE_OVERLAY_CMD
+  ? `baseline_overlay: every leg runs ON TOP of [${BASE_OVERLAY_CMD}] -- deltas are increments on that stack`
+  : 'baseline_overlay: none -- deltas are against the BARE workload');
 log0(`phases: ${['setup', 'profile', 'strategize', want('config') ? 'config' : null, 'kernel', 'final']
   .filter(Boolean).join(' -> ')}`);
 
@@ -741,6 +772,11 @@ const setup = await safeAgentStub('training_director', 'setup',
   'Measure EXACTLY REPEAT usable legs — if you take more, the extra legs must be named in notes with ' +
   'the reason, because an unexplained extra leg is 7 minutes of 8-GPU time nobody budgeted. ' +
   'If BASELINE_DIRS is given, verify and REUSE those legs instead of measuring. ' +
+  (BASE_OVERLAY_CMD
+    ? 'With BASE_OVERLAY_CMD set, a reused leg is only valid if it ran the SAME stack: its probe ' +
+      'identity must carry the same GEAK_OVERLAY manifest basenames and GEAK_OVERLAY_SHA as a leg ' +
+      'taken through BASE_OVERLAY_CMD, and its per-overlay proofs must show fallback 0. A bare leg ' +
+      'is NOT a baseline for a stacked run. ' : '') +
   'The L1 band MUST pass its own null control; if it does not, say so rather than using it.');
 if (!setup || !(setup.baseline_legs || []).length) {
   throw new Error('Setup produced no baseline. Every later number is a ratio against it, so there ' +
@@ -797,7 +833,7 @@ wfReturn.bands = { across_job_measured_pct: measuredFloor, floor_pct: runFloor,
 // ---------------------------------------------------------------------------
 async function profileAndRoute(config, round) {
   phase('Profile');
-  const prof = await reprofile(config, round);
+  const prof = await reprofile(config, round, curOverlay);
   if (!prof) return { profile: null, strategy: null };
   const diag = prof.config_diagnosis || {};
   if (diag.verdict === 'config_first') {
@@ -827,7 +863,13 @@ const applySkips = (q) => {
                     `[${[...SKIP_HEADS].join(', ')}] — their verdicts come from an earlier run, not this one`);
   return kept;
 };
-let headQueue = applySkips(((strategy && strategy.head_candidates) || []).slice());
+// The queue is ordered HERE, by the same expectedGainPct the stop rule uses, not left to the order the
+// Architect happened to emit: a rule that only a prompt follows is a rule the next prompt can forget.
+// Stable: equal gains keep the Architect's order, which carries its rationale.
+const rankQueue = (q) => q.map((h, i) => [h, i])
+  .sort((a, b) => (expectedGainPct(b[0]) - expectedGainPct(a[0])) || (a[1] - b[1]))
+  .map(([h]) => h);
+let headQueue = rankQueue(applySkips(((strategy && strategy.head_candidates) || []).slice()));
 log0(`heads queued: ${headQueue.length}${strategy && strategy.stop ? ' (architect says stop)' : ''}`);
 // The Architect's `stop` was PRINTED and then ignored: it could report that no head is worth a gate
 // and the loop would spend the whole budget regardless. A gate costs two job launches and blocks
@@ -1142,7 +1184,7 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
     if (r.profile) profile = r.profile;
     // Re-apply the skips: a re-profile rebuilds the queue from scratch and would otherwise
     // re-introduce a head whose verdict is already known.
-    if (r.strategy && r.strategy.head_candidates) headQueue = applySkips(r.strategy.head_candidates.slice());
+    if (r.strategy && r.strategy.head_candidates) headQueue = rankQueue(applySkips(r.strategy.head_candidates.slice()));
   } else {
     if (v.klass === 'banked_memory') {
       bankedMemory.push({ head: record.head, pct: v.banked_memory_pct });

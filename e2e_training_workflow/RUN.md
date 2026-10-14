@@ -48,7 +48,18 @@ all-reduce at 7.4%, and nothing else above 5.3%. A follow-up `fast` run would ne
 `skip_heads: mlp_fc1_gemm,rope_fused_qk,swiglu_bwd_fwd_bw,lmhead_ce_dense_gemm,mlp_fc2_oproj_gemm,attn_fmha_ck_varlen,qkv_lnlinear_gemm,lmhead_wgrad_reselect`.
 `lmhead_wgrad_reselect` is subsumed by the accepted lm-head overlay, which binds the same site.
 
-**After any acceptance, re-measure on the stack.** The workflow gates against the bare reference.
+**Gate the next head ON the stack (2026-10-14).** Pass
+`baseline_overlay: "<REPO>/e2e_training_workflow/scripts/stack_overlay_env.sh --cond s7"`.
+* Setup, Profile, every gate leg, Finalize and Validate then run on top of the seven kernels.
+* The deltas the run reports are increments on that stack.
+* Do NOT pass bare `baseline_dirs` with it. A reused leg must have run the same stack (same
+  `GEAK_OVERLAY` basenames and `GEAK_OVERLAY_SHA`). Otherwise Setup measures three fresh stacked
+  legs.
+
+`stack_overlay_env.sh` reuses one content-keyed install (`overlays/stackenv_<cond>_<hash>`) and
+re-verifies it on every call, so the CK attention build is paid once.
+
+**Without `baseline_overlay`, re-measure on the stack after any acceptance.** The workflow gates against the bare reference.
 `scripts/measure_packed_stack.sh --conds ref,s5,s6,s7 --reps 3` is the interleaved, cumulative
 re-measure: it verifies sha256 for every overlay and fixes the stacking order. Add a condition there
 for a new head. `--profile 12:13` turns one leg into a profiler leg.

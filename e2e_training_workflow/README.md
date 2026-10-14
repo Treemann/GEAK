@@ -84,6 +84,8 @@ scripts/compare_legs.py       throughput delta: window-aligned + paired per-step
 scripts/calibrate_band.py     across-job floor from null pairs
 scripts/trajectory_gate.py    L1: step-1 forward probe + strict sign rule (envelope advisory)
 scripts/pack_sft.py           packing (pure data transform) / pack_gate.py: its structural gate
+scripts/stack_overlay_env.sh  THE definition of the accepted packed stack (ref, s2..s7): install,
+                              verify the gated bytes, print a leg's --extra-env
 scripts/measure_packed_stack.sh  interleaved cumulative re-measure of the accepted packed stack
 scripts/capture_train_shapes.py  fwd+bwd capture -> immutable L0 oracle
 scripts/overlay_train.py      reversible rebind + per-half engagement proof
@@ -208,8 +210,11 @@ cheaply — a 0.5B leg is ~1 s/step against ~11.6 s at 7B.
   needs every GPU.
 * `deep_mode: "true"` adds ConfigSweep after Strategize. See `RUN.md` "Deep mode".
 * `skip_heads` excludes heads already accepted; `baseline_dirs` reuses measured null legs.
-* Every head is still gated against the BARE reference. Re-measure an accepted head on top of the
-  others with `scripts/measure_packed_stack.sh`, because increments change when stacked.
+* `baseline_overlay: "<REPO>/e2e_training_workflow/scripts/stack_overlay_env.sh --cond s7"` gates
+  every head ON TOP of the accepted seven-kernel stack instead of the bare reference. Every leg of
+  the run carries it, and every delta is then an increment on that stack. Without it, re-measure an
+  accepted head on the stack with `scripts/measure_packed_stack.sh`, because increments change when
+  stacked.
 * A leg contaminated by a foreign GPU process is re-measured (bounded); exhausting the retries stops
   the run rather than quietly spending the remaining gates on a busy node.
 

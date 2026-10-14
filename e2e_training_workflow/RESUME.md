@@ -37,7 +37,9 @@ outlier leg) -- analysed in `knowledge/gate_convergence.md` "Stacked correct ker
 * P0-2: review the uncommitted agent changes.
 * P0-3: seven-kernel bundle.
 * P0-4: long-horizon quality by outcome (held-out eval loss, 3 seeds, positive control).
-* P1: stacked baseline in the workflow; L1 null for implementation-change pairs; GBS on the stack.
+* P1: L1 null for implementation-change pairs; GBS on the stack. The stacked baseline in the workflow
+  is BUILT (2026-10-14, DECISIONS 4.17: `baseline_overlay`, `scripts/stack_overlay_env.sh`, carried
+  re-profile, queue ranked in code). It is dry-run tested and still needs one real run.
 
 Done 2026-10-13 and recorded: re-profile ON the seven-kernel stack (`runs/pprof_1013_162241_s71`),
 side-stream profiler fix (DECISIONS 4.16). Kernel queue exhausted.

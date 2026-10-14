@@ -44,7 +44,7 @@ const api = new Function(
   // floor is per workload rather than one constant.
   'const FLOOR_PCT = {aligned:0.5,unaligned:0.5}; const ACROSS_JOB_FLOOR_PCT = 0.5, ' +
   'BAND_SAFETY = 2.0, SE_SAFETY = 4.0; let runAcrossJobPct = 0;\n' +
-  ['noiseBandPct', 'legUsable', 'comparable', 'alignedDelta', 'gateVerdict', 'expectedGainPct', 'stopRule']
+  ['noiseBandPct', 'legUsable', 'comparable', 'windowMatchedLegs', 'alignedDelta', 'gateVerdict', 'expectedGainPct', 'stopRule']
     .map(extract).join('\n') +
   '\nreturn {noiseBandPct, legUsable, comparable, gateVerdict, expectedGainPct, stopRule};')();
 
@@ -117,22 +117,30 @@ if (warmupsDiffer) {
 } else {
   ok(cmp.window_artifact_pct === 0,
     `warmups agree (both ${cmp.window.own_warmup.ref}) -> alignment is an identity, artifact 0%`);
-  ok(raw.delta_pct === v.delta_pct,
-    'and the aligned and raw deltas coincide, as they must when the windows already match');
+  // Compare against compare_legs' WINDOW-ALIGNED delta, not the gate's quoted one: since DECISIONS
+  // 4.13 the gate quotes the PAIRED per-step ratio when the legs saw the same batches, which is a
+  // different (better) estimator and need not equal a ratio of medians even on matched windows.
+  ok(Math.abs(raw.delta_pct - cmp.delta_pct) < 1e-9,
+    `and the aligned and raw deltas coincide (${raw.delta_pct}% vs ${cmp.delta_pct}%), as they must ` +
+    `when the windows already match; the gate quotes the paired ${v.delta_pct}%`);
 }
 
 // ---- 4. the band came from the legs themselves, not from a constant ----
-const band = api.noiseBandPct(A, B);
-ok(band >= 0.15 && band < 1.0,
-  `band = ${band}% for this real pair — max(0.5% workload floor, 4 x sampling error of the median, ` +
-  `2 x the run's measured across-job spread), not a fixed 2-3% and not the old iqr x 2`);
+// Read the band the GATE uses, not noiseBandPct(A, B): since DECISIONS 4.11/4.13 the gate prices a
+// window-aligned delta with a band estimated on the same window (and, with a paired comparison, the
+// paired ratio's IQR), so the per-leg helper is no longer what decides. Testing the helper's number
+// against the gate's decision is what made this check fail once the band moved (2026-10-14 fix).
+const aligned = (pct) => ({ delta_pct: pct, window_artifact_pct: 0, dispersion_reliable: true });
+const band = api.gateVerdict({ ref: A, cand: A, mode: 'fast', comparison: aligned(0) }).band_pct;
+ok(isFinite(band) && band >= 0.5 && band < 5.0,
+  `band = ${band}% for this real pair: at least the 0.5% workload floor and derived from the legs ` +
+  `(quiet 0.5B legs give ~0.5-0.9%, the noisier packed 7B legs ~2%), not a fixed 2-3% constant`);
 
 // ---- 5. a synthetic candidate JUST above the band is accepted; just below is not ----
 const bump = (leg, pct) => Object.assign({}, leg, {
   useful_tok_s_per_gpu: leg.useful_tok_s_per_gpu * (1 + pct / 100) });
 // Synthetic candidates must carry an aligned comparison, or they are judged against the UNALIGNED
 // floor (0.5%) — which is correct behaviour, and worth pinning in both directions.
-const aligned = (pct) => ({ delta_pct: pct, window_artifact_pct: 0, dispersion_reliable: true });
 ok(api.gateVerdict({ ref: A, cand: bump(A, band + 0.05), mode: 'fast',
                      comparison: aligned(band + 0.05) }).accepted,
   `a window-aligned +${(band + 0.05).toFixed(2)}% candidate clears the ${band}% band`);

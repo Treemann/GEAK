@@ -39,6 +39,7 @@ const leg = (o = {}) => Object.assign({
 // One stub per role phase, returning the minimum shape its call site reads.
 let CONFIG_L1 = { pass: true, checks: {} };   // overridden per test below
 let CONFIG_OVERRIDE = null;                     // replaces fields of the config stub per test
+let STRAT_HEADS = null;                         // replaces the Architect's head_candidates per test
 function stubFor(prompt) {
   const p = String(prompt);
   const is = (s) => p.includes(s);
@@ -53,7 +54,7 @@ function stubFor(prompt) {
              rank_skew_pct: 0.01 };
   }
   if (is('PHASE=strategize')) {
-    return { head_candidates: [
+    return { head_candidates: STRAT_HEADS || [
       { kernel: 'head_a', short_name: 'head_a', critical_path_share_pct: 18, attainable_speedup: 1.5 },
       { kernel: 'head_b', short_name: 'head_b', critical_path_share_pct: 6, attainable_speedup: 2.0 }],
       stop: false };
@@ -88,12 +89,12 @@ function stubFor(prompt) {
 }
 
 async function dryRun(args) {
-  const calls = { agent: 0, workflow: 0, phases: [] };
+  const calls = { agent: 0, workflow: 0, phases: [], prompts: [] };
   const globals = {
     args,
     log: () => {},
     phase: (t) => calls.phases.push(t),
-    agent: async (prompt) => { calls.agent++; return stubFor(prompt); },
+    agent: async (prompt) => { calls.agent++; calls.prompts.push(String(prompt)); return stubFor(prompt); },
     workflow: async (ref) => {
       calls.workflow++; calls.lanePaths = (calls.lanePaths || []).concat([ref && ref.scriptPath]);
       return { eval_dir: '/work/exp', final_patch: 'p', final_geomean: 2.0 };
@@ -226,6 +227,48 @@ async function dryRun(args) {
     }
   }
   CONFIG_OVERRIDE = null;
+
+  // ---- 2026-10-14: stacked baseline, carried overlay on re-profile, queue ranking ----------------
+  const phasePrompts = (calls, ph) => calls.prompts.filter((p) => p.includes(`PHASE=${ph}`));
+  try {
+    const CMD = '/repo/e2e_training_workflow/scripts/stack_overlay_env.sh --cond s7';
+    const { result, calls } = await dryRun({ ...base, baseline_overlay: CMD });
+    ok(result.baseline_overlay === CMD, 'the result names the reference every delta is relative to');
+    for (const ph of ['setup', 'reprofile', 'integrate', 'finalize', 'validate']) {
+      const ps = phasePrompts(calls, ph);
+      ok(ps.length > 0 && ps.every((p) => p.includes(`"BASE_OVERLAY_CMD": "${CMD}"`) &&
+                                          p.includes('STACKED BASELINE')),
+        `baseline_overlay reaches EVERY ${ph} leg (${ps.length} call(s)), with the stacking rules`);
+    }
+    const { result: r0, calls: c0 } = await dryRun(base);
+    ok(r0.baseline_overlay === null && !c0.prompts.some((p) => p.includes('BASE_OVERLAY_CMD')),
+      'without baseline_overlay nothing mentions it: the bare reference is unchanged');
+  } catch (e) {
+    ok(false, `baseline_overlay threw: ${e && e.message}`);
+  }
+  try {
+    const { result, calls } = await dryRun(base);
+    const rp = phasePrompts(calls, 'reprofile');
+    ok(result.accepted.length > 0 && rp.length >= 2, `an acceptance triggers a re-profile (${rp.length} profiles)`);
+    ok(!rp[0].includes('CARRIED_OVERLAY'), 'the first profile is of the reference: no carried overlay');
+    ok(rp.slice(1).every((p) => p.includes('"CARRIED_OVERLAY": "/work/ovl"')),
+      'the re-profile AFTER an acceptance carries the accepted overlay (it used to profile the bare stack)');
+  } catch (e) {
+    ok(false, `carried re-profile threw: ${e && e.message}`);
+  }
+  try {
+    // Emitted in the WRONG order: head_b (6 x (1 - 1/2) = 3.0%) before head_a (18 x (1 - 1/1.5) = 6.0%).
+    STRAT_HEADS = [
+      { kernel: 'head_b', short_name: 'head_b', critical_path_share_pct: 6, attainable_speedup: 2.0 },
+      { kernel: 'head_a', short_name: 'head_a', critical_path_share_pct: 18, attainable_speedup: 1.5 }];
+    const { calls } = await dryRun({ ...base, budget: 1 });
+    const ex = phasePrompts(calls, 'extract');
+    ok(ex.length === 1 && ex[0].includes('"short_name": "head_a"'),
+      'the queue is ranked by expected gain in code, not by the order the Architect emitted');
+  } catch (e) {
+    ok(false, `queue ranking threw: ${e && e.message}`);
+  }
+  STRAT_HEADS = null;
 
   console.log();
   if (failures) { console.error(`${failures} check(s) FAILED`); process.exit(1); }

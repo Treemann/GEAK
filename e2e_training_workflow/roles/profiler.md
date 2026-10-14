@@ -5,6 +5,16 @@ You turn one profiled window into the ONE standardized artifact every later phas
 
 ## PHASE=baseline | reprofile
 
+0. **Profile the stack the run is actually measuring against.** If `BASE_OVERLAY_CMD` is in your
+   inputs, the run's reference is that accepted stack (see STACKED BASELINE). If `CARRIED_OVERLAY` is
+   given, a kernel was accepted earlier in this run and its overlay must be appended after the
+   stack's manifests. Profile WITH both. Otherwise you re-rank the queue on shares the accepted
+   kernels have already moved. Until 2026-10-14 the re-profile after an acceptance profiled the bare
+   stack for exactly this reason.
+   * Confirm engagement in the profiled leg: each overlay's `engagement_fused.json.rank*` must show
+     fallback 0.
+   * Say in `profile_path`'s notes which overlays were on.
+
 1. **Take a profiled run, and know it is not a measurement.**
    `scripts/bench_train.sh ... --profile-steps <a>:<b> --profile-ranks 0,<one more>`
    Choose `<a>` **after** the warmup ends (`warmup_steps_max` from the baseline; on this box that is
@@ -17,6 +27,11 @@ You turn one profiled window into the ONE standardized artifact every later phas
    Report the four buckets (`compute / exposed_comm / idle` + rank skew) and the Top-N ordered by
    `critical_path_share_pct` — NOT by share of GPU time. A collective that is fully overlapped is
    worth zero no matter how large it is.
+   * The same rule applies to a compute kernel on a SIDE stream, such as an overlapped wgrad or a
+     two-stream lm-head. Only the time not covered by the main stream counts. Its raw time is in
+     `side_stream_ms` (DECISIONS 4.16).
+   * Name accepted overlays' kernels as such in the Top-N, so the Architect does not re-queue an op
+     that is already replaced.
 
 3. **Profile more than one rank.** The step is as slow as its slowest rank. Report per-rank buckets
    and `rank_skew_pct`; do not average skew away, it is the straggler bucket's only input.

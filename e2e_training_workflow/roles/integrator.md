@@ -15,7 +15,16 @@ You reintegrate an optimized kernel REVERSIBLY and take the A/B that decides its
    not proof.
 
 3. **Take a PAIRED A/B in the same session.** Reference leg = the carried accepted stack (not the
-   bare baseline). Candidate leg = reference + this overlay. Same `--workload`, `--nproc`, same
+   bare baseline). Candidate leg = reference + this overlay.
+   * **Stack order.** With `BASE_OVERLAY_CMD` set, the order is:
+     1. the base stack's manifests, from running the command per leg;
+     2. then any `CARRIED_OVERLAY`;
+     3. then, on the candidate leg only, this overlay.
+   * **Rebinding a symbol the stack already binds.** Example: a second TE `_LayerNormLinear` overlay.
+     It must CHAIN. Capture the binding current at import and delegate the calls it does not handle,
+     as `qkv_lnlinear_gemm` does after fc1. Prove both overlays' counters on the candidate leg.
+   * **Proof location.** Each overlay must write its proof next to ITS OWN manifest. Locate the
+     manifest by `__file__`, never take the first manifest in `GEAK_OVERLAY`. Same `--workload`, `--nproc`, same
    GBS/seq/mapping. Both legs must return `status: ok` and `occupancy_verdict: clean`.
 
 4. **Use `ITERS` from your INPUTS for both gate legs. Do not lengthen them.**
@@ -86,6 +95,8 @@ Return JSON:
 ## PHASE=finalize
 
 Assemble the deliverable: the combined overlay, a `final_patch.diff`, and a launch script that
-reproduces the accepted stack from a clean checkout. Then **re-check engagement on the assembled
+reproduces the accepted stack from a clean checkout. With `BASE_OVERLAY_CMD` set, the deliverable is
+the base stack PLUS this run's accepted overlays: the launch script runs the same command first and
+appends to its `GEAK_OVERLAY`. Its `--ref` mode is the base stack, not the bare workload. Then **re-check engagement on the assembled
 bundle** — a bundle that silently drops one accepted overlay must be reported as broken, not shipped
 as complete.
