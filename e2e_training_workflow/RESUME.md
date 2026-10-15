@@ -75,13 +75,19 @@ default 0.1 untuned** (DECISIONS 4.21).
 * Headline: 3,488 useful tok/s/GPU, 4.16x unpacked.
 * The descriptor file is unchanged, because bundles pin its sha256.
 
-**Running (2026-10-15):** P0-4 quality A/B, pre-registered in `knowledge/gate_convergence.md` (commit
-7757951b).
-* Command: `scripts/quality_ab.sh`, 9 legs (REF / S8 / CTRL, LR x0.7, × seeds 1234 / 2345 / 3456,
-  358 iters each).
-* Legs `runs/qab_1015_151502_*`; driver `runs/qab_driver_1015.log`.
-* Analyse with `python3 scripts/quality_ab_analyze.py /home/treemann/geak_train/runs/qab_1015_151502`.
-* If interrupted: re-run only the missing legs with `--seeds/--arms` and report it as a deviation.
+**Done 2026-10-15:** P0-4 (`runs/qab_1015_151502_*`).
+* INCONCLUSIVE by its pre-registered rule: the control was not detected.
+* The diagnostics showed the end-of-epoch held-out loss is dominated by recipe-level late
+  instability. A same-seed REF rerun moved 1.298 -> 1.401.
+* Progressive validation was chosen as the instrument. See `knowledge/gate_convergence.md`.
+* The stack is NOT yet cleared for long training.
+
+**Running (2026-10-15):**
+* The diagnostics `runs/qabdiag_1015_180143_*` (s7 and S8 seed 2345, exploratory) are chained
+  into **P0-4b**: `quality_ab.sh --seeds 4567,5678,6789,7890,8901 --arms ref,s8,ctrl --name qabpv`.
+  15 legs, about 5 h. Driver `runs/qabpv_driver_1015.log`.
+* Analyse with `python3 scripts/quality_ab_pv.py /home/treemann/geak_train/runs/qabpv_<stamp>`.
+* The verdict rules are pre-registered (commit c86e9f93).
 
 **Next:** the prioritised list is `ROADMAP.md` "Near-term priorities (2026-10-14)". In short:
 * P0-1: GBS + dropout decision (owner).
