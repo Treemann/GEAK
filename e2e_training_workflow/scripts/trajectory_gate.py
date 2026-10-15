@@ -641,6 +641,12 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
             chk["strict_one_sided"] = strict
             chk["non_identical_steps"] = len(nz)
             chk["measured_null_rate_pct"] = {"loss": 5.1, "grad_norm": 0.6}[key]
+            # The gate's own shape -- base vs base + ONE correct overlay -- measured 2026-10-15 on 589
+            # pairs of the packed 7B workload (scripts/controls/sign_rule_impl_null.py): loss 3.4%,
+            # grad_norm 1.0%. Pairs of very different correct stacks: 0.8% / 0.6% (3,917 pairs), i.e.
+            # what 8 independent coin flips give (2/2^8 = 0.78%). Same-implementation pairs fire MORE
+            # (6.1%), because an identical-code divergence stays correlated across early steps.
+            chk["measured_impl_change_rate_pct"] = {"loss": 3.4, "grad_norm": 1.0}[key]
             null_rng = (band.get("sign_balance_null_range") or {}).get(key)
             if null_rng:
                 chk["band_range_reported_only"] = [null_rng["min"], null_rng["max"]]
@@ -648,8 +654,10 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
             if strict:
                 failures.append(
                     f"{key} early sign balance {sb:.3f}: moved the SAME direction on all {len(nz)} non-identical early steps, a "
-                    f"gross one-sided move. Clean pairs do this {chk['measured_null_rate_pct']}% of the "
-                    f"time (693 measured pairs), so a re-gate is the remedy if this is a false reject")
+                    f"gross one-sided move. Correct one-overlay changes do this "
+                    f"{chk['measured_impl_change_rate_pct']}% of the time (589 measured pairs; same-code "
+                    f"re-runs {chk['measured_null_rate_pct']}%), so a re-gate is the remedy if this is a "
+                    f"false reject")
 
     res["implementation_delta"] = impl_delta
     res["pass"] = not failures

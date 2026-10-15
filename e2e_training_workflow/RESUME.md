@@ -61,6 +61,13 @@ outlier leg) -- analysed in `knowledge/gate_convergence.md` "Stacked correct ker
 * The kernel queue is exhausted on s8. Bundle `runs/finalize_bundle_1015_s8` (8 overlays).
 * Cumulative: s8 is about +21% over the packed reference, ~4.15x unpacked.
 
+**Done 2026-10-15 (no GPU):** P1-2. `scripts/controls/sign_rule_impl_null.py` measured the strict
+sign rule on 96 legs:
+* one-overlay correct changes: 3.4% (loss) / 1.0% (grad_norm);
+* all correct changes: 0.8% / 0.6%;
+* same-code re-runs: 6.1% / 1.1%.
+The rule stands. The 10-13 "~17%" was a small correlated sample (DECISIONS 4.20).
+
 **Next:** the prioritised list is `ROADMAP.md` "Near-term priorities (2026-10-14)". In short:
 * P0-1: GBS + dropout decision (owner).
 * P0-2: review the uncommitted agent changes.

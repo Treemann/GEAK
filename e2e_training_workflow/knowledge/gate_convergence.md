@@ -1270,3 +1270,41 @@ The right null is "correct implementation change" pairs. These 18 cross pairs, a
 `step1_grad_norm` table above, are its first sample. Until it is calibrated, a single strict-sign
 failure on a kernel with a clean L0 should be re-gated on a second pair before it is read as a
 defect. That is what the workflow's verdict text already says ("a re-gate is the remedy").
+
+### CORRECTION (2026-10-15): the sign rule does NOT over-reject implementation changes
+
+The section above read 3 firings in 18 cross-condition pairs as "the rule's real false-reject rate on
+correct kernels is ~17%". That was a small, correlated sample: two of the three firings shared one
+leg (s63). The re-runnable control `scripts/controls/sign_rule_impl_null.py` measures it properly.
+
+**The sample.** Every clean 30-step leg of the packed 7B workload whose overlays are all ACCEPTED
+heads: 96 legs, 13 distinct implementations, from the bare reference to the 8-overlay s8 stack.
+Implementation identity is `GEAK_OVERLAY_SHA`.
+
+| pairs | loss fired | grad_norm fired | n |
+|---|---|---|---|
+| same implementation (re-runs) | 6.1% | 1.1% | 643 |
+| different correct implementations, all | **0.8%** | **0.6%** | 3,917 |
+| ... differing by exactly ONE overlay (the gate's own shape) | **3.4%** | **1.0%** | 589 |
+
+**Reading.**
+* The hypothesis was backwards. Different correct numerics decorrelate the early trajectory, so the
+  signs of the 8 early diffs become close to independent coin flips (2/2^8 = 0.78%, matching the
+  0.8%).
+* Same-code re-runs fire MORE, because their small divergence persists in one direction across
+  steps.
+* A one-overlay change sits in between: it perturbs the trajectory less.
+* For a gate the relevant rate is ~3.4% (loss) and ~1% (grad_norm). That is the same order as the
+  5.1% quoted since 10-09, so **the rule stands unchanged**.
+* `trajectory_gate.py` now also reports `measured_impl_change_rate_pct` and quotes it in the reason.
+* The operational advice is unchanged: a single strict-sign failure on a kernel with a clean L0 is
+  re-gated on a second pair before it is read as a defect. The 10-13 s7-vs-s6 rep-3 failure remains
+  a false reject.
+
+**What this does not change.** The rule's blind spots are stated above:
+* it misses subtle biases;
+* at dropout 0.1 it misses a real backward defect.
+
+It is a backstop for gross one-sided moves. Its false-reject rate is now measured for the case it is
+actually used on.
+
