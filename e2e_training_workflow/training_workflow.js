@@ -667,7 +667,8 @@ const PROFILE_SCHEMA = obj({ buckets: { type: 'object' }, top_n: arrObj,
 const STRATEGY_SCHEMA = obj({ head_candidates: arrObj, stop: { type: 'boolean' },
   reasoning: { type: 'string' } }, ['head_candidates']);
 const EXTRACT_SCHEMA = obj({ task_dir: { type: 'string' }, op: { type: 'string' },
-  has_backward: { type: 'boolean' }, engagement: { type: 'object' } }, ['task_dir']);
+  has_backward: { type: 'boolean' }, autograd: { type: 'boolean' }, engagement: { type: 'object' } },
+  ['task_dir']);
 // `comparison` is REQUIRED, not optional: without it the gate cannot accept at all (see
 // no_aligned_delta), so a return value that lacks it has wasted two job launches. Requiring it makes
 // the model layer retry for it instead of the orchestrator discovering the omission after the A/B.
@@ -1085,10 +1086,21 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
       { ...benchInputs(curConfig, `extract_${h.short_name}`), HEAD: h, PROFILE: profile },
       'Capture real shapes AND grad_output; build an immutable fwd+bwd oracle.');
     if (!ext || !ext.task_dir) { log0('  extraction produced no task dir — skipping head'); return null; }
-    if (ext.has_backward === false) {
+    // The forward-only refusal protects AUTOGRAD ops: a kernel 2x faster forward and 3x slower
+    // backward is a regression a forward-only task reports as a win. An op OUTSIDE autograd -- the
+    // optimizer step, the dist-opt grad scale + norm tail -- has no backward to hide one in, and was
+    // refused by this rule anyway (2026-10-15: grad_tail_fused_scale_check, 2.6% of the stacked step,
+    // extracted with 11 cases and 7 negative controls, then dropped here). The Extractor must SAY
+    // the op is outside autograd (`autograd: false`); an omitted field still refuses.
+    if (ext.has_backward === false && ext.autograd !== false) {
       log0('  WARNING: task has no backward. A forward-only task can report a win for a kernel that ' +
-           'is slower overall; treating as unusable.');
+           'is slower overall; treating as unusable. (An op outside autograd must be returned with ' +
+           'autograd: false.)');
       return null;
+    }
+    if (ext.has_backward === false) {
+      log0('  op is outside autograd (autograd: false): it has no backward by construction, so the ' +
+           'task objective is the op itself');
     }
     // The UNCHANGED kernel layer, called exactly as a hand-written kernel task would be.
     // Carry SYSTEM-LEVEL rejections down as a starting constraint. The kernel layer gates on its own

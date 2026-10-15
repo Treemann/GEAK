@@ -5,7 +5,7 @@
 #
 # Conditions are cumulative and defined in ONE place, scripts/stack_overlay_env.sh (which also holds
 # the coexistence rules: stacking order, fc1's proof-path patch, module isolation):
-#   ref, s2 (rope+swiglu), s3 (+fc1), s4 (+lmhead), s5 (+fc2_oproj), s6 (+attn), s7 (+qkv)
+#   ref, s2 (rope+swiglu), s3 (+fc1), s4 (+lmhead), s5 (+fc2_oproj), s6 (+attn), s7 (+qkv), s8 (+rmsnorm)
 # s<k> vs s<k-1> is that kernel's increment on the stack; s<k> vs ref is the total. Legs of one rep run
 # back to back in the --conds order, so node drift cannot align with condition.
 #
@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 for c in ${CONDS//,/ }; do
-  case "$c" in ref|s2|s3|s4|s5|s6|s7) ;; *) echo "unknown condition: $c" >&2; exit 2;; esac
+  case "$c" in ref|s2|s3|s4|s5|s6|s7|s8) ;; *) echo "unknown condition: $c" >&2; exit 2;; esac
 done
 WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed.env"
 STAMP="$(date +%m%d_%H%M%S)"

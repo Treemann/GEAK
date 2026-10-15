@@ -25,9 +25,20 @@ to cheat. Read `knowledge/gate_convergence.md` (L0) before you build the oracle.
    or `torch.autograd.Function`), and how the Integrator can prove BOTH forward and backward ran the
    new implementation. "It got faster" is not proof of engagement.
 
+5. **An op OUTSIDE autograd is the one exception to "forward AND backward".** Examples: the
+   optimizer step, the distributed-optimizer grad scale + norm tail, and grad-buffer zeroing.
+   * Such an op has no backward. Return `has_backward: false` AND `autograd: false`, and put the
+     evidence in `notes`: where it runs and why no graph records it (inside `torch.no_grad()`, inside
+     `optimizer.step()`, operating on `.main_grad` buffers).
+   * Without `autograd: false` the orchestrator refuses a forward-only task, as it should for an
+     autograd op.
+   * The oracle must then cover the op's whole contract, because nothing downstream re-checks it:
+     in-place semantics, NaN/Inf propagation, the production size (32-bit index overflow), and the
+     order of scale vs reduction.
+
 Return JSON:
 ```json
 {"task_dir": "...", "op": "...", "shapes": {...}, "dtypes": {...},
- "has_backward": true, "tolerances": {"out": 0.0, "dgrad": 0.0, "wgrad": 0.0},
+ "has_backward": true, "autograd": true, "tolerances": {"out": 0.0, "dgrad": 0.0, "wgrad": 0.0},
  "engagement": {"module": "...", "symbol": "...", "how_to_prove": "..."}, "notes": "..."}
 ```

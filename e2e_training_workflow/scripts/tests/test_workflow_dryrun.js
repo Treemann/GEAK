@@ -40,6 +40,7 @@ const leg = (o = {}) => Object.assign({
 let CONFIG_L1 = { pass: true, checks: {} };   // overridden per test below
 let CONFIG_OVERRIDE = null;                     // replaces fields of the config stub per test
 let STRAT_HEADS = null;                         // replaces the Architect's head_candidates per test
+let EXTRACT_OVERRIDE = null;                    // replaces fields of the extract stub per test
 function stubFor(prompt) {
   const p = String(prompt);
   const is = (s) => p.includes(s);
@@ -68,7 +69,8 @@ function stubFor(prompt) {
              memory_conversion: { freed_mb: 0, would_buy: null },
              ...(CONFIG_L1 === undefined ? {} : { l1: CONFIG_L1 }), ...(CONFIG_OVERRIDE || {}) };
   }
-  if (is('PHASE=extract')) return { task_dir: '/work/tasks/t', op: 'o', has_backward: true, engagement: {} };
+  if (is('PHASE=extract')) return { task_dir: '/work/tasks/t', op: 'o', has_backward: true, engagement: {},
+                                    ...(EXTRACT_OVERRIDE || {}) };
   if (is('PHASE=integrate')) {
     return { ref: leg(), cand: leg({ useful_tok_s_per_gpu: 900, impl_digest: 'bbb' }),
              comparison: { delta_pct: 5.8, window_artifact_pct: 0.1 },
@@ -269,6 +271,22 @@ async function dryRun(args) {
     ok(false, `queue ranking threw: ${e && e.message}`);
   }
   STRAT_HEADS = null;
+
+  // ---- 2026-10-15: an op outside autograd has no backward; only it may skip the fwd+bwd rule ----
+  for (const [label, over, expectLane] of [
+    ['autograd op without a backward', { has_backward: false }, false],
+    ['op declared outside autograd (optimizer / grad tail)', { has_backward: false, autograd: false }, true],
+    ['autograd op with its backward', { has_backward: true }, true]]) {
+    EXTRACT_OVERRIDE = over;
+    try {
+      const { calls } = await dryRun({ ...base, budget: 1 });
+      ok((calls.workflow > 0) === expectLane,
+        `${label}: kernel lane ${calls.workflow > 0 ? 'RUNS' : 'is refused'}`);
+    } catch (e) {
+      ok(false, `${label} threw: ${e && e.message}`);
+    }
+  }
+  EXTRACT_OVERRIDE = null;
 
   console.log();
   if (failures) { console.error(`${failures} check(s) FAILED`); process.exit(1); }

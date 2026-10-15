@@ -46,15 +46,14 @@ outlier leg) -- analysed in `knowledge/gate_convergence.md` "Stacked correct ker
   across-job spread had been measured with the aligned median ratio, which host stalls inflate; the
   paired ratio read 0.07%. Fixed in DECISIONS 4.18 (ae01511f).
 
-**Running (2026-10-15):** `wf_eac2c468-e66`. Same args, plus `baseline_dirs` = the three
-`td_base_s7_1015_041002_leg*` legs, which are stacked and therefore valid. t0_epoch_ms 1792041095323.
-It should:
-* re-derive a paired floor;
-* gate `grad_tail_fused_scale_check` (+0.81% expected) and/or `residual_add_dropout_fused` (+0.35%)
-  ON the stack;
-* if one is accepted, re-profile with it carried.
-
-Resume with `resumeFromRunId: "wf_eac2c468-e66"`.
+**Done 2026-10-15:** `wf_eac2c468-e66` (stacked, reusing the three s7 legs, paired floor 0.25%).
+* `rmsnorm_bwd_fc1_fused` was ACCEPTED on the stack, but only at floor level: gate +0.257%,
+  validation +0.29%, re-measure +0.36/+0.38%. Bundle `runs/finalize_bundle_1015_s7_rmsn`, now
+  `stack_overlay_env.sh --cond s8`.
+* The carried re-profile is verified.
+* `grad_tail_fused_scale_check` was dropped by the forward-only rule although it is outside autograd.
+  Fixed in DECISIONS 4.19.
+* Details: `knowledge/sft_measurement.md`, "Gating ON the stack".
 
 **Next:** the prioritised list is `ROADMAP.md` "Near-term priorities (2026-10-14)". In short:
 * P0-1: GBS + dropout decision (owner).

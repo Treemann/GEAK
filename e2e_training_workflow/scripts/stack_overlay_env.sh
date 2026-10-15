@@ -22,6 +22,9 @@
 #   s5  -- + mlp_fc2_oproj_gemm                    (gate dir)
 #   s6  -- + attn_fmha_ck_varlen                   (bundle finalize_bundle_1013_attn_ck_varlen)
 #   s7  -- + qkv_lnlinear_gemm                     (gate dir; chains after fc1)
+#   s8  -- + rmsnorm_bwd_fc1_fused                 (bundle finalize_bundle_1015_s7_rmsn; gated ON s7
+#                                                    2026-10-15, +0.26-0.38%; rebinds TWO symbols,
+#                                                    transformer_engine_torch:rmsnorm_fwd/_bwd)
 #
 # Coexistence rules this script enforces (measured 2026-10-13, knowledge/sft_measurement.md):
 #  * Targets are disjoint except qkv and fc1, which both rebind TE `_LayerNormLinear.apply`. qkv
@@ -58,8 +61,8 @@ while [ $# -gt 0 ]; do
 done
 case "$COND" in
   ref) echo ""; exit 0;;
-  s2) N=2;; s3) N=3;; s4) N=4;; s5) N=5;; s6) N=6;; s7) N=7;;
-  *) echo "--cond must be one of ref,s2..s7 (got '$COND')" >&2; exit 2;;
+  s2) N=2;; s3) N=3;; s4) N=4;; s5) N=5;; s6) N=6;; s7) N=7;; s8) N=8;;
+  *) echo "--cond must be one of ref,s2..s8 (got '$COND')" >&2; exit 2;;
 esac
 [ -n "$OUT_HOST" ] || { echo "--out <leg dir on the host> is required" >&2; exit 2; }
 case "$OUT_HOST" in "$WORK_HOST"/*) ;; *) echo "--out must live under $WORK_HOST (mounted at /work)" >&2; exit 2;; esac
@@ -71,8 +74,12 @@ AT_BUNDLE="$WORK_HOST/runs/finalize_bundle_1013_attn_ck_varlen"
 FC1_SRC="$WORK_HOST/overlays/mlp_fc1_gemm_1010_054626"
 FC2_SRC="$WORK_HOST/overlays/mlp_fc2_oproj_gemm_1013_072624"
 QKV_SRC="$WORK_HOST/overlays/qkv_lnlinear_gemm_1013_145001"
+RN_BUNDLE="$WORK_HOST/runs/finalize_bundle_1015_s7_rmsn"
 
-# name|kind|source|target|replacement attr|proof subdir   -- in stacking order
+# name|kind|source|target|replacement attr|proof subdir[|manifest names]   -- in stacking order
+# An overlay that rebinds several symbols lists ';'-separated targets, attrs and manifest names
+# (m_<x>.json -> proof engagement_<x>.json). The names are the ones it was GATED with, because the
+# manifest basenames are part of impl_digest. A single-symbol overlay uses m_base.json.
 OVERLAYS=(
   "rope_fused_qk|bundle|$RS_BUNDLE|megatron.core.transformer.attention:apply_rotary_pos_emb|apply_rotary_pos_emb|rope"
   "swiglu_bwd_fwd_bw|bundle|$RS_BUNDLE|megatron.core.transformer.mlp:bias_swiglu_impl|bias_swiglu_impl|swiglu"
@@ -81,6 +88,7 @@ OVERLAYS=(
   "mlp_fc2_oproj_gemm|gate|$FC2_SRC|transformer_engine.pytorch.module.linear:_Linear|linear_apply|fc2op"
   "attn_fmha_ck_varlen|bundle|$AT_BUNDLE|transformer_engine.pytorch.attention.dot_product_attention.backends:FusedAttnFunc|fused_attn_apply|attn"
   "qkv_lnlinear_gemm|gate|$QKV_SRC|transformer_engine.pytorch.module.layernorm_linear:_LayerNormLinear|lnlinear_apply|qkv"
+  "rmsnorm_bwd_fc1_fused|bundle|$RN_BUNDLE|transformer_engine_torch:rmsnorm_fwd;transformer_engine_torch:rmsnorm_bwd|rmsnorm_fwd;rmsnorm_bwd|rmsn|m_fwd.json;m_bwd.json"
 )
 
 if [ -z "$OVL_HOST" ]; then
@@ -163,14 +171,22 @@ PY
 
 LIST=""
 for ((k = 0; k < N; k++)); do
-  IFS='|' read -r NAME _ _ TARGET ATTR SUB <<< "${OVERLAYS[$k]}"
-  mkdir -p "$OUT_HOST/$SUB"
-  cat > "$OVL_HOST/$NAME/m_base.json" <<EOF
-{"target": "$TARGET",
- "replacement": "$OVL_CTR/$NAME/impl.py:$ATTR",
- "engagement_out": "$OUT_CTR/$SUB/engagement.json"}
+  IFS='|' read -r NAME _ _ TARGETS ATTRS SUB MANS <<< "${OVERLAYS[$k]}"
+  mkdir -p "$OUT_HOST/$SUB" "$OVL_HOST/$NAME/build"
+  IFS=';' read -r -a T_ARR <<< "$TARGETS"; IFS=';' read -r -a A_ARR <<< "$ATTRS"
+  IFS=';' read -r -a M_ARR <<< "${MANS:-m_base.json}"
+  [ "${#T_ARR[@]}" -eq "${#A_ARR[@]}" ] && [ "${#T_ARR[@]}" -eq "${#M_ARR[@]}" ] || {
+    echo "!!! $NAME: targets/attrs/manifests counts differ" >&2; exit 3; }
+  for ((m = 0; m < ${#T_ARR[@]}; m++)); do
+    MAN="${M_ARR[$m]}"; TAG="${MAN#m_}"; TAG="${TAG%.json}"
+    if [ "$MAN" = m_base.json ]; then PROOF=engagement.json; else PROOF="engagement_$TAG.json"; fi
+    cat > "$OVL_HOST/$NAME/$MAN" <<EOF
+{"target": "${T_ARR[$m]}",
+ "replacement": "$OVL_CTR/$NAME/impl.py:${A_ARR[$m]}",
+ "engagement_out": "$OUT_CTR/$SUB/$PROOF"}
 EOF
-  LIST="${LIST:+$LIST,}$OVL_CTR/$NAME/m_base.json"
+    LIST="${LIST:+$LIST,}$OVL_CTR/$NAME/$MAN"
+  done
 done
-echo ">>> stack $COND: $N overlays from $OVL_HOST, proofs under $OUT_HOST/{$(for ((k = 0; k < N; k++)); do IFS='|' read -r _ _ _ _ _ SUB <<< "${OVERLAYS[$k]}"; printf '%s,' "$SUB"; done | sed 's/,$//')}" >&2
+echo ">>> stack $COND: $N overlays from $OVL_HOST, proofs under $OUT_HOST/{$(for ((k = 0; k < N; k++)); do IFS='|' read -r _ _ _ _ _ SUB _ <<< "${OVERLAYS[$k]}"; printf '%s,' "$SUB"; done | sed 's/,$//')}" >&2
 echo "GEAK_OVERLAY=$LIST TORCH_EXTENSIONS_DIR=$OVL_CTR/build"

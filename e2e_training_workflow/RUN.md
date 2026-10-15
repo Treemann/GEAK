@@ -49,7 +49,8 @@ all-reduce at 7.4%, and nothing else above 5.3%. A follow-up `fast` run would ne
 `lmhead_wgrad_reselect` is subsumed by the accepted lm-head overlay, which binds the same site.
 
 **Gate the next head ON the stack (2026-10-14).** Pass
-`baseline_overlay: "<REPO>/e2e_training_workflow/scripts/stack_overlay_env.sh --cond s7"`.
+`baseline_overlay: "<REPO>/e2e_training_workflow/scripts/stack_overlay_env.sh --cond s8"` (s8 = the
+seven + `rmsnorm_bwd_fc1_fused`, accepted ON s7 on 2026-10-15; use the latest condition).
 * Setup, Profile, every gate leg, Finalize and Validate then run on top of the seven kernels.
 * The deltas the run reports are increments on that stack.
 * Do NOT pass bare `baseline_dirs` with it. A reused leg must have run the same stack (same

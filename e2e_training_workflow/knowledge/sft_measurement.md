@@ -1094,3 +1094,59 @@ No combined seven-kernel bundle exists; `measure_packed_stack.sh` is the reprodu
     the workload owner's call.
 * The next kernel-side gain would have to come from GEMM efficiency itself, beyond solution
   selection, which is outside what the overlays do today.
+
+### Gating ON the stack: the first two `baseline_overlay` runs (2026-10-15)
+
+Both runs used `baseline_overlay: scripts/stack_overlay_env.sh --cond s7`. Every leg ran on top of the
+seven accepted kernels; all legs are Megatron, packed 7B, GBS 16.
+
+**Run 1, `wf_1529a068-555`: the mechanism works; the floor was mis-measured.**
+* Setup took three fresh stacked legs: 3,443 / 3,472 / 3,481 useful tok/s/GPU.
+  * All 7 overlays were engaged on 8/8 ranks with fallback 0.
+  * `impl_digest` 18aa6b781217a343 was identical on all three. That is the point of the fixed
+    `m_base.json` names.
+* The profile on the stack shows ~95% of the critical path is already inside accepted overlays.
+  What is left uncovered:
+  * optimizer / grad tail 2.6%;
+  * RMSNorm bwd ~1.7% (largely under fc1's side-stream wgrad);
+  * residual add + dropout 0.6–0.8%;
+  * exposed comm 7.6–12% (it varies run to run).
+* Setup reported `across_job` = 0.93%, measured with the aligned median ratio. Isolated ~300 ms host
+  stalls inflated it; the paired ratio on the same pairs read 0.01–0.07%. The stop rule therefore
+  refused every head. Fixed in DECISIONS 4.18.
+* Finalize still produced the seven-kernel bundle `runs/finalize_bundle_1015_s7_stack`:
+  * two cold runs passed every check;
+  * it reproduces the baseline within 0.044% paired;
+  * `launch.sh` has `--ref` and `--bare`.
+
+**Run 2, `wf_eac2c468-e66`: the same, reusing the three stacked legs, with a paired floor.**
+* Measured `across_job` 0.069%, so the floor was 0.25%.
+* `rmsnorm_bwd_fc1_fused` (HIP RMSNorm fwd + single-launch bwd for fc1's norm, rebinding
+  `transformer_engine_torch:rmsnorm_fwd/_bwd`): **accepted, but it is a floor-level win.**
+  * Gate: +0.257% paired against the 0.25% band (window-aligned −0.11%).
+  * Director validation: +0.29%. Architect re-measure: +0.36% / +0.38% paired, with a null pair at
+    −0.001%.
+  * All positive and consistent, but each figure is about the size of the floor.
+  * Op-level speedup was 2.33x (TE ran general-fallback norm kernels at 0.6–0.8 TB/s). Most of that
+    sits under fc1's side-stream wgrad, so only ~0.3% reaches the step.
+  * L0 equals TE on out and dln_weight. dgrad differs by 1 ulp, with sign balance 0.43 on 190
+    nonzero errors, which is inside tolerance.
+  * L1 passes as both overlay and kernel_swap; step-1 loss differs by 0.0016%.
+  * Bundle `runs/finalize_bundle_1015_s7_rmsn`: the s7 base via `stack_overlay_env.sh` plus rmsnorm.
+    It is now condition **s8** of `stack_overlay_env.sh`.
+* Mechanism checks:
+  * The re-profile after the acceptance carried the rmsnorm overlay (`CARRIED_OVERLAY` was in its
+    inputs; the first profile had none).
+  * Its Top-N marks ops already replaced by accepted overlays.
+  * Both gate legs carried the 7 base overlays with fallback 0.
+* The second head, `grad_tail_fused_scale_check` (2.6% of the step, +0.81% expected), was extracted
+  with a full oracle: 11 cases, 7 negative controls, and the production size of 7.6 G elements. It
+  was then dropped by the forward-only rule, although the op is outside autograd and has no backward
+  at all. Fixed in DECISIONS 4.19.
+
+**Reading.** On this workload the kernel track has reached the floor: the remaining heads are each
+worth ≤0.8%. The cumulative result is unchanged in substance: **~+21% over the packed reference,
+~4.15x unpacked** (s7 +20.7%, plus ~0.3%). The large remaining items are not kernels:
+* exposed communication (7.6–12%, 0% overlap);
+* the GBS decision.
+
