@@ -68,6 +68,13 @@ sign rule on 96 legs:
 * same-code re-runs: 6.1% / 1.1%.
 The rule stands. The 10-13 "~17%" was a small correlated sample (DECISIONS 4.20).
 
+**Done 2026-10-15:** user decision plus measurement settled the recipe: **GBS 16 packs, dropout
+default 0.1 untuned** (DECISIONS 4.21).
+* On s8, GBS 16 / 24 / 64 gives 3,488 / 3,582 / 3,718; the stack's gain is +21.5% at all three
+  (`runs/gbsx_1015_133312_*`).
+* Headline: 3,488 useful tok/s/GPU, 4.16x unpacked.
+* The descriptor file is unchanged, because bundles pin its sha256.
+
 **Next:** the prioritised list is `ROADMAP.md` "Near-term priorities (2026-10-14)". In short:
 * P0-1: GBS + dropout decision (owner).
 * P0-2: review the uncommitted agent changes.
@@ -98,6 +105,6 @@ also matches the calling shell. Kernel-track runs need `kernel_workflow/` in the
 * `workloads/qwen2_5_math_7b_packed.env` (GBS 16 PENDING owner confirmation, floor 0.25%).
 
 ## Decisions waiting on the user / workload owner
-1. GBS after packing: 16 (as in the descriptor), 24, or 64 packs.
-2. Whether the reference recipe should drop dropout to the model's own 0.0.
+1. ~~GBS after packing~~ DECIDED 2026-10-15: GBS 16 packs (DECISIONS 4.21).
+2. ~~Whether the reference recipe should drop dropout to the model's own 0.0.~~ DECIDED 2026-10-15: keep the default 0.1, no tuning.
 3. Review of the uncommitted agent changes (09-24 batch + knowledge/critical_path.md from 10-09).

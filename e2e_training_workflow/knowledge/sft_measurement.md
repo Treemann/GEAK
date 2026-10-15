@@ -1180,3 +1180,36 @@ worth ≤0.8%. The cumulative result is unchanged in substance: **~+21% over the
 Further kernel gains need either GEMM efficiency work beyond solution selection (P2-1), or a change
 of configuration that moves the profile. Exposed communication and GBS are the large items left.
 
+### GBS on the accepted stack, and the decision: GBS 16 packs (2026-10-15)
+
+`measure_packed_stack.sh --conds ref,s8 --reps 3 --gbs-list 16,24,64 --name gbsx`: 18 legs
+(`runs/gbsx_1015_133312_*`), Megatron, packed 7B, dropout 0.1. All legs are ok and clean, and every
+overlay shows fallback 0. Reps agree within 10 tok/s.
+
+| GBS (packs) | conv. / step | ref | s8 | s8 vs ref (paired, per rep) | s8 vs unpacked 839.2 |
+|---|---|---|---|---|---|
+| 16 | ~53 | 2,867 | 3,488 | +21.9 / +21.1 / +21.5% | 4.16x |
+| 24 | ~79 | 2,939 | 3,582 | +21.4 / +21.6 / +21.5% | 4.27x |
+| 64 | ~212 | 3,050 | 3,718 | +21.5 / +21.6 / +21.7% | 4.43x |
+
+**Reading.**
+* The kernel stack's gain does not depend on GBS: about +21.5% at all three.
+* The comm amortisation of a larger GBS is worth +2.7% at 24 and +6.6% at 64 on s8. That is about
+  the same as on the bare stack (+2.5% and +6.4%).
+
+**Decision: GBS 16 packs (DECISIONS 4.21).** Dropout stays at the default 0.1, untuned (user
+decision 2026-10-15).
+* The learning rate was tuned for 64 conversations per step. Multiples of DP 8 × MBS 1 bracket that
+  at 16 (−17%) and 24 (+23%).
+* 16 is the closer of the two and does not exceed the tuned batch.
+* GBS 64 is 3.3x the tuned batch: about 94 instead of ~312 optimizer steps per epoch on this data.
+  It needs an LR re-tune, which the no-tuning decision rules out.
+* 24 would buy +2.7% throughput for a larger recipe deviation.
+* Every accepted kernel, band and bundle was measured at GBS 16, so nothing is re-baselined.
+
+The headline at the chosen recipe is **3,488 useful tok/s/GPU, 4.16x the unpacked reference**:
+packing ×3.42, then the s8 stack +21.6%. `workloads/qwen2_5_math_7b_packed.env` keeps GBS=16 and is
+deliberately NOT edited to drop its "PENDING" note. Six bundles pin its sha256 (`launch.sh` /
+`SHA256SUMS.inputs`), so a comment edit would make every one of them refuse to run. The confirmation
+lives in DECISIONS 4.21.
+

@@ -13,10 +13,14 @@
 #
 # Usage: measure_packed_stack.sh [--conds ref,s5,s6,s7] [--reps 3] [--iters 30] [--name pstack]
 #                                [--profile 12:13]   (profiler window on ranks 0,4: NOT a throughput leg)
+#                                [--gbs-list 16,24,64]  (GBS in PACKS; every condition at every GBS,
+#                                 interleaved within a rep; legs are named <cond>g<gbs><rep>. Legs at
+#                                 different GBS do not see the same batches, so compare them per leg,
+#                                 and pair conditions only WITHIN one GBS)
 set -euo pipefail
 GEAK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_HOST="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
-CONDS="ref,s5,s6,s7"; REPS=3; ITERS=30; NAME=pstack; PROFILE=""
+CONDS="ref,s5,s6,s7"; REPS=3; ITERS=30; NAME=pstack; PROFILE=""; GBS_LIST=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --conds) CONDS="$2"; shift 2;;
@@ -24,6 +28,7 @@ while [ $# -gt 0 ]; do
     --iters) ITERS="$2"; shift 2;;
     --name) NAME="$2"; shift 2;;
     --profile) PROFILE="$2"; shift 2;;
+    --gbs-list) GBS_LIST="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -35,16 +40,23 @@ STAMP="$(date +%m%d_%H%M%S)"
 OVL_HOST="$WORK_HOST/overlays/${NAME}_$STAMP"     # fresh per measurement run, never rm -rf'd
 [ -e "$OVL_HOST" ] && { echo "!!! $OVL_HOST exists" >&2; exit 3; }
 
+for G in ${GBS_LIST//,/ }; do
+  case "$G" in *[!0-9]*|"") echo "bad --gbs-list entry: $G" >&2; exit 2;; esac
+  [ $((G % 8)) -eq 0 ] || { echo "GBS $G is not a multiple of DP 8 x MBS 1" >&2; exit 2; }
+done
+G_LOOP="${GBS_LIST//,/ }"; G_LOOP="${G_LOOP:-_}"   # "_" = the descriptor's own GBS, legacy leg names
 for i in $(seq 1 "$REPS"); do
+ for G in $G_LOOP; do
   for MODE in ${CONDS//,/ }; do
-    LEG="${MODE}${i}"
+    if [ "$G" = _ ]; then LEG="${MODE}${i}"; GARG=(); else LEG="${MODE}g${G}${i}"; GARG=(--gbs "$G"); fi
     OUT_HOST="$WORK_HOST/runs/${NAME}_${STAMP}_${LEG}"
     # Installs on first use and re-verifies the gated bytes on every leg; refuses on any mismatch.
     EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$MODE" --out "$OUT_HOST" --install "$OVL_HOST")"
     echo ">>> $(date +%H:%M:%S) leg $LEG -> $OUT_HOST"
     "$GEAK_ROOT/scripts/bench_train.sh" --workload "$WORKLOAD" --stack megatron --nproc 8 \
       --iters "$ITERS" --out "$OUT_HOST" --tag "${NAME}_${LEG}" ${EXTRA:+--extra-env "$EXTRA"} \
-      ${PROFILE:+--profile-steps "$PROFILE" --profile-ranks 0,4}
+      "${GARG[@]}" ${PROFILE:+--profile-steps "$PROFILE" --profile-ranks 0,4}
   done
+ done
 done
 echo ">>> legs under $WORK_HOST/runs/${NAME}_${STAMP}_*  (overlays: $OVL_HOST)"

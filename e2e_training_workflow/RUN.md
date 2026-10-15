@@ -27,8 +27,8 @@ Stage 2 stopped on the wall clock with 3 of 4 heads untried, and nothing used to
 
 ## The current reference and queue (2026-10-14): packed 7B, Megatron
 
-Run against `workloads/qwen2_5_math_7b_packed.env`. GBS 16 packs is still PENDING owner
-confirmation, and dropout 0.1 is an open recipe question.
+Run against `workloads/qwen2_5_math_7b_packed.env`. GBS 16 packs and the default dropout 0.1 are
+CONFIRMED (DECISIONS 4.21). The descriptor still says PENDING because six bundles pin its sha256.
 
 **Accepted** (each gated against the BARE packed reference; increments measured stacked, in order):
 
