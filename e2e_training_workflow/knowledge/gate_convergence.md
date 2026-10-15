@@ -1367,3 +1367,46 @@ t = m / (sd(d) / sqrt 3). The critical value is t_crit = 4.30 (two-sided 95%, df
 These criteria are fixed now and are not to be changed after any leg is read. A deviation from this
 plan (a crashed leg re-run, a seed swapped) is reported as such.
 
+### P0-4 RESULT (2026-10-15): INCONCLUSIVE by the pre-registered rule, and a late-drift signal on S8
+
+Run `scripts/quality_ab.sh`, 9 legs `runs/qab_1015_151502_*`. All legs are ok, 358 steps. The S8
+legs show 64 proofs and no training-path fallback.
+
+Held-out validation loss (`quality_ab_analyze.py`):
+
+| seed | REF | S8 | CTRL (LR x0.7) |
+|---|---|---|---|
+| 1234 | 1.2980 | 1.3870 | 1.2975 |
+| 2345 | 1.2895 | 1.4320 | 1.3320 |
+| 3456 | 1.2953 | 1.2874 | 1.3010 |
+
+Paired against REF:
+* CTRL: d = −0.0005 / +0.0425 / +0.0057, t = 1.18. **The control is NOT detected.**
+* S8: d = +0.0889 / +0.1425 / −0.0080, t = 1.69.
+
+**Pre-registered verdict: INCONCLUSIVE (underpowered). No S8 verdict is drawn**, as the plan requires.
+
+**Exploratory, beyond the pre-registration.** It is labelled as such and decides nothing by itself.
+Arms of one seed see identical training batches (`useful_tokens` equal on every step), so the
+per-step training loss is directly paired.
+* **The control's effect is real but gone by the end.** CTRL − REF training loss runs +0.15 to +0.32
+  over steps 1–50 and +0.08 to +0.16 at steps 51–100, then shrinks to +0.01 to +0.04 by steps
+  341–358. A constant LR ×0.7 over one epoch converges to nearly the same place. So the end-of-epoch
+  held-out loss with 3 seeds was the wrong-powered instrument for this control. The design needs
+  either more seeds or a control whose end-point effect is larger.
+* **S8 shows no systematic offset over the run.** Windowed S8 − REF over steps 1–340 alternates in
+  sign: seed 1234 is +0.06 early and −0.07 at 301–340; seed 2345 is −0.15 at 101–150 and ≈0
+  elsewhere.
+* **But two of three S8 seeds drift late.** From about step 348, S8 − REF on identical batches rises
+  monotonically from +0.00 to +0.10 (seed 1234) and +0.12 (seed 2345), and S8's grad norm climbs from
+  2–3 to 6–12 while REF stays at 1–2. Seed 3456 shows nothing. The held-out excess on those two seeds
+  (+0.09, +0.14) is this drift caught by the end-of-training evaluation.
+* Two seeds with different data orders starting a smooth drift at about the same step is unlikely to
+  be coincidence. Something that accumulates with steps or calls is the leading hypothesis. Until it
+  is explained, **the stack is NOT cleared for long training**.
+
+Diagnostics running (exploratory):
+* reproduce S8 and REF at seed 1234;
+* s7 (s8 without rmsnorm) at seed 1234, to bisect the newest overlay;
+* S8 at seed 2345 again.
+

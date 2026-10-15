@@ -5,7 +5,7 @@
 #
 # Arms (run interleaved per seed, in this order):
 #   ref   no overlay
-#   s8    the accepted stack (stack_overlay_env.sh --cond s8)
+#   s8    the accepted stack (stack_overlay_env.sh --cond s8); s2..s7 accepted as arms for bisection
 #   ctrl  POSITIVE CONTROL: ref with --lr 7.0e-6 (x0.7), a known modest recipe change the metric must see
 # Each leg: one epoch (358 iters at GBS 16) on the train19k pack, then Megatron's end-of-training
 # evaluation over 19 x 16 = 304 packs of the held-out pack.
@@ -45,7 +45,7 @@ for SEED in ${SEEDS//,/ }; do
     EXTRA=""; TARGS="--seed $SEED $EVAL_ARGS"
     case "$ARM" in
       ref) ;;
-      s8) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond s8 --out "$OUT_HOST" --install "$OVL_HOST")" ;;
+      s[2-8]) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$ARM" --out "$OUT_HOST" --install "$OVL_HOST")" ;;
       ctrl) TARGS="$TARGS --lr 7.0e-6" ;;
       *) echo "unknown arm: $ARM" >&2; exit 2;;
     esac
