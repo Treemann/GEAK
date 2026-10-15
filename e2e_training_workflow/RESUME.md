@@ -55,6 +55,13 @@ outlier leg) -- analysed in `knowledge/gate_convergence.md` "Stacked correct ker
   Fixed in DECISIONS 4.19.
 * Details: `knowledge/sft_measurement.md`, "Gating ON the stack".
 
+**Running (2026-10-15):** `wf_99be8541-d9f`. Base `stack_overlay_env.sh --cond s8`.
+* skip_heads: the eight accepted heads plus `lmhead_wgrad_reselect`.
+* Setup measures three fresh s8 legs.
+* Targets: `grad_tail_fused_scale_check`, now admissible with `autograd: false`, and
+  `residual_add_dropout_fused`.
+* t0_epoch_ms 1792053108006. Resume with `resumeFromRunId: "wf_99be8541-d9f"`.
+
 **Next:** the prioritised list is `ROADMAP.md` "Near-term priorities (2026-10-14)". In short:
 * P0-1: GBS + dropout decision (owner).
 * P0-2: review the uncommitted agent changes.
