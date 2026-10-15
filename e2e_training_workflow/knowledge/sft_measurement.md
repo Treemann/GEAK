@@ -1150,3 +1150,33 @@ worth ≤0.8%. The cumulative result is unchanged in substance: **~+21% over the
 * exposed communication (7.6–12%, 0% overlap);
 * the GBS decision.
 
+**Run 3, `wf_99be8541-d9f` (base s8, 2026-10-15): the queue is exhausted.**
+* Setup took three fresh s8 legs: 3,475 / 3,467 / 3,471 useful tok/s/GPU.
+  * `impl_digest` was f0d14a2739ec555a on all three, the same as the rmsnorm gate's candidate leg.
+    So s8 reproduces the gated stack exactly.
+  * Paired `across_job` was 0.045%, so the floor was 0.25%.
+* Profile on s8:
+  * compute 93.5%;
+  * exposed comm 5.5% on rank 0 (9.9% on rank 4, which waits on rank 0), 0% overlap;
+  * idle 0.9%;
+  * GEMMs ~80% of the critical path, all of it already inside accepted overlays.
+* The queue held one head: `grad_tail_fused_scale_check` (2.5% share, +0.58% expected).
+  * It was admitted through the DECISIONS 4.19 path: the Extractor returned `autograd: false`.
+  * Lane: a fused single-pass HIP norm+scale stream (91 -> 61 GB of traffic), **1.64x** at the
+    production size of 7.6 G elements (18.3 vs 30.0 ms).
+  * L0: 11/11 cases, scaled grad bit-exact, norm error at or below the original's.
+  * L1: step-1 loss identical.
+  * **Gate: no_win**, +0.132% paired against a 0.391% band (`compare_legs.py` re-run on the gate legs
+    gives +0.1319%). In the step it saves only ~4–5 ms of ~2,330 ms. The 30 ms isolated baseline
+    does not all sit on the critical path, presumably because part of it overlaps the last
+    microbatch's backward or the collective.
+* Validate: s8 unchanged, +0.009% against its own reference. Bundle `runs/finalize_bundle_1015_s8`
+  covers the 8 overlays (9 manifests), with `--ref` / `--bare`.
+
+**Where the kernel track stands on this workload.** On the s8 stack:
+* every remaining non-GEMM head is under 1% of the step;
+* the GEMMs are already on tuned solutions inside accepted overlays.
+
+Further kernel gains need either GEMM efficiency work beyond solution selection (P2-1), or a change
+of configuration that moves the profile. Exposed communication and GBS are the large items left.
+
