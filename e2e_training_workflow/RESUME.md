@@ -32,6 +32,30 @@ Stacked re-measure `measure_packed_stack.sh --conds ref,s5,s6,s7 --reps 3` (legs
 3,460 useful tok/s/GPU, 4.12x unpacked**. One L1 false reject (s7 vs s6 rep 3, strict sign rule, one
 outlier leg) -- analysed in `knowledge/gate_convergence.md` "Stacked correct kernels".
 
+**Done 2026-10-15:** `wf_1529a068-555`, the first real run of `baseline_overlay`.
+* What it validated:
+  * Setup measured three STACKED legs. All 7 overlays were engaged with fallback 0, and
+    `impl_digest` 18aa6b781217a343 was identical on all three (the fixed manifest names work).
+  * The baseline was 3,443–3,481 useful tok/s/GPU, matching the 10-13 s7 legs.
+  * The profile was taken on the stack: ~95% of the critical path is already in accepted overlays.
+  * Finalize produced a seven-kernel bundle, `runs/finalize_bundle_1015_s7_stack` (launch.sh with
+    `--ref` and `--bare`). Two cold runs passed every check and reproduced the baseline within
+    0.044% paired. This largely covers P0-3; it still depends on the gated sources under
+    `$GEAK_WORK_DIR`.
+* What it found: the stop rule refused every head because Setup priced the floor at 0.93%. The
+  across-job spread had been measured with the aligned median ratio, which host stalls inflate; the
+  paired ratio read 0.07%. Fixed in DECISIONS 4.18 (ae01511f).
+
+**Running (2026-10-15):** `wf_eac2c468-e66`. Same args, plus `baseline_dirs` = the three
+`td_base_s7_1015_041002_leg*` legs, which are stacked and therefore valid. t0_epoch_ms 1792041095323.
+It should:
+* re-derive a paired floor;
+* gate `grad_tail_fused_scale_check` (+0.81% expected) and/or `residual_add_dropout_fused` (+0.35%)
+  ON the stack;
+* if one is accepted, re-profile with it carried.
+
+Resume with `resumeFromRunId: "wf_eac2c468-e66"`.
+
 **Next:** the prioritised list is `ROADMAP.md` "Near-term priorities (2026-10-14)". In short:
 * P0-1: GBS + dropout decision (owner).
 * P0-2: review the uncommitted agent changes.
