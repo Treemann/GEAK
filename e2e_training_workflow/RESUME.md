@@ -75,6 +75,14 @@ default 0.1 untuned** (DECISIONS 4.21).
 * Headline: 3,488 useful tok/s/GPU, 4.16x unpacked.
 * The descriptor file is unchanged, because bundles pin its sha256.
 
+**Running (2026-10-15):** P0-4 quality A/B, pre-registered in `knowledge/gate_convergence.md` (commit
+7757951b).
+* Command: `scripts/quality_ab.sh`, 9 legs (REF / S8 / CTRL, LR x0.7, × seeds 1234 / 2345 / 3456,
+  358 iters each).
+* Legs `runs/qab_1015_151502_*`; driver `runs/qab_driver_1015.log`.
+* Analyse with `python3 scripts/quality_ab_analyze.py /home/treemann/geak_train/runs/qab_1015_151502`.
+* If interrupted: re-run only the missing legs with `--seeds/--arms` and report it as a deviation.
+
 **Next:** the prioritised list is `ROADMAP.md` "Near-term priorities (2026-10-14)". In short:
 * P0-1: GBS + dropout decision (owner).
 * P0-2: review the uncommitted agent changes.
