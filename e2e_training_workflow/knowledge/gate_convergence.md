@@ -1410,3 +1410,56 @@ Diagnostics running (exploratory):
 * s7 (s8 without rmsnorm) at seed 1234, to bisect the newest overlay;
 * S8 at seed 2345 again.
 
+### What the P0-4 diagnostics showed: the end-point metric was dominated by recipe-level instability (exploratory, 2026-10-15)
+
+* **Same code, same seed, rerun.** REF seed 1234 ended at held-out **1.401** against the first run's
+  1.298. Its training loss differed by +0.21 over steps 1–30 and ±0.08 later.
+  * Run-to-run nondeterminism (atomics, chaos) plus late-training instability is enough to move
+    the end-of-epoch held-out loss by about 0.1 for the REFERENCE itself.
+  * The first three REF seeds landing within 0.009 of each other was luck.
+  * The same-seed pairing the design leaned on is much weaker than assumed.
+* **Late instability is a property of the recipe**, not of S8. Constant LR 1e-5, no warmup, no decay.
+  Count of steps after step 150 with grad norm > 10:
+  * REF: 10 / 14 / 11 / 18;
+  * CTRL (LR x0.7): 43 / 7 / 84;
+  * S8: 19 / 3 / 12 / 36.
+* **S8 rerun at seed 1234.** A severe episode from about step 321: training loss on identical
+  batches is +0.18 at steps 321–340 and +0.32 at 341–350, grad norm median 38. Held-out 1.426.
+* **Progressive validation is the better instrument.** In a single epoch every pack is seen once,
+  so each step's training loss, taken before that step's update, is a loss on unseen data.
+  * Its mean over steps 201–358 covers about 2,500 packs, against 304 for the end eval, and it
+    averages over transients.
+  * Arms of one seed share the exact batches.
+  * On the existing legs it DETECTS the control. CTRL − REF = +0.015 / +0.017 / +0.048 (mean +0.027,
+    all positive). S8 − REF = −0.012 / −0.005 / +0.004 (mean −0.004).
+  * The S8 rerun is the outlier at 1.511, against REF's 1.440–1.461.
+* So the open question is **whether S8 has episodes more often than REF**. 1 severe episode in 4 S8
+  runs, against 0 in 4 REF runs, cannot answer it. The question is settled by P0-4b below, not by
+  these legs. These legs were looked at to choose the metric, so they cannot also confirm it.
+
+## P0-4b PRE-REGISTRATION: progressive validation, 5 fresh seeds (written 2026-10-15, before any P0-4b leg)
+
+Same data, recipe, arms and script as P0-4 (`quality_ab.sh`, REF / S8 / CTRL = LR x0.7). Seeds 4567,
+5678, 6789, 7890 and 8901, none used before. 15 legs.
+
+**Primary metric:** PV = mean training loss over steps 201–358 (`probe_rank0.jsonl`). It is paired
+by seed: d_k = PV(X)_k − PV(REF)_k, n = 5, t = mean / (sd / sqrt 5), t_crit = 2.776 (two-sided 95%,
+df 4).
+
+**Episode** (per leg against its own seed's REF leg): any 10-step window after step 150 in which the
+mean paired loss difference exceeds +0.10. REF legs are scored for episodes against the S8 leg of
+the same seed with the sign reversed, so both arms are judged by the same symmetric rule.
+
+**Verdicts.**
+1. **Control detected** iff t_CTRL ≥ 2.776. If not, the run is INCONCLUSIVE (underpowered) and no S8
+   verdict is drawn.
+2. **S8 FAIL (quality)** if m_S8 > 0 and t_S8 ≥ 2.776.
+3. **S8 FAIL (instability)** if the count of S8 legs with an episode exceeds REF's count by ≥ 4 (of
+   5). Fisher exact p ≈ 0.048 at 4:0.
+4. **S8 PASS** if neither FAIL fires and |m_S8| ≤ 0.25 × |m_CTRL|.
+5. Otherwise INCONCLUSIVE at the observed effect.
+
+Secondary, reported only: end-of-training held-out loss, late grad-norm counts, throughput,
+engagement (training-path fallback 0 required, or the S8 leg is void). The P0-4 and diagnostic legs
+are NOT pooled into this test.
+
