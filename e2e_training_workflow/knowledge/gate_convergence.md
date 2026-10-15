@@ -1463,3 +1463,56 @@ Secondary, reported only: end-of-training held-out loss, late grad-norm counts, 
 engagement (training-path fallback 0 required, or the S8 leg is void). The P0-4 and diagnostic legs
 are NOT pooled into this test.
 
+### P0-4b RESULT (2026-10-16): the accepted stack has a LATE-TRAINING INSTABILITY defect
+
+`runs/qabpv_1015_191546_*`, 15 legs, all ok. Progressive validation (PV, mean training loss over
+steps 201–358):
+
+| seed | REF | S8 | CTRL | S8 episode (first step) |
+|---|---|---|---|---|
+| 4567 | 1.4336 | 1.4786 | 1.4608 | 279 |
+| 5678 | 1.4510 | **2.5041** | 1.4767 | 254 |
+| 6789 | 1.4815 | **1.9982** | 1.4754 | 196 |
+| 7890 | 1.4524 | 1.5279 | 1.4564 | 327 |
+| 8901 | 1.4332 | 1.4334 | 1.4743 | none |
+
+* CTRL − REF: mean +0.0184, t = 2.16.
+* S8 − REF: mean +0.338, t = 1.68 (one huge outlier inflates the sd).
+* Episodes: S8 4/5, REF 0/5.
+
+**Verdict by the pre-registered rule order: INCONCLUSIVE.** Rule 1 gates every S8 verdict on the
+control (t 2.16 < 2.776).
+
+**Verdict on the substance: S8 FAILS on instability, and the stack is not cleared for training
+beyond a few hundred steps.** The pre-registration had a design flaw:
+* The control calibrates the size of a QUALITY effect. The instability rule compares S8 with REF
+  directly and needs no calibration.
+* Gating it on the control was a mistake. It is recorded here rather than silently re-ordered.
+* The instability rule on its own fires: 4 vs 0 against the pre-registered ≥ 4.
+
+Across all S8-family legs to date:
+* severe episodes in 6 of 11 (P0-4b 4/5, the P0-4 rerun at seed 1234, the s7 diagnostic);
+* REF: 0 of 9 by the same rule.
+
+The episodes are catastrophic, not drift:
+* Seed 5678: training loss 1.47 → 2.26 (steps 286–300) → **8.50** (301–315), grad norm up to 2,241,
+  then recovery to 1.53 by the end.
+* Seed 6789: loss 5.42 at steps 211–225, grad-norm median 213.
+* No iteration was skipped.
+* Shape: a few corrupted gradients, clipped to norm 1.0 but pointing the wrong way, then recovery.
+
+**Localisation so far.**
+* **s7 (no rmsnorm) diverges too:** seed 1234 PV 2.914, 70 steps after 150 with grad norm > 10.
+  The newest overlay is not the cause.
+* Leading hypothesis: a race or missing stream synchronisation in a SIDE-STREAM wgrad path (fc1's
+  and qkv's overlapped wgrad, lm-head's two-stream backward). A rare unsynchronised read of a
+  partially written buffer corrupts one step's gradient now and then. No 30-step gate (L1, the
+  throughput gate) can see an event with a per-step probability this low.
+* Bisection running on the cumulative stack, three seeds per condition, starting with s4 (rope,
+  swiglu, fc1, lmhead).
+
+**Consequence for delivery.** Every stacked bundle (`finalize_bundle_1015_s7_stack`, `_s7_rmsn`,
+`_s8`, and the per-head bundles until cleared individually) is **NOT cleared for production
+training** until the defect is found and the stack passes a P0-4b-style test. The throughput
+numbers stand; the training-safety claim does not.
+
