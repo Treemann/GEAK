@@ -1308,3 +1308,62 @@ Implementation identity is `GEAK_OVERLAY_SHA`.
 It is a backstop for gross one-sided moves. Its false-reject rate is now measured for the case it is
 actually used on.
 
+## P0-4 PRE-REGISTRATION: training quality of the accepted stack, judged by OUTCOME (written 2026-10-15, before any leg)
+
+**Question.** Does one epoch of SFT on the accepted s8 stack produce a model as good as the
+reference recipe? "As good" means held-out loss, not trajectory similarity. The trajectory
+instruments (L1 envelope, soak) were retired because bf16/dropout chaos makes 30-step and 300-step
+trajectories non-comparable. An outcome metric does not need trajectories to agree; it needs the
+trained weights to be equally good.
+
+**Data.** `sft_ultrachat20k.jsonl` split by a fixed rule: line index % 20 == 19 is held out.
+* `..._train19k.jsonl` (19,000 conversations, sha 89f8aa06) packs to 5,729 packs (sha e3bb6e7b).
+* `..._heldout1k.jsonl` (1,000, sha 6409b130) packs to 309 packs (sha 54fad019).
+* No line is shared. Both were packed by `pack_sft.py` (`--seq 4096`), with 300/300 token identity
+  verified.
+
+**Recipe.** `workloads/qwen2_5_math_7b_packed.env` as confirmed in DECISIONS 4.21: GBS 16 packs, MBS 1,
+seq 4096, dropout 0.1, LR 1e-5 constant, AdamW, clip 1.0, bf16, distributed optimizer, TP1 x DP8.
+* `--iters 358` = one epoch (5,729 / 16).
+* `--data` = the train19k pack.
+* `--valid-data-path` = the held-out pack, `--eval-iters 19 --eval-interval 1000000`. That gives one
+  evaluation, at the end of training, over 19 × 16 = 304 of the 309 held-out packs. Which 304
+  depends on the seed, so the arms of one seed see exactly the same packs.
+  (`--full-validation` crashes with SFTDataset: smoke `runs/evalsmoke_1015_a`.)
+
+**Arms**, three seeds each (1234, 2345, 3456; the seed sets data order AND dropout masks), run
+interleaved per seed in the order REF, S8, CTRL:
+* **REF**: no overlay.
+* **S8**: `stack_overlay_env.sh --cond s8`, the eight accepted kernels.
+* **CTRL**, the positive control: REF with `--lr 7.0e-6` (x0.7). It is a known, modest,
+  non-equivalent change to the recipe. Its role is to prove the metric can see a difference of a
+  known kind and size. Without it a PASS would be uninterpretable: this is exactly how L2 died.
+
+**Metric.** The end-of-training `validation loss ... lm loss value` printed by Megatron. Eval-mode
+note, measured in smoke `runs/evalsmoke_1015_s8`:
+* Under no_grad, the rope / swiglu / attn / lmhead overlays fall back to the reference forward.
+  fc1 / fc2_oproj / qkv / rmsnorm stay engaged.
+* So the metric mostly judges the WEIGHTS the stack trained, through reference kernels. That is the
+  intended object.
+
+**Statistics.** For arm X, paired by seed: d_k = X_k − REF_k, k = 1..3. Let m = mean(d) and
+t = m / (sd(d) / sqrt 3). The critical value is t_crit = 4.30 (two-sided 95%, df 2).
+
+**Pre-registered verdicts.**
+1. Control validity: CTRL is DETECTED iff all three d_k have the same sign AND |t| ≥ 4.30. If it is
+   not detected, the experiment is **INCONCLUSIVE (underpowered)**. Report the observed d's and stop;
+   no S8 verdict is drawn.
+2. With the control detected:
+   * **S8 FAIL** if m_S8 > 0 and t_S8 ≥ 4.30: significantly worse held-out loss.
+   * **S8 PASS** if not FAIL and |m_S8| ≤ 0.25 × |m_CTRL|. The stack's effect on held-out loss is at
+     most a quarter of a 30% LR cut.
+   * **S8 DIFFERS-BETTER** if m_S8 < 0 and |t| ≥ 4.30. Reported and investigated; it is not a failure.
+   * Otherwise **INCONCLUSIVE at the observed effect**, reported with its number.
+3. Reported, not voting:
+   * final training loss (mean of the last 50 steps);
+   * grad-norm summary;
+   * throughput and per-overlay engagement (fallback 0 in training required, or the S8 leg is void).
+
+These criteria are fixed now and are not to be changed after any leg is read. A deviation from this
+plan (a crashed leg re-run, a seed swapped) is reported as such.
+
