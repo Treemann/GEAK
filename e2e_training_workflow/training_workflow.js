@@ -777,7 +777,10 @@ const setup = await safeAgentStub('training_director', 'setup',
       'identity must carry the same GEAK_OVERLAY manifest basenames and GEAK_OVERLAY_SHA as a leg ' +
       'taken through BASE_OVERLAY_CMD, and its per-overlay proofs must show fallback 0. A bare leg ' +
       'is NOT a baseline for a stacked run. ' : '') +
-  'The L1 band MUST pass its own null control; if it does not, say so rather than using it.');
+  'The L1 band MUST pass its own null control; if it does not, say so rather than using it. ' +
+  'across_job_band_pct is the worst |paired.delta_pct| over the leg pairs whenever compare_legs.py ' +
+  'reports paired.same_batches=true -- the estimator the gate quotes -- not the aligned median ratio, ' +
+  'which isolated host stalls inflate (0.93% aligned vs 0.07% paired on the 2026-10-15 stacked legs).');
 if (!setup || !(setup.baseline_legs || []).length) {
   throw new Error('Setup produced no baseline. Every later number is a ratio against it, so there ' +
     'is nothing to continue with — a run that proceeds here reports deltas against nothing.');

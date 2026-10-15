@@ -50,7 +50,21 @@ Read `knowledge/sft_measurement.md` before doing anything.
      the two summaries. Each leg detects its own warmup end and `useful_tokens` swings ±25% step to
      step, so a raw ratio carries a sample-composition term larger than the signal. Measured over six
      pairwise comparisons of one 7B configuration across four days: **aligned worst 0.0589%**,
-     **unaligned worst 0.4456%**. Take `delta_pct` (the aligned one) as this run's `across_job`.
+     **unaligned worst 0.4456%**.
+     **Measure `across_job` with the SAME estimator the gate quotes** (DECISIONS 4.18):
+     * When `paired.same_batches` is true, which is always so for legs of one workload and seed, use
+       the worst |`paired.delta_pct`| over the leg pairs. The gate prices a candidate with the
+       paired per-step ratio (4.13), so a floor estimated with a different statistic measures a
+       different noise.
+     * Otherwise take `delta_pct` (the aligned one).
+     * Report BOTH in `notes`.
+
+     Measured instance, 2026-10-15, three stacked s7 legs:
+     * Aligned medians read 0.93% because each leg caught 1–5 isolated ~300 ms host stalls on
+       different steps.
+     * Paired read 0.01–0.07% on the same pairs.
+     * Reporting 0.93% priced the run's floor at 0.93%. The stop rule then refused a 0.81% head
+       before it was ever measured.
      Reproducibility is workload-dependent — the same analysis gives 0.06% at 7B but 0.31-0.42% at
      0.5B, where host jitter is a much larger share of the step — so measure it, never assume it.
      If `dispersion_reliable` is false, the legs are too short: re-run with more iters. At 7B,
