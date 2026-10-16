@@ -113,6 +113,21 @@ allowed), kept fixed during optimisation, not constant LR.
 * It is NOT cleared under constant LR (DECISIONS 4.24).
 * Plan steps 3 (P0-2) and 4 (QualityGate) were done while it ran.
 
+**Done 2026-10-16 (later):**
+* Headline on the cleared recipe: 3,491, 4.16x (`runs/pcos_1016_170258_*`).
+* GEMM microbench: sustained peak 199 TFLOP/s; training GEMMs at 85–99% of it in isolation; step
+  MFU about 76%. P2-1 de-prioritised.
+
+**Running:** P2-3 DP-communication sweep on s8 + the scheduled recipe, one-off driver
+`geak_train/scratch/comm_sweep_1016.sh`. Arms:
+* A: baseline;
+* B: `--overlap-grad-reduce`;
+* C: B + `--overlap-param-gather`;
+* D: B + `--ddp-bucket-size 2e8`;
+* E: `--ddp-average-in-collective`.
+2 reps each; legs `runs/comm_<stamp>_*`. A winner still needs L1 and the outcome gate before
+acceptance.
+
 **AUTONOMOUS PLAN (user offline 2026-10-16 → 10-18; instruction: never stop, decide professionally, record
 everything).** In order:
 1. **P0-4e verdict** (`quality_ab_final.py`).
