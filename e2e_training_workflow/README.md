@@ -11,9 +11,13 @@ throughput** instead of serving throughput.
 
 Every number is useful (non-pad, loss-unmasked) tokens, paired against an interleaved reference.
 
+Training safety: the 8-kernel stack is **cleared for training under a standard LR schedule**
+(warmup + cosine, `workloads/qwen2_5_math_7b_packed_cosine.env`). That rests on a pre-registered
+one-epoch, multi-seed outcome test: held-out loss −0.0023 vs REF, no instability episodes
+(DECISIONS 4.24). It is NOT cleared for constant-LR, no-warmup training (4.22). Deployable bundle:
+`finalize_bundle_1015_s8`.
+
 What is NOT established yet:
-* Long-horizon training quality of the seven-kernel stack. L1 judges 30 steps only.
-* A single deployable bundle for all seven.
 * Any accepted kernel on the second stack (HF TRL).
 
 Priorities: `ROADMAP.md`, "Near-term priorities". Same fractal two-altitude doctrine as `../e2e_workflow/`,

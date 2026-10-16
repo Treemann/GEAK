@@ -1753,3 +1753,40 @@ FIXED from P0-4d: the ×0.7 schedule's effect of +0.0206.
 reference only, the script returns CLEARED: mean +0.00054, t 0.60, 1 severe, 0 catastrophic. That
 is exactly why they cannot be the confirmation.
 
+### P0-4e RESULT (2026-10-16): **CLEARED** — the 8-kernel stack is safe to train with under the standard schedule
+
+`runs/qabfin_1016_140340_*`, 10 legs, all ok. Every S8 leg has 64 overlay proofs with training-path
+fallback 0. `quality_ab_final.py`:
+
+| seed | held-out REF | S8 | d | max10 |
+|---|---|---|---|---|
+| 5567 | 1.29119 | 1.29368 | +0.00249 | 0.010 |
+| 6678 | 1.29928 | 1.29331 | −0.00597 | −0.012 |
+| 7789 | 1.30361 | 1.30162 | −0.00199 | −0.003 |
+| 8890 | 1.29723 | 1.29619 | −0.00104 | 0.005 |
+| 9901 | 1.29984 | 1.29462 | −0.00522 | 0.002 |
+
+* **Quality: PASS.** Mean d = −0.0023, t = −1.54: within the ±0.00515 equivalence margin, not
+  significantly different, nominally better.
+* **Stability: PASS.** 0 severe, 0 catastrophic; max loss after step 150 is 1.63–1.68 on every S8
+  leg.
+* **Overall: CLEARED.**
+
+**The full arc, for the record:**
+* P0-4 (constant LR, end-eval): INCONCLUSIVE.
+* Diagnostics: the end metric was dominated by recipe-level instability.
+* P0-4b (constant LR, PV): the stack fails on late catastrophic episodes. The bisection and
+  isolation then ruled out rmsnorm, wgrad precision and side streams.
+* The user clarified that "no tuning" means default practice, warmup included.
+* P0-4d (standard schedule): the catastrophic class is gone; the decayed held-out loss matches.
+* P0-4e (confirmatory, fresh seeds): CLEARED.
+
+Conclusion: the constant-LR, no-warmup recipe was marginally stable, and the stack's accumulated,
+individually tolerable numerical differences tipped it over. Under the standard schedule they do
+not. **The clearance is recipe-specific: the stack is cleared for the scheduled recipe and remains
+NOT cleared for constant-LR, no-warmup training.**
+
+Process note: the P0-4e driver exited with code 2 AFTER its tenth leg. `quality_ab.sh` was edited
+(the `cand` arm) while it was running; bash reads a script incrementally, so the tail failed to
+parse. No leg was affected. Never edit a shell script that a running job is executing.
+

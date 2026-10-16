@@ -107,10 +107,11 @@ allowed), kept fixed during optimisation, not constant LR.
 * Under the standard schedule the catastrophic episodes are gone (S8 0/5). The decayed held-out
   loss puts S8 at +0.0005 against the control's +0.0206.
 
-**Running (2026-10-16):** P0-4e, the confirmatory run, pre-registered in commit 8405b435.
-* Command: `quality_ab.sh --workload workloads/qwen2_5_math_7b_packed_cosine.env --seeds
-  5567,6678,7789,8890,9901 --arms ref,s8 --name qabfin`. 10 legs, about 3.3 h.
-* Verdict: `python3 scripts/quality_ab_final.py /home/treemann/geak_train/runs/qabfin_<stamp>`.
+**Done 2026-10-16: P0-4e CLEARED** (`runs/qabfin_1016_140340_*`).
+* The s8 stack is cleared for training under the standard schedule: held-out d −0.0023, t −1.54;
+  0 severe / 0 catastrophic.
+* It is NOT cleared under constant LR (DECISIONS 4.24).
+* Plan steps 3 (P0-2) and 4 (QualityGate) were done while it ran.
 
 **AUTONOMOUS PLAN (user offline 2026-10-16 → 10-18; instruction: never stop, decide professionally, record
 everything).** In order:
