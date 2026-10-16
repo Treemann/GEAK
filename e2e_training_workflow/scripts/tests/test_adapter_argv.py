@@ -32,6 +32,11 @@ def ok(c, m):
         fails.append(m)
 
 
+def flag(argv, name):
+    """Value after `name`, or None -- never raises, so a broken launch reports as FAIL lines."""
+    return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else None
+
+
 def launch(extra_env):
     with tempfile.TemporaryDirectory() as t:
         os.makedirs(os.path.join(t, "bin"))
@@ -60,13 +65,13 @@ sha = hashlib.sha256("\n".join(argv).encode()).hexdigest()[:16]
 PINNED = "e44b022c2e4bae65"   # == the pre-schedule adapter (e29ca475~1), measured 2026-10-16
 ok(len(argv) == 80, f"older descriptor argv has 80 tokens (got {len(argv)})")
 ok(sha == PINNED, f"older descriptor argv is byte-identical to the pinned one ({sha} vs {PINNED})")
-ok("--lr-decay-style" in argv and argv[argv.index("--lr-decay-style") + 1] == "constant",
+ok(flag(argv, "--lr-decay-style") == "constant",
    "older descriptor keeps the historical constant LR")
 
 rc, argv, err = launch({"LR": "1.0e-5", "MIN_LR": "1.0e-6", "LR_DECAY_STYLE": "cosine",
                         "LR_WARMUP_ITERS": "11", "LR_DECAY_ITERS": "358"})
 ok(rc == 0, "scheduled descriptor launches under set -u")
-ok(argv[argv.index("--lr-decay-style") + 1] == "cosine" and "--lr-decay-iters" in argv,
+ok(flag(argv, "--lr-decay-style") == "cosine" and "--lr-decay-iters" in argv,
    "scheduled descriptor carries cosine + decay iters")
 ok("--ddp-average-in-collective" not in argv, "and NOT the DDP lever unless asked")
 
