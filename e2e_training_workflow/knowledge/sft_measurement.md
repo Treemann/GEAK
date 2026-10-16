@@ -1213,6 +1213,18 @@ deliberately NOT edited to drop its "PENDING" note. Six bundles pin its sha256 (
 `SHA256SUMS.inputs`), so a comment edit would make every one of them refuse to run. The confirmation
 lives in DECISIONS 4.21.
 
+### Headline on the CLEARED recipe (2026-10-16)
+
+`measure_packed_stack.sh --workload workloads/qwen2_5_math_7b_packed_cosine.env --conds ref,s8
+--reps 3` (`runs/pcos_1016_170258_*`). All 6 legs are ok and clean, config_digest 2e296ee3c3e6aba2.
+* ref: 2,844 / 2,872 / 2,872.
+* s8: 3,485 / 3,497 / 3,490.
+* Paired s8 vs ref: +22.09% / +21.81% / +21.89%.
+
+**Headline: 3,491 useful tok/s/GPU, 4.16x the unpacked reference.** This is on the recipe the stack
+is cleared for (DECISIONS 4.24). The schedule does not change throughput: it matches the 3,488
+measured on the constant-LR descriptor.
+
 ### GEMM efficiency on the stack: where the remaining kernel headroom is (desk analysis, 2026-10-16)
 
 **Peak.** MI308X has 80 CUs at a 1,420 MHz max clock (rocminfo). CDNA3 does 2,048 bf16 dense FLOP
