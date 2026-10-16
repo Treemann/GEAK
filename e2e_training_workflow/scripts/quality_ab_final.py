@@ -47,12 +47,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("prefix")
     ap.add_argument("--cand", default="s8")
+    ap.add_argument("--base", default="ref", help="the comparison arm (e.g. s8 when testing a lever ON the stack)")
     a = ap.parse_args()
     P = a.prefix.rstrip("/")
-    seeds = sorted({int(m.group(1)) for f in glob.glob(P + "_ref_seed*") for m in [re.search(r"seed(\d+)$", f)] if m})
+    seeds = sorted({int(m.group(1)) for f in glob.glob(P + f"_{a.base}_seed*") for m in [re.search(r"seed(\d+)$", f)] if m})
     rows, d, sev = [], [], []
     for s in seeds:
-        r, c = f"{P}_ref_seed{s}", f"{P}_{a.cand}_seed{s}"
+        r, c = f"{P}_{a.base}_seed{s}", f"{P}_{a.cand}_seed{s}"
         sr, sc = steps(r), steps(c)
         hr, hc = heldout(r), heldout(c)
         if len(sr) < 358 or len(sc) < 358 or hr is None or hc is None:
@@ -62,7 +63,7 @@ def main():
         m10 = max(statistics.fmean(diff[i:i + WIN]) for i in range(AFTER, len(diff) - WIN + 1))
         d.append(hc - hr)
         sev.append(m10)
-        print(f"seed {s}: held-out REF {hr:.6f} {a.cand} {hc:.6f} d {hc - hr:+.5f} | max10 {m10:.3f}")
+        print(f"seed {s}: held-out {a.base} {hr:.6f} {a.cand} {hc:.6f} d {hc - hr:+.5f} | max10 {m10:.3f}")
     m, sd = statistics.fmean(d), statistics.stdev(d)
     t = m / (sd / math.sqrt(len(d))) if sd > 0 else math.copysign(math.inf, m)
     if m > MARGIN and t >= T_CRIT:

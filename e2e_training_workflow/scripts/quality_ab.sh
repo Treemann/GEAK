@@ -17,7 +17,7 @@ set -euo pipefail
 GEAK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_HOST="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
 SEEDS="1234,2345,3456"; ARMS="ref,s8,ctrl"; ITERS=358; NAME=qab
-WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed.env"; CAND_CMD=""
+WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed.env"; CAND_CMD=""; CAND_TARGS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --seeds) SEEDS="$2"; shift 2;;
@@ -26,6 +26,7 @@ while [ $# -gt 0 ]; do
     --name) NAME="$2"; shift 2;;
     --workload) WORKLOAD="$2"; shift 2;;
     --cand-cmd) CAND_CMD="$2"; shift 2;;
+    --cand-train-args) CAND_TARGS="$2"; shift 2;;   # e.g. a config lever under test, cand arm only
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -59,7 +60,7 @@ for SEED in ${SEEDS//,/ }; do
       # print one `--extra-env` line). This is how the workflow's QualityGate tests a stack that is not
       # (yet) a stack_overlay_env.sh condition, e.g. the base stack plus this run's accepted overlays.
       cand) [ -n "$CAND_CMD" ] || { echo "arm cand needs --cand-cmd" >&2; exit 2; }
-            EXTRA="$(eval "$CAND_CMD --out \"$OUT_HOST\"")" ;;
+            EXTRA="$(eval "$CAND_CMD --out \"$OUT_HOST\"")"; TARGS="$TARGS $CAND_TARGS" ;;
       only-*) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "only:${ARM#only-}" --out "$OUT_HOST" --install "$OVL_HOST/${ARM}")" ;;
       ctrl) TARGS="$TARGS --lr 7.0e-6" ;;
       # Positive control for a SCHEDULED recipe: the whole schedule scaled x0.7 (peak and floor).

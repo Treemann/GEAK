@@ -1275,3 +1275,38 @@ results in `scratch/gemm_bench_1016.json`) replaced the desk numbers above:
 **ROADMAP P2-1 is therefore de-prioritised**: no GEMM lane is worth a run on this evidence. The
 next lever is the exposed DP communication (P2-3).
 
+### DP-communication levers on the cleared stack (P2-3, 2026-10-16)
+
+Setup: s8 + the scheduled recipe, 2 interleaved reps per arm (`runs/comm_1016_172452_*`; one-off
+driver `geak_train/scratch/comm_sweep_1016.sh`). Paired against A, the current configuration:
+
+| arm | flags | paired vs A | note |
+|---|---|---|---|
+| B | `--overlap-grad-reduce` | −1.47 / −0.97% | +900 MB; worse, as on the bare stack |
+| C | B + `--overlap-param-gather` | unusable (~520 tok/s) | runs degenerate or stall, no error logged; not pursued |
+| D | B + `--ddp-bucket-size 2e8` | −0.42 / −0.33% | fewer, larger buckets are still not a win |
+| **E** | `--ddp-average-in-collective` | **+0.86 / +0.92%** (IQR 0.62 / 0.13%) | the 1/DP scaling moves into the reduce-scatter |
+
+E removes the separate `grad_data *= 1/8` pass over the 7.6 G-element fp32 grad buffer (~40 ms of
+~2,330 ms per step). With DP = 8 the scale is an exact power of two, so pre-scaling and averaging in
+the collective agree to rounding.
+
+L1 against A, `--kind kernel_swap`: PASS on both reps.
+* Step-1 loss: identical.
+* Step-1 grad norm: 0.29% and 1.51%; same-code A1 vs A2 is 0.16%.
+* Early sign balance: 0.5 and 0.375, not one-sided.
+
+Under DECISIONS 4.23 a change to the cleared stack still needs the outcome test. P0-4f below
+supplies it.
+
+## P0-4f PRE-REGISTRATION: does `--ddp-average-in-collective` keep the cleared quality? (written 2026-10-16, before any leg)
+
+* Arms: **s8** (the base) and **cand** = s8 + `--ddp-average-in-collective`, on
+  `qwen2_5_math_7b_packed_cosine.env`.
+* Seeds 1357, 2468, 3579, 4680 and 5791, never used before. 10 legs.
+* `quality_ab.sh --arms s8,cand --cand-cmd "stack_overlay_env.sh --cond s8" --cand-train-args
+  "--ddp-average-in-collective"`, judged by `quality_ab_final.py --base s8 --cand cand`.
+* Rules: exactly P0-4e's (margin ±0.00515 on the decayed held-out loss; stability FAIL on any max10
+  > 1.0, PASS on ≤ 1 severe and none catastrophic).
+* ACCEPT the lever iff CLEARED.
+
