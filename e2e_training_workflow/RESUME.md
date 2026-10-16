@@ -118,15 +118,16 @@ allowed), kept fixed during optimisation, not constant LR.
 * GEMM microbench: sustained peak 199 TFLOP/s; training GEMMs at 85–99% of it in isolation; step
   MFU about 76%. P2-1 de-prioritised.
 
-**Running:** P2-3 DP-communication sweep on s8 + the scheduled recipe, one-off driver
-`geak_train/scratch/comm_sweep_1016.sh`. Arms:
-* A: baseline;
-* B: `--overlap-grad-reduce`;
-* C: B + `--overlap-param-gather`;
-* D: B + `--ddp-bucket-size 2e8`;
-* E: `--ddp-average-in-collective`.
-2 reps each; legs `runs/comm_<stamp>_*`. A winner still needs L1 and the outcome gate before
-acceptance.
+**Done:** P2-3 comm sweep (`runs/comm_1016_172452_*`).
+* `--ddp-average-in-collective` gives +0.86 / +0.92%, L1 PASS.
+* Overlap variants are worse or unusable.
+
+**Running:** P0-4f, pre-registered in commit f84dc969: s8 vs s8 + `--ddp-average-in-collective` on
+5 fresh seeds.
+* Legs `runs/qabavg_1016_175311_*`.
+* Verdict: `quality_ab_final.py <prefix> --base s8 --cand cand`.
+* If CLEARED: accept the lever. Put it in a NEW descriptor (`..._cosine_avg.env`, or extra args in
+  the bundle launch). Remeasure the headline. Record DECISIONS 4.25.
 
 **AUTONOMOUS PLAN (user offline 2026-10-16 → 10-18; instruction: never stop, decide professionally, record
 everything).** In order:
