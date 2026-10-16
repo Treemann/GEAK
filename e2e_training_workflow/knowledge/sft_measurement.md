@@ -1213,3 +1213,32 @@ deliberately NOT edited to drop its "PENDING" note. Six bundles pin its sha256 (
 `SHA256SUMS.inputs`), so a comment edit would make every one of them refuse to run. The confirmation
 lives in DECISIONS 4.21.
 
+### GEMM efficiency on the stack: where the remaining kernel headroom is (desk analysis, 2026-10-16)
+
+**Peak.** MI308X has 80 CUs at a 1,420 MHz max clock (rocminfo). CDNA3 does 2,048 bf16 dense FLOP
+per CU per clock (MI300X: 1,307 TFLOP/s at 304 CUs × 2.1 GHz). That gives about **233 TFLOP/s**
+peak. The sustained clock under load is not yet verified; a microbenchmark is pending.
+
+**Achieved**, from the s7 profile (`runs/pprof_1013_162241_s71`; FLOPs from shapes, time from the
+per-kernel totals):
+
+| GEMM | per call | TFLOP/s | of peak |
+|---|---|---|---|
+| fc1 fwd 4096×3584·3584×37888 | 6.41 ms | 174 | ~75% |
+| fc2 fwd 4096×18944·18944×3584 | 2.85 ms | 195 | ~84% |
+| lm-head fwd 4096×3584·3584×151680 | 25.4 ms | 175 | ~75% |
+| main-stream backward (MT256x256, ~73% fc1 dgrad), ~41% of the critical path | 4.43 ms | ~125 | **~54%** |
+| fp32-out beta=1 wgrad `addmm` (fc1 side stream, lm-head) | — | ~95 | **~41%** |
+
+**Reading.** The backward GEMMs run at about 70% of the forward GEMMs' efficiency on the same model
+and occupy about 41% of the critical path. Raising them to forward-level efficiency is worth about
+10% of the step, larger than any remaining non-GEMM head. The accepted overlays only re-selected
+hipBLASLt solutions, so the gap needs something deeper:
+* operand-layout transforms, e.g. computing dgrad as a transposed product to reach the NT form the
+  forward runs at;
+* offline hipBLASLt tuning for these exact shapes;
+* a CK GEMM.
+
+Next, once the GPUs are free: microbenchmark peak and each layout's attainable rate for these
+shapes, before spending a kernel lane (ROADMAP P2-1).
+
