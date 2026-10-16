@@ -53,7 +53,8 @@ adapter_launch() {
       --train-data-path "$DATA_PATH" \
       --micro-batch-size "$MBS" --global-batch-size "$GBS" \
       --train-iters "$ITERS" \
-      --lr 1.0e-5 --min-lr 0.0 --lr-decay-style constant --lr-warmup-iters 0 \
+      --lr "${LR:-1.0e-5}" --min-lr "${MIN_LR:-0.0}" --lr-decay-style "${LR_DECAY_STYLE:-constant}" \
+      --lr-warmup-iters "${LR_WARMUP_ITERS:-0}" ${LR_DECAY_ITERS:+--lr-decay-iters "$LR_DECAY_ITERS"} \
       --weight-decay 0.1 --clip-grad 1.0 --adam-beta1 0.9 --adam-beta2 0.95 \
       --bf16 --use-distributed-optimizer --no-rope-fusion \
       --log-interval 1 --log-throughput \

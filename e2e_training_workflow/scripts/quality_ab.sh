@@ -11,20 +11,23 @@
 # evaluation over 19 x 16 = 304 packs of the held-out pack.
 #
 # Usage: quality_ab.sh [--seeds 1234,2345,3456] [--arms ref,s8,ctrl] [--iters 358] [--name qab]
+#                      [--workload workloads/qwen2_5_math_7b_packed_cosine.env]   (default: the packed
+#                      constant-LR descriptor of P0-4/P0-4b)
 set -euo pipefail
 GEAK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_HOST="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
 SEEDS="1234,2345,3456"; ARMS="ref,s8,ctrl"; ITERS=358; NAME=qab
+WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed.env"
 while [ $# -gt 0 ]; do
   case "$1" in
     --seeds) SEEDS="$2"; shift 2;;
     --arms) ARMS="$2"; shift 2;;
     --iters) ITERS="$2"; shift 2;;
     --name) NAME="$2"; shift 2;;
+    --workload) WORKLOAD="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
-WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed.env"
 TRAIN=/work/data/sft_ultrachat20k_train19k_packed_7b.jsonl
 HELDOUT=/work/data/sft_ultrachat20k_heldout1k_packed_7b.jsonl
 # The pre-registered data, by content: a different file is a different experiment.
@@ -53,6 +56,8 @@ for SEED in ${SEEDS//,/ }; do
                 EXTRA="$EXTRA FC1_BWD_MODE=serial QKV_BWD_MODE=serial LMHEAD_CE_TWO_STREAM=0" ;;
       only-*) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "only:${ARM#only-}" --out "$OUT_HOST" --install "$OVL_HOST/${ARM}")" ;;
       ctrl) TARGS="$TARGS --lr 7.0e-6" ;;
+      # Positive control for a SCHEDULED recipe: the whole schedule scaled x0.7 (peak and floor).
+      ctrl70) TARGS="$TARGS --lr 7.0e-6 --min-lr 7.0e-7" ;;
       *) echo "unknown arm: $ARM" >&2; exit 2;;
     esac
     echo ">>> $(date +%H:%M:%S) leg $LEG -> $OUT_HOST"

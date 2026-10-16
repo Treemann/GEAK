@@ -1658,3 +1658,40 @@ legs. The four bisection legs of s2 are NOT pooled, because they were looked at.
 Otherwise s2 is NOT cleared, and the reason is reported. No positive-control arm is run: the P0-4b
 CTRL effect is used as the fixed yardstick, and the null for criterion 1 is the 0/9 above.
 
+## P0-4d PRE-REGISTRATION: the stack under a STANDARD LR schedule (written 2026-10-16, before any leg)
+
+**Why.** The user clarified on 2026-10-16 that "no tuning" means follow general default training
+practice (warmup allowed) and keep it fixed during optimisation. It never meant constant LR. The
+P0-4/P0-4b recipe (constant 1e-5, no warmup, no decay) was marginally stable on its own: every arm
+had grad-norm excursions. P0-4c (s2 under that recipe) was stopped during its first leg and never
+analysed.
+
+**Recipe.** `workloads/qwen2_5_math_7b_packed_cosine.env`: the packed descriptor plus a common SFT
+default schedule, not tuned.
+* peak LR 1e-5;
+* linear warmup over 11 iterations (3% of 358);
+* cosine decay to 1e-6 (10%) at iteration 358.
+The adapter now reads LR / MIN_LR / LR_DECAY_STYLE / LR_WARMUP_ITERS / LR_DECAY_ITERS from the
+descriptor. Its argv for the older descriptors is byte-identical (80 tokens, diffed). The smoke
+`runs/lrsmoke_1016_cos` shows LR 9.1e-7 at step 1, 1e-5 at step 11, and 9.93e-6 at step 30.
+
+**Protocol.** Same data and evaluation as P0-4b. Arms: REF, S8 (`stack_overlay_env.sh --cond s8`),
+and CTRL70 (the whole schedule ×0.7: `--lr 7.0e-6 --min-lr 7.0e-7`). Seeds 9012, 1123, 2234, 3345
+and 4456 (P0-4c's, never analysed). 15 legs. `scripts/quality_ab_verdict.py` applies:
+
+* **Stability, decided on its own**, with severity per leg against its seed's REF (REF scored
+  symmetrically against S8): max10 = the largest 10-step mean of the paired loss difference after
+  step 150.
+  * severe: max10 > 0.25 (2.3× the same-code null of 0.109);
+  * catastrophic: max10 > 1.0.
+  * PASS: no severe S8 leg.
+  * FAIL: S8 severe ≥ 2 and exceeding REF by ≥ 2; OR any catastrophic S8 leg while REF and CTRL70
+    have none.
+  * Otherwise INCONCLUSIVE.
+* **Quality, decided on its own**, on PV (steps 201–358) paired by seed.
+  * The control is detected iff t ≥ 2.776; if not, quality is INCONCLUSIVE.
+  * FAIL: S8 significantly higher.
+  * PASS: |m_S8| ≤ 0.25 × |m_CTRL70|.
+  * Otherwise INCONCLUSIVE.
+* **CLEARED iff PASS-stability AND PASS-quality.** All rules are fixed now.
+
