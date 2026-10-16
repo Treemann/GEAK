@@ -211,6 +211,8 @@ cheaply — a 0.5B leg is ~1 s/step against ~11.6 s at 7B.
   needs every GPU.
 * `deep_mode: "true"` adds ConfigSweep after Strategize. See `RUN.md` "Deep mode".
 * `skip_heads` excludes heads already accepted; `baseline_dirs` reuses measured null legs.
+* `quality_gate: "true"` adds the one-epoch, multi-seed outcome test of the final stack (DECISIONS
+  4.23). Without it the result states that the stack is not cleared for long training.
 * `baseline_overlay: "<REPO>/e2e_training_workflow/scripts/stack_overlay_env.sh --cond s7"` gates
   every head ON TOP of the accepted seven-kernel stack instead of the bare reference. Every leg of
   the run carries it, and every delta is then an increment on that stack. Without it, re-measure an

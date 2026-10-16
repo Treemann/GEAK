@@ -111,3 +111,28 @@ Return JSON:
  "final_useful_tok_s": 0.0, "delta_pct": 0.0, "band_pct": 0.0, "l1": {"pass": true},
  "legs": [...], "reason": "..."}
 ```
+
+## PHASE=quality (optional final gate, `quality_gate: true`)
+
+The per-kernel gates judge 30 steps. A stack that passed all of them made training blow up hundreds
+of steps later on 4 of 5 seeds (DECISIONS 4.22). This phase is the outcome test that a stack must
+pass before it is called safe to train with.
+
+1. **Build the candidate command.** Contract: called with `--out <leg dir>`, it prints ONE
+   `--extra-env` line.
+   * Base: `BASE_OVERLAY_CMD` if set, otherwise none.
+   * Add this run's accepted overlays: the FINAL bundle's overlays, installed into a fresh
+     directory and verified against the bundle's SHA256SUMS. Their manifests are APPENDED after the
+     base's, with `engagement_out` under the leg dir. The bundle's `launch.sh` does exactly this;
+     reuse its logic.
+   * Write the command as a small script under `EXP_ROOT`, not in the repo.
+2. **Run** `QUALITY_SCRIPT --workload QUALITY_WORKLOAD --seeds QUALITY_SEEDS --arms ref,cand
+   --cand-cmd "<your script>" --name qgate`. That is one epoch per leg on the train19k pack, with
+   the held-out evaluation at the end. Do not change iterations, data or seeds: the verdict rules
+   were pre-registered for exactly this protocol (knowledge/gate_convergence.md, P0-4e).
+3. **Verify engagement** on every cand leg: per overlay, the training buckets show fallback 0. The
+   eval-mode fallbacks of rope / swiglu / attn / lmhead are expected (no_grad path).
+4. **Judge** with `QUALITY_VERDICT <prefix> --cand cand`. Return its `cleared`, `quality` and
+   `stability` VERBATIM, plus `legs_prefix`. Do not soften a NOT CLEARED. A NOT CLEARED stack still
+   ships its throughput number, but must be labelled not cleared for production training.
+

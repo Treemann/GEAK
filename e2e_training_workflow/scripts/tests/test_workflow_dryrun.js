@@ -82,6 +82,7 @@ function stubFor(prompt) {
   }
   if (is('PHASE=finalize')) return { overlay: '/work/ovl', patch: 'p', launch: 'l', engagement_recheck: {} };
   if (is('PHASE=report')) return 'report text';
+  if (is('PHASE=quality')) return { cleared: true, quality: 'PASS-quality: stub', stability: 'PASS-stability: stub' };
   if (is('PHASE=validate')) {
     return { validation_status: 'confirmed', baseline_useful_tok_s: 850, final_useful_tok_s: 900,
              delta_pct: 5.88, band_pct: 0.15 };
@@ -287,6 +288,27 @@ async function dryRun(args) {
     }
   }
   EXTRACT_OVERRIDE = null;
+
+  // ---- 2026-10-16: the optional outcome gate ---------------------------------------------------
+  try {
+    const { result: r0, calls: c0 } = await dryRun(base);
+    ok(!c0.phases.includes('QualityGate') && r0.quality_gate && r0.quality_gate.cleared === null,
+      'quality gate is opt-in: off by default, and the result SAYS the stack is not cleared for long training');
+    const { result: r1, calls: c1 } = await dryRun({ ...base, quality_gate: 'true' });
+    ok(c1.phases.includes('QualityGate') && r1.quality_gate.cleared === true,
+      'quality_gate=true runs the outcome test after Validate and records its verdict');
+    const qp = c1.prompts.filter((p) => p.includes('PHASE=quality'));
+    ok(qp.length === 1 && qp[0].includes('quality_ab.sh') && qp[0].includes('quality_ab_final.py')
+       && qp[0].includes('qwen2_5_math_7b_packed_cosine.env'),
+      'the quality phase gets the protocol script, the pre-registered verdict script and the scheduled recipe');
+    STRAT_HEADS = [];
+    const { result: r2, calls: c2 } = await dryRun({ ...base, quality_gate: 'true' });
+    ok(!c2.phases.includes('QualityGate') && /nothing accepted/.test(r2.quality_gate.quality),
+      'with nothing accepted the stack is unchanged, so the gate is skipped and says why');
+  } catch (e) {
+    ok(false, `quality gate threw: ${e && e.message}`);
+  }
+  STRAT_HEADS = null;
 
   console.log();
   if (failures) { console.error(`${failures} check(s) FAILED`); process.exit(1); }

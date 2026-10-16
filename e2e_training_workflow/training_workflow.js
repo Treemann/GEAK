@@ -11,6 +11,7 @@ export const meta = {
     { title: 'Finalize', detail: 'Integrator assembles the overlay bundle (+ optional L2 soak)' },
     { title: 'Report', detail: 'Architect writes the report and grows the playbook' },
     { title: 'Validate', detail: 'Director independently re-measures and arbitrates' },
+    { title: 'QualityGate', detail: 'optional: one-epoch multi-seed outcome test of the final stack vs REF (DECISIONS 4.22)' },
   ],
 };
 
@@ -26,6 +27,16 @@ const log0 = (m) => log(`[training] ${m}`);
 // EVERY leg of the run -- baseline, profile, gate ref AND cand, finalize, validate -- so the reference
 // the whole run measures against is the accepted stack, not the bare workload.
 const BASE_OVERLAY_CMD = String(A.baseline_overlay || '').trim() || null;
+// THE OUTCOME GATE (added 2026-10-16). Every per-kernel gate here judges 30 steps. P0-4b showed that a
+// stack of individually gated kernels can still make a training run blow up hundreds of steps later
+// (late catastrophic episodes on 4/5 seeds) -- an event no 30-step instrument can see. So a stack
+// is not "safe to train with" until it passes a one-epoch, multi-seed outcome test. It costs ~2 legs
+// x 20 min per seed, so it is opt-in: `quality_gate: true`. It runs only when this run accepted
+// something (otherwise the stack is unchanged and was judged before).
+const QUALITY_GATE = String(A.quality_gate || '').toLowerCase() === 'true' || A.quality_gate === true;
+const QUALITY_SEEDS = String(A.quality_seeds || '5567,6678,7789,8890,9901');
+const QUALITY_WORKLOAD = String(A.quality_workload ||
+  `${String(A.workflow_dir || '').replace(/\/+$/, '')}/workloads/qwen2_5_math_7b_packed_cosine.env`);
 
 // ===========================================================================
 // SKELETON STATUS — read this before trusting a result from this file.
@@ -712,7 +723,11 @@ const VALIDATE_SCHEMA = obj({ validation_status: { type: 'string' },
 // Phase -> schema. Passing this to agent() forces the role through the StructuredOutput tool, so a
 // shape mismatch retries at the MODEL layer instead of arriving here as prose to be pattern-matched.
 // 'report' is deliberately absent: it returns a written report, and prose is its correct output.
+const QUALITY_SCHEMA = obj({ cleared: { type: 'boolean' }, quality: { type: 'string' },
+  stability: { type: 'string' }, legs_prefix: { type: 'string' }, notes: { type: 'string' } },
+  ['cleared', 'quality', 'stability']);
 const PHASE_SCHEMA = {
+  quality: QUALITY_SCHEMA,
   setup: SETUP_SCHEMA, profile: PROFILE_SCHEMA, reprofile: PROFILE_SCHEMA,
   strategize: STRATEGY_SCHEMA, extract: EXTRACT_SCHEMA, integrate: INTEGRATE_SCHEMA,
   gate: AUDIT_SCHEMA, finalize: FINALIZE_SCHEMA, validate: VALIDATE_SCHEMA,
@@ -1310,6 +1325,31 @@ if (val && typeof val.delta_pct === 'number' && wfReturn.accepted.length) {
            `re-measurement says ${val.delta_pct}%. Report the latter.`);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// QualityGate -- optional outcome test of the FINAL stack (see QUALITY_GATE above).
+// ---------------------------------------------------------------------------
+if (QUALITY_GATE && wfReturn.accepted.length) {
+  phase('QualityGate');
+  const q = await safeAgentStub('training_director', 'quality',
+    { ...benchInputs(curConfig, 'quality'), FINAL: fin, OVERLAY: curOverlay,
+      QUALITY_SEEDS, QUALITY_WORKLOAD,
+      QUALITY_SCRIPT: `${WORKFLOW_DIR}/scripts/quality_ab.sh`,
+      QUALITY_VERDICT: `${WORKFLOW_DIR}/scripts/quality_ab_final.py` },
+    'Run the one-epoch outcome test of the final stack against REF and return the verdict of ' +
+    'quality_ab_final.py VERBATIM (cleared, quality, stability). Do not reinterpret it.');
+  wfReturn.quality_gate = q || { cleared: false, quality: 'not run', stability: 'not run' };
+  log0(wfReturn.quality_gate.cleared
+    ? 'quality gate: CLEARED for training (one-epoch outcome test)'
+    : `quality gate: NOT CLEARED -- the stack must not be used for production training ` +
+      `(${wfReturn.quality_gate.quality}; ${wfReturn.quality_gate.stability})`);
+} else {
+  wfReturn.quality_gate = QUALITY_GATE
+    ? { cleared: null, quality: 'skipped: nothing accepted this run', stability: 'skipped' }
+    : { cleared: null, quality: 'not requested (quality_gate off)', stability: 'not requested',
+        note: 'per-kernel gates judge 30 steps only; the stack is NOT cleared for long training ' +
+              'until it passes the outcome test (DECISIONS 4.22)' };
 }
 
 wfReturn.gates_used = gatesUsed;

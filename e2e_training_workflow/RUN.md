@@ -60,6 +60,13 @@ seven + `rmsnorm_bwd_fc1_fused`, accepted ON s7 on 2026-10-15; use the latest co
 `stack_overlay_env.sh` reuses one content-keyed install (`overlays/stackenv_<cond>_<hash>`) and
 re-verifies it on every call, so the CK attention build is paid once.
 
+**Before calling a stack safe to train with, run the outcome gate** (DECISIONS 4.22/4.23).
+* Pass `quality_gate: "true"`. Optional: `quality_seeds`, and `quality_workload` (default the
+  scheduled recipe `qwen2_5_math_7b_packed_cosine.env`).
+* It adds about 3.3 h: REF and the final stack, 5 seeds × one epoch.
+* Outside the workflow: `scripts/quality_ab.sh --workload ... --arms ref,cand --cand-cmd "<cmd>"`,
+  then `scripts/quality_ab_final.py <prefix> --cand cand`.
+
 **Without `baseline_overlay`, re-measure on the stack after any acceptance.** The workflow gates against the bare reference.
 `scripts/measure_packed_stack.sh --conds ref,s5,s6,s7 --reps 3` is the interleaved, cumulative
 re-measure: it verifies sha256 for every overlay and fixes the stacking order. Add a condition there
