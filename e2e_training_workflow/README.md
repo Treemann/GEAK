@@ -4,10 +4,12 @@ A second system layer over the **UNCHANGED** single-kernel `kernel_workflow`, ai
 throughput** instead of serving throughput.
 
 **Where it stands (2026-10-14), Megatron, Qwen2.5-Math-7B, 8x MI308X:**
-* Useful throughput went **839 -> 3,488 tok/s/GPU (4.16x)** at the confirmed recipe: GBS 16 packs,
-  default dropout.
+* Useful throughput went **839 -> 3,504 tok/s/GPU (4.18x)** on the recommended production recipe,
+  `workloads/qwen2_5_math_7b_packed_cosine_avg.env`: GBS 16 packs, default dropout, standard LR
+  schedule, `--ddp-average-in-collective`.
 * Packing gives 3.42x. It was accepted by `deep` mode through a structural gate.
-* Eight kernels stacked on top give **+21.6%** (`knowledge/sft_measurement.md`).
+* Eight kernels stacked on top give **+21.6%**, and one DP-comm lever +0.9%
+  (`knowledge/sft_measurement.md`).
 
 Every number is useful (non-pad, loss-unmasked) tokens, paired against an interleaved reference.
 

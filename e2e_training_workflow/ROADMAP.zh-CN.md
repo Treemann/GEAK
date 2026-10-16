@@ -4,7 +4,11 @@
 
 状态，**2026-10-14 修订**（初稿 2026-09-24）。`fast` 和 `deep` 两种模式都已端到端跑通。以下结果除标明 HF TRL 的以外，均为 **Megatron**。
 
-**当前结果（Megatron，Qwen2.5-Math-7B，8×MI308X，配方为 GBS 16 个包、dropout 0.1）：useful tok/s/GPU 从 839 到 3,488，4.16 倍**（打包 ×3.42，8 个 kernel 叠加 +21.6%；GBS 64 时可达 4.43 倍，但会改变训练配方）。
+**当前结果（Megatron，Qwen2.5-Math-7B，8×MI308X），推荐配方 `qwen2_5_math_7b_packed_cosine_avg.env`：useful tok/s/GPU 从 839 到 3,504，4.18 倍。**
+
+- 构成：打包 ×3.42；8 个 kernel 叠加 +21.6%；`--ddp-average-in-collective` +0.9%。
+- 配方：GBS 16 个包，dropout 0.1，warmup + cosine 调度。
+- 叠加栈在该配方下已通过"1 个 epoch、多种子"的结果验证，可用于实际训练（DECISIONS 4.24 / 4.25）。
 - 打包贡献 3.42 倍，由 `deep` 模式接受。
 - 七个 kernel 叠加在打包基线上 **+20.7%**，经交替、逐个累加的方式复测。
 

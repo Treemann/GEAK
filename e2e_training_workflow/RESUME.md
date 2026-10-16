@@ -122,12 +122,20 @@ allowed), kept fixed during optimisation, not constant LR.
 * `--ddp-average-in-collective` gives +0.86 / +0.92%, L1 PASS.
 * Overlap variants are worse or unusable.
 
-**Running:** P0-4f, pre-registered in commit f84dc969: s8 vs s8 + `--ddp-average-in-collective` on
-5 fresh seeds.
-* Legs `runs/qabavg_1016_175311_*`.
-* Verdict: `quality_ab_final.py <prefix> --base s8 --cand cand`.
-* If CLEARED: accept the lever. Put it in a NEW descriptor (`..._cosine_avg.env`, or extra args in
-  the bundle launch). Remeasure the headline. Record DECISIONS 4.25.
+**Done 2026-10-16 (evening):**
+* **P0-4f CLEARED.** `--ddp-average-in-collective` is accepted (+0.88%). Recommended descriptor
+  `qwen2_5_math_7b_packed_cosine_avg.env` (DECISIONS 4.25).
+* **Final headline: 3,504 useful tok/s/GPU, 4.18x** (`runs/hl_1016_205202_*`).
+* A regression from the adapter change (`DDP_EXTRA_ARGS` unbound under `set -u`) was found by the
+  headline run, fixed in 07ce1c5d, and is guarded by `test_adapter_argv.py`.
+
+**Next (autonomous):** P2-2 HF TRL exit criterion.
+1. HF descriptor support: schedule and FSDP read from the descriptor, argv unchanged for old ones,
+   pinned by a test like the Megatron one.
+2. 7B HF smoke and profile.
+3. Port the rmsnorm kernel to `Qwen2RMSNorm` (the most portable accepted op; HF RMSNorm is several
+   eager elementwise kernels) and gate it with the same gates, run through the workflow with
+   `stack: hf_trl`.
 
 **AUTONOMOUS PLAN (user offline 2026-10-16 → 10-18; instruction: never stop, decide professionally, record
 everything).** In order:

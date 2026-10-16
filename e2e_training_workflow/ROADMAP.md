@@ -6,9 +6,12 @@
 Status, revised **2026-10-14** (first written 2026-09-24). Both `fast` and `deep` run end to end.
 All results below are **Megatron** unless marked HF TRL.
 
-**Headline (Megatron, Qwen2.5-Math-7B, 8x MI308X, recipe GBS 16 packs / dropout 0.1): 839 -> 3,488
-useful tok/s/GPU, 4.16x** (packing ×3.42, eight stacked kernels +21.6%; at GBS 64 it would be 4.43x,
-but that changes the recipe).
+**Headline (Megatron, Qwen2.5-Math-7B, 8x MI308X), on the recommended recipe
+`qwen2_5_math_7b_packed_cosine_avg.env`: 839 -> 3,504 useful tok/s/GPU, 4.18x.**
+* Composition: packing ×3.42, eight kernels +21.6%, `--ddp-average-in-collective` +0.9%.
+* The recipe is GBS 16 packs, dropout 0.1, warmup + cosine.
+* The stack is CLEARED for training on this recipe by a one-epoch outcome test (DECISIONS 4.24 /
+  4.25).
 * Packing: 3.42x, accepted by `deep` mode.
 * Seven kernels stacked on the packed reference: **+20.7%**, re-measured interleaved and cumulative.
 

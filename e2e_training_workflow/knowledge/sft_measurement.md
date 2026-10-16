@@ -1320,3 +1320,18 @@ supplies it.
   the scheduled recipe plus `DDP_EXTRA_ARGS="--ddp-average-in-collective"`, read by the adapter.
   The argv for every older descriptor is byte-identical (diffed, 80 tokens).
 
+### FINAL headline on the recommended recipe (2026-10-16)
+
+`geak_train/scratch/headline_avg_1016.sh` (`runs/hl_1016_205202_*`): ref on `..._cosine.env` vs s8 on
+`..._cosine_avg.env`, interleaved, 3 reps, all ok and clean.
+* ref: 2,870 / 2,864 / 2,869.
+* s8 + average-in-collective: 3,520 / 3,481 / 3,511.
+* Paired: +23.0 / +21.4 / +22.6%.
+
+**Headline: 3,504 useful tok/s/GPU, 4.18x the original unpacked reference (839.2)**, on the
+recipe cleared for training.
+* Composition: packing ×3.42 · eight kernels +21.6% · DP-comm lever +0.88% (the one-epoch
+  P0-4f estimate; 30-iter legs carry about ±1%).
+* The first attempt (`hl_1016_203710`) lost its REF legs to the unbound-variable bug fixed in
+  07ce1c5d.
+
