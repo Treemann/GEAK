@@ -43,9 +43,37 @@ _DIR = os.environ.get("GEAK_CAPTURE_DIR", "")
 # at TP1 -- the ranks see the same op with the same shapes.
 _RANKS = {int(r) for r in os.environ.get("GEAK_CAPTURE_RANKS", "0").split(",") if r.strip().isdigit()}
 _RANK = int(os.environ.get("RANK", "0"))
+# WHICH CALL SITE. One autograd.Function class serves several call sites: TE's `_Linear` is BOTH the
+# attention output projection ([3584,3584]) and the MLP's fc2 ([3584,18944]), and `_LayerNormLinear`
+# is both QKV and fc1. Without a discriminator the capture arms on the FIRST call of the step, which
+# is layer 0's attention out-proj -- a valid-looking oracle for the wrong operation. This names a
+# tensor SHAPE that must be present among the call's arguments, e.g. "3584x18944" for fc2.
+_MATCH = [tuple(int(d) for d in s.split("x"))
+          for s in os.environ.get("GEAK_CAPTURE_MATCH_SHAPE", "").split(",") if s.strip()]
 ENABLED = bool(_TARGET and _DIR and _STEP > 0 and _RANK in _RANKS)
 
 _state = {"step": 0, "captured": False}
+
+
+def _matches(a, kw):
+    """True iff every requested shape appears among the call's tensor arguments."""
+    if not _MATCH:
+        return True
+    seen = set()
+
+    def walk(v):
+        if torch.is_tensor(v):
+            seen.add(tuple(v.shape))
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                walk(x)
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+
+    walk(a)
+    walk(kw)
+    return all(m in seen for m in _MATCH)
 
 
 def note_step(step):
@@ -111,7 +139,7 @@ def install():
     os.makedirs(_DIR, exist_ok=True)
 
     def wrapped(*a, **kw):
-        if _state["captured"] or _state["step"] + 1 != _STEP:
+        if _state["captured"] or _state["step"] + 1 != _STEP or not _matches(a, kw):
             return orig(*a, **kw)
         _state["captured"] = True
         # `rank` travels in the record, not only in the sidecar meta.json: build_task_dir reads the
@@ -185,7 +213,9 @@ def install():
     else:
         setattr(owner, name, wrapped)
     print(f"[geak-capture] armed on {_TARGET} (via {owner.__name__ if isinstance(owner, type) else owner.__name__}.{name}) "
-          f"for step {_STEP}", flush=True)
+          f"for step {_STEP}"
+          + (f", restricted to calls carrying shape(s) {[list(m) for m in _MATCH]}" if _MATCH else ""),
+          flush=True)
     return True
 
 
@@ -332,6 +362,9 @@ def _write_meta(rec):
     opaque = _collect_opaque(rec["args"]) + _collect_opaque(rec["kwargs"])
     meta = {
         "target": rec["target"], "step": rec["step"], "rank": _RANK,
+        "call_site_filter": [list(m) for m in _MATCH],
+        "call_site_note": ("the Function class serves several call sites; the capture armed only on a "
+                           "call carrying these argument shapes. Empty => first call of the step."),
         "opaque_args": opaque,
         "opaque_note": ("these arguments are runtime handles (process groups, recipes, module state). "
                         "They are NOT captured and NOT replayable: the standalone task must "

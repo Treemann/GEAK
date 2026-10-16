@@ -80,21 +80,37 @@ def _base_error(rec, golden, labels, reference, layout):
         named[name] = t.requires_grad_(True) if name in layout["grad_of"] else t
     call_args = [named.get(n) for n in layout["args"]]
     out = REFERENCES[reference](*call_args, **layout.get("const", {}))
-    go = rec["grad_output"]["data"].to(dev)
+    out_labels = layout.get("out_labels", ["out"])
+    outs = tuple(out) if len(out_labels) > 1 else (out,)
+    gos = rec["grad_output"] if isinstance(rec["grad_output"], list) else [rec["grad_output"]]
+    gos = [g["data"].to(dev).float() for g in gos]
     wrt = [named[n] for n in layout["grad_of"] if named.get(n) is not None]
-    grads = torch.autograd.grad(out, wrt, grad_outputs=go.float(), allow_unused=True)
-    ref_by_label = {"out": out}
+    grads = torch.autograd.grad(outs, wrt, grad_outputs=gos, allow_unused=True)
+    ref_by_label = dict(zip(out_labels, outs))
     ref_by_label.update(dict(zip(layout["grad_labels"], grads)))
+    # Score the original AS THE HARNESS CAN OBSERVE IT. The unittest takes every gradient through
+    # autograd onto the captured leaf, so a candidate's gradient always arrives in the LEAF's dtype
+    # (bf16) -- but under gradient_accumulation_fusion the original's wgrad was captured from the fp32
+    # main_grad. Measuring the limit on the fp32 golden made it tighter than ONE bf16 ulp: on the
+    # mlp_fc1_gemm oracle (2026-10-10) an exact replica of TE's math, fp32 wgrad included, failed
+    # wgrad at 0.003906 (= 1 bf16 ulp) against a limit of 0.003244, i.e. the oracle rejected the
+    # original itself. Rounding the golden to the leaf dtype compares like with like; the fp32
+    # main_grad contract is outside what this harness can see and is recorded in task_notes instead.
+    leaf_dtype = {lab: named[r].dtype for lab, r in zip(layout["grad_labels"], layout["grad_of"])
+                  if named.get(r) is not None}
     stats = {}
     for label, g in zip(labels, golden):
         r = ref_by_label.get(label)
         if r is None:
             continue
-        stats[label] = error_stats(g["data"].to(dev).float(), r)
+        gd = g["data"].to(dev)
+        if label in leaf_dtype and gd.dtype != leaf_dtype[label]:
+            gd = gd.to(leaf_dtype[label])
+        stats[label] = error_stats(gd.float(), r)
     return stats
 
 def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=None,
-          notes=None):
+          notes=None, engagement=None, ulp_labels=None):
     rec = torch.load(capture_path, map_location="cpu", weights_only=False)
     iso = rec.get("isolated")
     if not iso:
@@ -106,7 +122,10 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
     os.makedirs(os.path.join(task_dir, "baseline_src"), exist_ok=True)
     args_t = _tensors(rec["args"])
     go = rec.get("grad_output")
-    if not _is_t(go):
+    # A multi-output op (layout `out_labels`, e.g. RoPE on q AND k) carries one grad_output per
+    # forward output, in out_labels order.
+    gos = go if isinstance(go, list) else [go]
+    if not gos or not all(_is_t(g) for g in gos):
         raise SystemExit("capture has no grad_output; a fwd+bwd task cannot be built without it")
 
     # Order the golden the same way the unittest returns it.
@@ -117,8 +136,13 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
         layout["const"] = const
     grads = iso.get("grads") or {}
     named_nodes = dict(zip(layout["args"], args_t))
-    golden = [iso["out"]]
-    labels = ["out"]
+    out_labels = layout.get("out_labels", ["out"])
+    iso_outs = iso["out"] if isinstance(iso["out"], list) else [iso["out"]]
+    if len(iso_outs) != len(out_labels) or len(gos) != len(out_labels):
+        raise SystemExit(f"layout names {len(out_labels)} forward outputs; the capture has "
+                         f"{len(iso_outs)} outputs and {len(gos)} grad_outputs")
+    golden = list(iso_outs)
+    labels = list(out_labels)
     # ORDER, not shape, whenever the isolated re-run gives a complete positional set. Shape matching
     # is AMBIGUOUS for attention -- k and v are both [total_kv, h_kv, d], so a shape map silently
     # hands dk's tensor to dv and the oracle is then wrong in a way that passes every check it runs
@@ -152,7 +176,7 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
 
     blob = {
         "records": [{
-            "args": [_harness_tensor(t) for t in args_t] + [_harness_tensor(go)],
+            "args": [_harness_tensor(t) for t in args_t] + [_harness_tensor(g) for g in gos],
             "output": [_harness_tensor(g) for g in golden],
             "sig": f"{'x'.join(str(d) for d in args_t[0]['shape'])}|fwd+bwd",
             "regime": "training",
@@ -177,14 +201,21 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
         "target_callable": rec["target"],
         "baseline_callable": rec["target"],
         "baseline_frozen": True,
-        "candidate_bind": {"kind": "rebind", "module": rec["target"].split(":")[0],
-                           "symbol": rec["target"].split(":")[-1],
-                           "note": "training ops are autograd.Function subclasses: rebind .apply, and "
-                                   "prove engagement for forward AND backward separately"},
+        # For a single-Function op the bind point IS the captured target, so it is derived. For a
+        # COMPOSITE (the LM head, the MLP fc1+SwiGLU) the target string names a SPAN of call sites
+        # and splitting it on ":" yields a symbol that does not resolve -- an engagement contract
+        # that cannot be executed is worse than none, so the extractor passes it explicitly.
+        "candidate_bind": engagement or {
+            "kind": "rebind", "module": rec["target"].split(":")[0],
+            "symbol": rec["target"].split(":")[-1],
+            "note": "training ops are autograd.Function subclasses: rebind .apply, and "
+                    "prove engagement for forward AND backward separately"},
         "signature": {"inputs": [{"name": n, "shape": t["shape"], "dtype": t["dtype"],
                                   "requires_grad": t["requires_grad"]}
                                  for n, t in zip(layout["args"], args_t)],
-                      "grad_output": {"shape": go["shape"], "dtype": go["dtype"]},
+                      "grad_output": ({"shape": go["shape"], "dtype": go["dtype"]}
+                                      if not isinstance(go, list) else
+                                      [{"shape": g["shape"], "dtype": g["dtype"]} for g in go]),
                       "outputs": labels},
         "reference_implementation": f"baseline_src/reference_impl.py:{reference}",
         # The generated unittest reads this instead of hardcoding one op's argument order. TE's
@@ -202,6 +233,12 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
             "sign_tol": 0.15,
             "scale_bias_tol": 0.002,
             "offset_bias_tol": 0.01,
+            # Outputs whose MAGNITUDE check is measured in bf16 ulps of the reference (limit = the
+            # original's max_ulp_bf16 x margin) instead of in absolute units. Only for outputs whose
+            # reference is itself bf16-rounded and whose original rounds once -- there the absolute
+            # max_abs is set by where the 1-ulp disagreements happened to land (see
+            # l0_gate.max_ulp_bf16). The bias checks below are unchanged for every output.
+            "ulp_labels": list(ulp_labels or []),
             "why_bias_tests": ("sign_balance catches an ADDITIVE bias; a MULTIPLICATIVE one leaves it "
                                "at 0.5, because the error simply follows the value's sign. Proven by "
                                "a negative test: a x1.005 candidate passed BOTH the magnitude and the "
@@ -290,9 +327,11 @@ def make_call(entry):
     the two ops shipped here -- TE's _Linear takes the weight first, _LayerNormLinear the input.
     """
     names = LAYOUT["args"]
+    out_labels = LAYOUT.get("out_labels", ["out"])
+    n_go = len(out_labels)          # one grad_output per forward output, appended after the inputs
 
     def call(args):
-        tensors, go = list(args[:-1]), args[-1]
+        tensors, gos = list(args[:-n_go]), list(args[-n_go:])
         named = {}
         for name, t in zip(names, tensors):
             c = t.detach().clone()
@@ -302,10 +341,15 @@ def make_call(entry):
                 c.requires_grad_(True)
             named[name] = c
         out = entry(*[named.get(n) for n in names], **CONST)
-        tgt = out[0] if isinstance(out, (list, tuple)) else out
+        if n_go > 1:
+            outs = tuple(out)
+            if len(outs) != n_go:
+                raise RuntimeError(f"entry returned {len(outs)} outputs, the op has {n_go}")
+        else:
+            outs = (out[0] if isinstance(out, (list, tuple)) else out,)
         wrt = [named[n] for n in LAYOUT["grad_of"] if named.get(n) is not None]
-        grads = torch.autograd.grad(tgt, wrt, grad_outputs=go, allow_unused=True)
-        return (tgt,) + tuple(g for g in grads if g is not None)
+        grads = torch.autograd.grad(outs, wrt, grad_outputs=gos, allow_unused=True)
+        return outs + tuple(g for g in grads if g is not None)
     return call
 
 
@@ -330,8 +374,9 @@ def main():
     got = call(cases[0]["args"])
     ref_call = make_call(_reference)
     ref_outs = ref_call(cases[0]["args"])
-    ref_by_label = {"out": ref_outs[0]}
-    ref_by_label.update(dict(zip(LAYOUT["grad_labels"], ref_outs[1:])))
+    _ol = LAYOUT.get("out_labels", ["out"])
+    ref_by_label = dict(zip(_ol, ref_outs[:len(_ol)]))
+    ref_by_label.update(dict(zip(LAYOUT["grad_labels"], ref_outs[len(_ol):])))
 
     base, acc = META.get("base_error", {}), META.get("acceptance", {})
     margin, sign_tol = acc.get("margin", 1.25), acc.get("sign_tol", 0.15)
@@ -355,6 +400,15 @@ def main():
               "offset_bias": float(d.mean() / denom)}
         lim = base[label]["max_abs"] * margin
         mag_ok = st["max_abs"] <= lim
+        if label in acc.get("ulp_labels", []):
+            # Magnitude in bf16 ulps of the (bf16-rounded) reference; see acceptance.ulp_labels.
+            ulp = torch.where(rr != 0,
+                              torch.exp2(torch.floor(torch.log2(rr.abs().clamp_min(2.0 ** -126))) - 7),
+                              torch.full_like(rr, 2.0 ** -133))
+            st["max_ulp_bf16"] = float((d.abs() / ulp).max())
+            lim_ulp = base[label]["max_ulp_bf16"] * margin
+            st["limit_ulp"] = lim_ulp
+            mag_ok = st["max_ulp_bf16"] <= lim_ulp
         sign_ok = abs(st["sign_balance"] - 0.5) <= sign_tol or \
             abs(base[label]["sign_balance"] - 0.5) > sign_tol
         # A MULTIPLICATIVE bias survives both checks above -- proven by a negative test -- so the
@@ -371,8 +425,12 @@ def main():
         flags = ''.join(x for x, bad in ((' magnitude', not mag_ok), (' sign', not sign_ok),
                                          (' SCALE-BIAS', not scale_ok),
                                          (' offset-bias', not offset_ok)) if bad)
-        print(f"  [L0] {label}: max_abs={st['max_abs']:.4g} (limit {lim:.4g}, original "
-              f"{base[label]['max_abs']:.4g}) sign={st['sign_balance']:.3f} "
+        mag_txt = (f"max_ulp={st['max_ulp_bf16']:.3g} (limit {st['limit_ulp']:.3g} ulp, original "
+                   f"{base[label]['max_ulp_bf16']:.3g}) max_abs={st['max_abs']:.4g}"
+                   if "limit_ulp" in st else
+                   f"max_abs={st['max_abs']:.4g} (limit {lim:.4g}, original "
+                   f"{base[label]['max_abs']:.4g})")
+        print(f"  [L0] {label}: {mag_txt} sign={st['sign_balance']:.3f} "
               f"scale_bias={st['scale_bias']:+.2e} -> {'PASS' if good else 'FAIL' + flags}")
 
     t = h.time_op(lambda: call(cases[0]["args"]))
@@ -398,8 +456,18 @@ if __name__ == "__main__":
     # same ones. Defaulting them silently is how an oracle ends up scoring a different operation.
     ap.add_argument("--const", default=None, help="JSON dict of non-tensor reference arguments")
     ap.add_argument("--notes", default=None, help="JSON dict (or @file.json) recorded as meta.task_notes")
+    # A composite op spans several call sites, so its bind point cannot be derived from the capture
+    # target string. Passed explicitly rather than guessed.
+    ap.add_argument("--engagement", default=None,
+                    help="JSON dict (or @file.json) recorded as meta.candidate_bind")
+    ap.add_argument("--ulp-labels", default="",
+                    help="comma list of outputs whose magnitude check is in bf16 ulps "
+                         "(see acceptance.ulp_labels)")
     a = ap.parse_args()
     print(json.dumps(build(a.capture, a.task_dir, a.reference, a.name,
                        json.loads(a.const) if a.const else None,
                        json.loads(open(a.notes[1:]).read() if a.notes.startswith("@") else a.notes)
-                       if a.notes else None), indent=2))
+                       if a.notes else None,
+                       json.loads(open(a.engagement[1:]).read() if a.engagement.startswith("@")
+                                  else a.engagement) if a.engagement else None,
+                       [s for s in a.ulp_labels.split(",") if s.strip()]), indent=2))

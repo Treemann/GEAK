@@ -64,7 +64,25 @@ def error_stats(actual, reference):
         "scale_bias": ((d * r).sum() / rr).item() if float(rr) > 0 else 0.0,
         "offset_bias": (d.mean() / denom).item(),
         "nonzero_frac": nz / d.numel(),
+        "max_ulp_bf16": max_ulp_bf16(d, r),
     }
+
+
+def max_ulp_bf16(d, r):
+    """Largest |error| in units of ONE bf16 ulp of the reference value at that element.
+
+    WHY THIS EXISTS. When the reference is itself rounded to bf16 (every gradient the harness takes
+    onto a bf16 leaf is), a correctly-rounded candidate differs from it by 0 or exactly 1 ulp, and
+    WHERE the 1-ulp disagreements land is luck. Measured on the swiglu_bwd_fwd_bw oracle (2026-10-10):
+    the original's ~860 disagreements all fell on |dgrad| ~1e-4, so its max_abs was 4.8e-7, and an
+    fp64-exact-then-rounded candidate -- more accurate than the original -- scored 1.9e-6 and FAILED
+    the x1.25 max_abs rule. Measured in ulps both are 0.99. An element whose reference is 0 gets the
+    smallest bf16 subnormal as its ulp, so any non-zero error there is enormous, as it should be.
+    """
+    a = r.abs()
+    tiny = torch.tensor(2.0 ** -133, device=r.device)
+    ulp = torch.where(a > 0, torch.exp2(torch.floor(torch.log2(a.clamp_min(2.0 ** -126))) - 7), tiny)
+    return (d.abs() / ulp).max().item()
 
 
 def verdict(base_err, cand_err, margin=1.25, sign_tol=0.15):
@@ -93,11 +111,50 @@ def rmsnorm_linear_reference(x, ln_w, w, b, eps=1e-6):
     return out
 
 
+def rmsnorm_linear_swiglu_reference(x, ln_weight, weight, bias=None, eps=1e-6):
+    """Independent fp32 reference for the MLP fc1 + SwiGLU COMPOSITE (the `mlp_fc1_swiglu` head).
+
+    RMSNorm -> fc1 (gate|up, 2 x ffn) -> SiLU(gate) * up, i.e. exactly
+    `_LayerNormLinear` followed by `megatron.core.fusions.fused_bias_swiglu.swiglu`.
+
+    Three things here are semantics, not style:
+
+    * THE SPLIT IS `chunk(2, -1)`, NOT interleaved. Megatron's `swiglu()` is
+      `y_1, y_2 = torch.chunk(y, 2, -1); silu(y_1) * y_2`, so the FIRST half of the 37888 columns is
+      the gate and the second is the up-projection. (The weight is stored with stride=2 for TP
+      resharding, which is a checkpoint-layout concern and does NOT interleave the runtime columns
+      at TP1.) Swapping the halves produces a same-shaped, wrong, self-consistent answer.
+    * THE ACTIVATION IS PART OF THE OP. The candidate's premise is that the pointwise pass
+      disappears into the fc1 epilogue, so the frozen op's output must be POST-activation
+      [s, b, ffn]; an oracle cut before the activation cannot score the win it exists to measure.
+    * fp32 THROUGHOUT, including the SiLU. The original computes the activation in bf16 from a bf16
+      GEMM output; this is the truth that error is measured against, not a re-run of it.
+    """
+    y = rmsnorm_linear_reference(x, ln_weight, weight, bias, eps)
+    gate, up = torch.chunk(y, 2, dim=-1)
+    return torch.nn.functional.silu(gate) * up
+
+
 def linear_reference(w, x, b=None):
     """Independent reference for TE's _Linear. NOTE the argument order: `_Linear.apply` takes the
     WEIGHT first, unlike `_LayerNormLinear`. Reading the order off the capture instead of assuming it
     is the difference between an oracle and a plausible-looking pile of wrong numbers."""
     return torch.nn.functional.linear(x.float(), w.float(), b.float() if b is not None else None)
+
+
+def linear_pair_reference(weight_fc2, x_fc2, weight_oproj, x_oproj):
+    """Independent fp32 reference for the TWO TE `_Linear` call sites of one layer, as ONE op:
+    the MLP fc2 (18944 -> 3584) and the attention o_proj (3584 -> 3584). Head `mlp_fc2_oproj_gemm`.
+
+    WHY A PAIR. Both run through the same autograd.Function (`_Linear.apply`) and the same hipBLASLt
+    solution families, and the head's lever (exact-shape solution re-selection) is a property of the
+    Function, not of one shape. Freezing only fc2 would let a lane "win" on fc2 while silently
+    changing o_proj's solution outside the oracle -- the lmhead anti-pattern. Both run 56x per rank
+    per step, so the unweighted per-call sum this op times is the per-step ratio exactly.
+
+    No bias on either (disable-bias-linear). fp32 throughout; the two products are independent.
+    """
+    return (linear_reference(weight_fc2, x_fc2), linear_reference(weight_oproj, x_oproj))
 
 
 def attention_varlen_reference(cu_seqlens_q, cu_seqlens_kv, cu_seqlens_q_padded,
@@ -193,19 +250,140 @@ def lmhead_ce_reference(hidden_states, weight, labels, loss_mask):
     return loss_bs * loss_mask.float().reshape(loss_bs.shape)
 
 
-REFERENCES = {"rmsnorm_linear": rmsnorm_linear_reference, "linear": linear_reference,
+def rope_qk_thd_reference(q, k, cu_seqlens_q, cu_seqlens_kv, freqs):
+    """Independent fp32 reference for Megatron's UNFUSED thd RoPE applied to q AND k of one layer.
+
+    Mirrors `rope_utils._apply_rotary_pos_emb_thd` -> `_apply_rotary_pos_emb_bshd` at CP=1, non-
+    interleaved, no MLA, mscale 1.0, rot_dim == head_dim (all four recorded in meta, checked at
+    capture), in fp32 and as ONE gather instead of a per-segment loop. Returns (q_rot, k_rot).
+
+    Three things here are semantics, not style:
+
+    * POSITIONS RESET AT EVERY SEGMENT. `freqs` holds max_seqlen rows (not total tokens), so Megatron
+      takes CASE 2 and segment i uses freqs[0:len_i]. A kernel that indexes freqs by the GLOBAL token
+      position applies the wrong rotation to every segment after the first and produces a
+      same-shaped, plausible, wrong answer -- and attention would then see positions continuing
+      across conversations, which is exactly the packing leak `pack_gate` exists to rule out.
+    * NON-INTERLEAVED rotate-half: (x1, x2) = chunk(x, 2, -1); rotate = cat(-x2, x1). The interleaved
+      (GPT-J) pairing is a different operation with the same shapes.
+    * q and k use their OWN cu_seqlens (identical in self-attention, but they are separate inputs at
+      the call site and the oracle keeps them separate).
+
+    fp32 throughout, including cos/sin; the original casts cos/sin to bf16 and rounds after each
+    multiply and the add. That is the error the original carries, not the truth.
+    """
+    f = freqs.float().reshape(freqs.shape[0], freqs.shape[-1])            # [max_s, d]
+
+    def _one(t, cu):
+        cu_l = [int(c) for c in cu.tolist()]
+        lens = [b - a for a, b in zip(cu_l[:-1], cu_l[1:])]
+        if sum(lens) != t.shape[0]:
+            raise ValueError(f"cu_seqlens cover {sum(lens)} tokens, tensor has {t.shape[0]}")
+        if max(lens) > f.shape[0]:
+            raise ValueError(f"segment of {max(lens)} tokens exceeds freqs rows {f.shape[0]}")
+        pos = torch.cat([torch.arange(n, device=t.device) for n in lens])
+        ang = f.to(t.device)[pos].unsqueeze(1)                               # [t, 1, d]
+        if ang.shape[-1] != t.shape[-1]:
+            raise ValueError("partial rotary (rot_dim < head_dim) is not this op")
+        tf = t.float()
+        x1, x2 = torch.chunk(tf, 2, dim=-1)
+        rot = torch.cat((-x2, x1), dim=-1)
+        return tf * torch.cos(ang) + rot * torch.sin(ang)
+
+    return _one(q, cu_seqlens_q), _one(k, cu_seqlens_kv)
+
+
+def swiglu_reference(x):
+    """Independent fp32 reference for Megatron's bias-free SwiGLU (the `swiglu_bwd_fwd_bw` head).
+
+    `megatron.core.fusions.fused_bias_swiglu.SwiGLUFunction` reached through
+    `megatron.core.transformer.mlp.bias_swiglu_impl(fc1_out, None, ...)`: forward `swiglu(y)`, backward
+    `swiglu_back(g, y)`, both torch.compile'd (the `triton_poi_fused_mul_silu_split_0` /
+    `triton_poi_fused_add_cat_mul_rsub_sigmoid_silu_split_0` kernels in the profile).
+
+    * THE SPLIT IS `chunk(2, -1)`: the FIRST half of the last dim is the gate (SiLU'd), the SECOND is
+      the up-projection. dgrad keeps that layout: [d_gate | d_up] concatenated on the last dim, which
+      is exactly what fc1's backward consumes. Swapping halves (or interleaving) is same-shaped and
+      wrong.
+    * fp32 throughout. The original is an inductor kernel that upcasts bf16 loads to fp32 and rounds
+      once at the store, so its error is ~0.5 bf16 ulp -- the limit is therefore tight, and a kernel
+      that rounds intermediates to bf16 will exceed it. That is deliberate (fp32-internal is free for
+      a memory-bound op).
+    The gradient is taken by autograd of this function; it equals Megatron's closed form
+    g*sig(a)*(1 + a*(1-sig(a)))*b , g*silu(a) mathematically.
+    """
+    gate, up = torch.chunk(x.float(), 2, dim=-1)
+    return torch.nn.functional.silu(gate) * up
+
+
+def rmsnorm_reference(x, ln_weight, eps=1e-6):
+    """Independent fp32 reference for a bare RMSNorm (head `rmsnorm_bwd_fc1_fused`): the norm INSIDE
+    the MLP fc1 `_LayerNormLinear`, which on the accepted stack the `mlp_fc1_gemm` overlay computes
+    with TE's `tex.rmsnorm_fwd` / `tex.rmsnorm_bwd` (zero_centered_gamma False, sm_margin 0).
+
+        y = x * rsqrt(mean(x^2, -1) + eps) * gamma
+
+    * eps IS A CONSTANT OF THE CAPTURED CALL (1e-5 here, recorded in meta.layout.const), not this
+      default; a mismatched eps moves every output by a scale and is caught only by scale_bias.
+    * gamma is applied as-is (NOT 1 + gamma): the call passes zero_centered_gamma=False.
+    * fp32 throughout. dgamma is a reduction over all T rows (4096), so a candidate that accumulates it
+      in bf16 loses ~log2(T) bits; the oracle's dln_weight limit is the original's (fp32-accumulated)
+      error, so that shortcut fails here rather than in a trajectory.
+    The gradients are autograd of this function onto the (bf16) leaves.
+    """
+    xf = x.float()
+    rms = torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + eps)
+    return xf * rms * ln_weight.float()
+
+
+REFERENCES = {"rmsnorm_linear": rmsnorm_linear_reference,
+              "rmsnorm_linear_bias": rmsnorm_linear_reference,
+              "rmsnorm_linear_swiglu": rmsnorm_linear_swiglu_reference,
+              "swiglu": swiglu_reference,
+              "linear": linear_reference,
+              "linear_pair": linear_pair_reference,
               "attention_varlen": attention_varlen_reference,
-              "lmhead_ce": lmhead_ce_reference}
+              "lmhead_ce": lmhead_ce_reference,
+              "rope_qk_thd": rope_qk_thd_reference,
+              "rmsnorm": rmsnorm_reference}
 
 # Which captured tensor plays which role, per reference. The names are the ORDER the reference's
 # signature expects, and they are also the labels the oracle's outputs carry.
 LAYOUTS = {
+    # A bare RMSNorm, fwd+bwd: the fc1 norm on the accepted stack (`rmsnorm_bwd_fc1_fused`). Two
+    # differentiable inputs; outputs (out, dgrad, dln_weight). eps comes from the capture via const.
+    "rmsnorm": {"args": ["x", "ln_weight"],
+                "grad_labels": ["dgrad", "dln_weight"],
+                "grad_of": ["x", "ln_weight"]},
     "rmsnorm_linear": {"args": ["x", "ln_weight", "weight", "bias"],
                        "grad_labels": ["dgrad", "dln_weight", "wgrad"],
                        "grad_of": ["x", "ln_weight", "weight"]},
+    # The attention QKV projection: same op as rmsnorm_linear, but it HAS a bias ([4608] on Qwen2.5,
+    # add_qkv_bias) and the bias is a learned parameter, so its gradient is an OUTPUT of the op. The
+    # plain layout leaves `bias` out of grad_of (fc1 has none); scoring QKV with it would let a
+    # candidate drop or mis-reduce the fused bias grad (the dgrad GEMM's BH_Bias epilogue) unseen.
+    "rmsnorm_linear_bias": {"args": ["x", "ln_weight", "weight", "bias"],
+                            "grad_labels": ["dgrad", "dln_weight", "wgrad", "dbias"],
+                            "grad_of": ["x", "ln_weight", "weight", "bias"]},
+    # Same argument layout as rmsnorm_linear -- the composite adds an ACTIVATION, not an input. On
+    # this model fc1 has no bias, so the capture records three tensors and `bias` binds to None.
+    "rmsnorm_linear_swiglu": {"args": ["x", "ln_weight", "weight", "bias"],
+                              "grad_labels": ["dgrad", "dln_weight", "wgrad"],
+                              "grad_of": ["x", "ln_weight", "weight"]},
+    # SwiGLU alone: one differentiable input (fc1's [s, b, 2*ffn] output), one output, one gradient.
+    "swiglu": {"args": ["x"],
+               "grad_labels": ["dgrad"],
+               "grad_of": ["x"]},
     "linear": {"args": ["weight", "x", "bias"],
                "grad_labels": ["wgrad", "dgrad"],
                "grad_of": ["weight", "x"]},
+    # fc2 + o_proj of one layer frozen as ONE op (see linear_pair_reference): two forward outputs,
+    # two grad_outputs, four gradients. Both weights are [out, in] and take TE's fp32 main_grad
+    # under gradient_accumulation_fusion; the leaves (and so the scored wgrads) are bf16.
+    "linear_pair": {"args": ["weight_fc2", "x_fc2", "weight_oproj", "x_oproj"],
+                    "out_labels": ["out_fc2", "out_oproj"],
+                    "grad_labels": ["wgrad_fc2", "dgrad_fc2", "wgrad_oproj", "dgrad_oproj"],
+                    "grad_of": ["weight_fc2", "x_fc2", "weight_oproj", "x_oproj"]},
     # Attention has no weights: its three gradients are all dgrads. `grad_of` therefore lists only
     # q/k/v -- the cu_seqlens tensors are int32 INDEXING metadata, and calling requires_grad_ on
     # them is an error, not a no-op.
@@ -219,6 +397,14 @@ LAYOUTS = {
     "lmhead_ce": {"args": ["hidden_states", "weight", "labels", "loss_mask"],
                   "grad_labels": ["dgrad", "wgrad"],
                   "grad_of": ["hidden_states", "weight"]},
+    # RoPE on the (q, k) PAIR of one layer: TWO forward outputs and therefore TWO grad_outputs.
+    # `out_labels` is the only multi-output layout so far; every other layout has one output named
+    # "out" and is unaffected. cu_seqlens are int32 index metadata and freqs is a non-learned fp32
+    # buffer, so only q and k are differentiable.
+    "rope_qk_thd": {"args": ["q", "k", "cu_seqlens_q", "cu_seqlens_kv", "freqs"],
+                    "out_labels": ["q_out", "k_out"],
+                    "grad_labels": ["dq", "dk"],
+                    "grad_of": ["q", "k"]},
 }
 
 

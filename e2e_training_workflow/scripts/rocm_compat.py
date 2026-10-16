@@ -136,6 +136,80 @@ if _os.environ.get("GEAK_PROBE_DIR"):
     except Exception as _e:
         print(f"[geak-lmhead] not installed: {_e!r}", flush=True)
 
+    # The MLP fc1 + SwiGLU COMPOSITE capture. Separate module for the same reason as the LM head:
+    # the op spans a TE autograd.Function and a Megatron fusion, and no single Function covers it.
+    # No-op unless GEAK_MLP_CAPTURE_DIR is set.
+    try:
+        import capture_mlp_fc1_swiglu as _mlpcap
+
+        if _mlpcap.ENABLED:
+            _mlpcap.install()
+            _orig_step_end_mlp = _probe._Probe.step_end
+
+            def _step_end_mlp(self, *a, **kw):
+                _mlpcap.note_step(self.step)
+                return _orig_step_end_mlp(self, *a, **kw)
+
+            _probe._Probe.step_end = _step_end_mlp
+    except Exception as _e:
+        print(f"[geak-mlp] not installed: {_e!r}", flush=True)
+
+    # The unfused RoPE (q AND k of one layer) capture. The op is a PAIR of calls of one function,
+    # so no single-call capture covers it. No-op unless GEAK_ROPE_CAPTURE_DIR is set.
+    try:
+        import capture_rope_qk as _ropecap
+
+        if _ropecap.ENABLED:
+            _ropecap.install()
+            _orig_step_end_rope = _probe._Probe.step_end
+
+            def _step_end_rope(self, *a, **kw):
+                _ropecap.note_step(self.step)
+                return _orig_step_end_rope(self, *a, **kw)
+
+            _probe._Probe.step_end = _step_end_rope
+    except Exception as _e:
+        print(f"[geak-rope] not installed: {_e!r}", flush=True)
+
+    # The fc1 RMSNorm (fwd+bwd) capture, on the accepted stack: hooks transformer_engine_torch's
+    # rmsnorm_fwd/bwd and keeps only calls made from the mlp_fc1_gemm overlay's kernel. Step noted
+    # AFTER the probe's own step_end (so it is the 1-based number of the step just finished), which
+    # lets the capture finalise at the end of the capture step. No-op unless GEAK_RMSN_CAPTURE_DIR.
+    try:
+        import capture_fc1_rmsnorm as _rmsncap
+
+        if _rmsncap.ENABLED:
+            _rmsncap.install()
+            _orig_step_end_rmsn = _probe._Probe.step_end
+
+            def _step_end_rmsn(self, *a, **kw):
+                r = _orig_step_end_rmsn(self, *a, **kw)
+                _rmsncap.note_step(self.step)
+                return r
+
+            _probe._Probe.step_end = _step_end_rmsn
+    except Exception as _e:
+        print(f"[geak-rmsn] not installed: {_e!r}", flush=True)
+
+    # The dist-opt grad tail (pre-RS norm check + grad scale) capture: hooks
+    # _ParamAndGradBucketGroup.start_grad_sync. Step noted AFTER the probe's own step_end, like the
+    # rmsnorm capture. No-op unless GEAK_GRADTAIL_CAPTURE_DIR is set.
+    try:
+        import capture_grad_tail as _gtcap
+
+        if _gtcap.ENABLED:
+            _gtcap.install()
+            _orig_step_end_gt = _probe._Probe.step_end
+
+            def _step_end_gt(self, *a, **kw):
+                r = _orig_step_end_gt(self, *a, **kw)
+                _gtcap.note_step(self.step)
+                return r
+
+            _probe._Probe.step_end = _step_end_gt
+    except Exception as _e:
+        print(f"[geak-gradtail] not installed: {_e!r}", flush=True)
+
     # Reversible rebind + engagement proof. No-op unless GEAK_OVERLAY points at a manifest.
     try:
         import overlay_train as _ovl
