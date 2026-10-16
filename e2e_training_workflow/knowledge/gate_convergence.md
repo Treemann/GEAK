@@ -1528,3 +1528,36 @@ P0-4b episode rule):
 So the defect is in rope / swiglu / fc1 / lmhead. Running next: s2 (rope, swiglu) and s3 (+fc1) on
 seeds 6789, 5678, 4567 and 7890.
 
+**Bisection, round 2 (2026-10-16), with a corrected severity scale.**
+
+The pre-registered episode threshold (a 10-step mean paired difference > 0.10) sits AT the noise
+level:
+* a same-code, same-seed REF rerun reaches 0.109 against its original;
+* CTRL legs reach up to 0.115.
+
+So "episode" is re-scored by severity. The P0-4b conclusion survives this:
+* S8 max10 values 0.22 / 7.39 / 5.60 / 0.80 / 0.01;
+* REF 0/5 at any threshold;
+* 4/5 at a threshold of 0.2, 3/5 at 0.3.
+
+The threshold was a second pre-registration flaw and is recorded as such.
+
+Reference ranges for the scale:
+* max training loss after step 150 on the 8 REF legs: 1.61–1.81;
+* same-code rerun: 1.62.
+
+| condition | catastrophic (max loss ≥ 5) | severe (1.9–2.5, or max10 > 0.25) | within REF range |
+|---|---|---|---|
+| s2 rope+swiglu (4 seeds) | 0 | 0 | 4 (max loss ≤ 1.74; max10 ≤ 0.18) |
+| s3 +fc1 (4) | 0 | 1 (4567: 2.27, max10 0.38, gn 1,949) | 3 (7890 gn spike 6,159) |
+| s4 +lmhead (3) | 1 (6789: 8.30) | 0 | 2 |
+| s7 / s8 (11) | 4 | 3 | 4 |
+
+* rope and swiglu are cleared at this resolution.
+* fc1 is the first overlay whose addition produces events outside the REF range.
+* lmhead is not yet separable from fc1.
+* Running next: each in isolation on the bare workload (`stack_overlay_env.sh --cond only:<name>`),
+  same 4 seeds.
+* The severity criteria are fixed BEFORE that data: severe = max loss after step 150 > 1.90 or max10
+  > 0.25; catastrophic = max loss ≥ 5.
+

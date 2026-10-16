@@ -62,7 +62,10 @@ done
 case "$COND" in
   ref) echo ""; exit 0;;
   s2) N=2;; s3) N=3;; s4) N=4;; s5) N=5;; s6) N=6;; s7) N=7;; s8) N=8;;
-  *) echo "--cond must be one of ref,s2..s8 (got '$COND')" >&2; exit 2;;
+  # ONE overlay on the bare workload, for isolating a defect (2026-10-16 instability bisection).
+  # Not a shippable condition: qkv alone is invalid (it chains after fc1) and is refused below.
+  only:*) N=1; ONLY="${COND#only:}";;
+  *) echo "--cond must be one of ref,s2..s8,only:<overlay> (got '$COND')" >&2; exit 2;;
 esac
 [ -n "$OUT_HOST" ] || { echo "--out <leg dir on the host> is required" >&2; exit 2; }
 case "$OUT_HOST" in "$WORK_HOST"/*) ;; *) echo "--out must live under $WORK_HOST (mounted at /work)" >&2; exit 2;; esac
@@ -91,6 +94,14 @@ OVERLAYS=(
   "rmsnorm_bwd_fc1_fused|bundle|$RN_BUNDLE|transformer_engine_torch:rmsnorm_fwd;transformer_engine_torch:rmsnorm_bwd|rmsnorm_fwd;rmsnorm_bwd|rmsn|m_fwd.json;m_bwd.json"
 )
 
+if [ -n "${ONLY:-}" ]; then
+  [ "$ONLY" = qkv_lnlinear_gemm ] && { echo "only:qkv_lnlinear_gemm is invalid: qkv chains after fc1" >&2; exit 2; }
+  SEL=()
+  for o in "${OVERLAYS[@]}"; do [ "${o%%|*}" = "$ONLY" ] && SEL+=("$o"); done
+  [ "${#SEL[@]}" -eq 1 ] || { echo "only: unknown overlay '$ONLY'" >&2; exit 2; }
+  OVERLAYS=("${SEL[@]}")
+  COND="only_$ONLY"
+fi
 if [ -z "$OVL_HOST" ]; then
   KEY="$( { echo "$COND"; for ((k = 0; k < N; k++)); do
              IFS='|' read -r _ KIND SRC _ <<< "${OVERLAYS[$k]}"

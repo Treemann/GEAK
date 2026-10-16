@@ -46,6 +46,7 @@ for SEED in ${SEEDS//,/ }; do
     case "$ARM" in
       ref) ;;
       s[2-8]) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$ARM" --out "$OUT_HOST" --install "$OVL_HOST")" ;;
+      only-*) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "only:${ARM#only-}" --out "$OUT_HOST" --install "$OVL_HOST/${ARM}")" ;;
       ctrl) TARGS="$TARGS --lr 7.0e-6" ;;
       *) echo "unknown arm: $ARM" >&2; exit 2;;
     esac
