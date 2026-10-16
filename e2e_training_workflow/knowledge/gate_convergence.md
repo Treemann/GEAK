@@ -1643,3 +1643,18 @@ was confirmed on every leg, and throughput fell to 3,408 (from 3,488) as expecte
 event in 4 legs: +7.2% over packed REF. That is too few legs to clear it, but it is the natural
 candidate for a reduced stack that a P0-4b-style test could clear.
 
+## P0-4c PRE-REGISTRATION: can the reduced stack rope + swiglu (s2) be cleared? (written 2026-10-16, before any leg)
+
+Same protocol as P0-4b: `quality_ab.sh`, one epoch of 358 iterations, progressive validation over
+steps 201–358. Arms REF and s2. Five seeds never used before: 9012, 1123, 2234, 3345 and 4456. 10
+legs. The four bisection legs of s2 are NOT pooled, because they were looked at.
+
+**s2 is CLEARED iff all three hold:**
+1. No s2 leg is severe-or-worse on the fixed scale (max loss after step 150 > 1.90, or max10 > 0.25
+   against the same seed's REF).
+2. |mean PV(s2) − PV(REF)| ≤ 0.0046, which is 0.25 × the P0-4b control effect of +0.0184.
+3. It is not significantly worse: t < 2.776 (df 4).
+
+Otherwise s2 is NOT cleared, and the reason is reported. No positive-control arm is run: the P0-4b
+CTRL effect is used as the fixed yardstick, and the null for criterion 1 is the 0/9 above.
+
