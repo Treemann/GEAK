@@ -37,7 +37,7 @@ def flag(argv, name):
     return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else None
 
 
-def launch(extra_env):
+def launch(extra_env, adapter=None, gbs=16):
     with tempfile.TemporaryDirectory() as t:
         os.makedirs(os.path.join(t, "bin"))
         fake = os.path.join(t, "bin", "torchrun")
@@ -48,15 +48,17 @@ def launch(extra_env):
         script = f"""
 set -euo pipefail
 export PATH={t}/bin:$PATH OUT_DIR={t}/o PROBE_DIR={t}/o/p MLM_DIR=/m GEAK_SCRIPTS=/s NPROC=8 SEQ=4096 \\
-  ROPE_BASE=10000 TOKENIZER_DIR=/t MODEL_CKPT=/c DATA_PATH=/d MBS=1 GBS=16 ITERS=30 \\
+  ROPE_BASE=10000 TOKENIZER_DIR=/t MODEL_CKPT=/c DATA_PATH=/d MBS=1 GBS={gbs} ITERS=30 \\
   ARCH_ARGS="--num-layers 28" EXTRA_TRAIN_ARGS="" EXTRA_ENV="" {env_lines}
-source {ADAPTER}
+source {adapter or ADAPTER}
 adapter_launch
 wait
 cat {t}/o/train.log
 """
         r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
-        return r.returncode, r.stdout.splitlines(), r.stderr
+        # The temp dir appears in path arguments (e.g. HF's --output-dir <OUT_DIR>/hf_out); normalise
+        # it so the hash pins the ARGV, not a random directory name.
+        return r.returncode, [x.replace(t, "<TMP>") for x in r.stdout.splitlines()], r.stderr
 
 
 rc, argv, err = launch({})
@@ -77,6 +79,31 @@ ok("--ddp-average-in-collective" not in argv, "and NOT the DDP lever unless aske
 
 rc, argv, err = launch({"DDP_EXTRA_ARGS": "--ddp-average-in-collective"})
 ok(rc == 0 and argv.count("--ddp-average-in-collective") == 1, "DDP_EXTRA_ARGS reaches the argv once")
+
+# ---- the HF TRL adapter: same contract -------------------------------------------------------------
+HF = os.environ.get("GEAK_HF_ADAPTER_UNDER_TEST", os.path.join(HERE, "..", "adapters", "hf_trl.sh"))
+rc, argv, err = launch({}, adapter=HF, gbs=64)
+sha = hashlib.sha256("\n".join(argv).encode()).hexdigest()[:16]
+HF_PINNED = "b9bbfd2a6dac626e"   # == hf_trl.sh before the schedule/FSDP became descriptor-driven (2026-10-16)
+ok(rc == 0 and len(argv) == 49, f"HF: older descriptor launches under set -u, 49 tokens (got {len(argv)}; {err.strip()[:100]})")
+ok(sha == HF_PINNED, f"HF: older descriptor argv is byte-identical to the pinned one ({sha} vs {HF_PINNED})")
+rc, argv, err = launch({"LR": "1.0e-5", "MIN_LR": "1.0e-6", "LR_DECAY_STYLE": "cosine",
+                        "LR_WARMUP_ITERS": "11", "LR_DECAY_ITERS": "358", "HF_FSDP": "full_shard"},
+                       adapter=HF, gbs=64)
+ok(rc == 0 and flag(argv, "--lr-decay-style") == "cosine" and flag(argv, "--lr-decay-iters") == "358"
+   and flag(argv, "--hf-fsdp") == "full_shard", "HF: scheduled + FSDP descriptor reaches the argv")
+
+# ---- the HF schedule equals Megatron's, at the LRs Megatron actually logged ----------------------
+import importlib.util  # noqa: E402
+_spec = importlib.util.spec_from_file_location("hf_sft", os.path.join(HERE, "..", "adapters", "hf_sft.py"))
+_hf = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_hf)
+# runs/lrsmoke_1016_cos/train.log: Megatron "learning rate:" at iterations 1, 11, 30 (0-based step = it - 1)
+for it, logged in ((1, 9.090909e-07), (11, 1.000000e-05), (30, 9.933586e-06)):
+    got = 1.0e-5 * _hf.lr_factor(it - 1, 1.0e-5, 1.0e-6, 11, 358)
+    ok(abs(got - logged) <= 1e-12 + 1e-6 * logged, f"HF lr at iteration {it} = {got:.6e} == Megatron's {logged:.6e}")
+ok(abs(1.0e-5 * _hf.lr_factor(357, 1.0e-5, 1.0e-6, 11, 358) - 1.0e-6) < 1e-9,
+   "HF lr reaches min_lr at the decay horizon")
 
 print(f"\n{len(fails)} FAILURE(S)" if fails else "\nall checks passed")
 sys.exit(1 if fails else 0)

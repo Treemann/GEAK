@@ -63,6 +63,7 @@ def parse():
     ap.add_argument("--min-lr", type=float, default=0.0)
     ap.add_argument("--lr-decay-style", default="constant")
     ap.add_argument("--lr-warmup-iters", type=int, default=0)
+    ap.add_argument("--lr-decay-iters", type=int, default=None)
     ap.add_argument("--weight-decay", type=float, default=0.1)
     ap.add_argument("--clip-grad", type=float, default=1.0)
     ap.add_argument("--adam-beta1", type=float, default=0.9)
@@ -104,11 +105,15 @@ def main():
         sys.exit(f"--global-batch-size {a.global_batch_size} is not divisible by "
                  f"micro-batch-size x world ({denom}); Megatron would refuse this too")
     grad_accum = a.global_batch_size // denom
-    if a.lr_decay_style != "constant" or a.lr_warmup_iters != 0:
-        # Only the schedule the Megatron adapter actually uses is translated. Accepting others
-        # silently would produce an HF run whose LR trajectory differs from the reference while its
-        # argv claims otherwise -- the identity digest would vouch for a config that did not run.
-        sys.exit("only --lr-decay-style constant with --lr-warmup-iters 0 is translated")
+    # Only schedules translated EXACTLY are accepted: an HF run whose LR trajectory differs from the
+    # Megatron one while its argv claims the same schedule would have the identity digest vouch for a
+    # config that did not run. Translated: constant (no warmup), and Megatron's linear-warmup + cosine
+    # decay to min-lr over --lr-decay-iters (which may exceed --train-iters, as in 30-iter throughput
+    # legs of a 358-iter recipe -- HF's own cosine can only decay over max_steps, hence lr_factor).
+    if a.lr_decay_style not in ("constant", "cosine"):
+        sys.exit(f"--lr-decay-style {a.lr_decay_style} is not translated (constant, cosine are)")
+    if a.lr_decay_style == "constant" and a.lr_warmup_iters != 0:
+        sys.exit("constant LR with warmup is not translated")
 
     import torch
     from datasets import load_dataset
@@ -174,8 +179,47 @@ def main():
            if a.hf_fsdp == "full_shard" else {}),
     )
     trainer = SFTTrainer(model=model, args=cfg, train_dataset=ds, processing_class=tok)
+    if a.lr_decay_style == "cosine":
+        from torch.optim.lr_scheduler import LambdaLR
+
+        def _create_scheduler(num_training_steps, optimizer=None):
+            opt = optimizer if optimizer is not None else trainer.optimizer
+            trainer.lr_scheduler = LambdaLR(opt, lambda step: lr_factor(
+                step, a.lr, a.min_lr, a.lr_warmup_iters, a.lr_decay_iters or a.train_iters))
+            trainer._created_lr_scheduler = True
+            return trainer.lr_scheduler
+        trainer.create_scheduler = _create_scheduler
     train_probe.install_hf(trainer)
+    # Shape/oracle capture on THIS stack, at the same step boundary the Megatron shim uses
+    # (rocm_compat.py). No-op unless GEAK_CAPTURE_TARGET/DIR/STEP are set; never breaks a run.
+    try:
+        import capture_train_shapes as _cap
+        if _cap.ENABLED:
+            _cap.install()
+            _orig_step_end = train_probe._Probe.step_end
+
+            def _step_end(self, *aa, **kw):
+                _cap.note_step(self.step)
+                return _orig_step_end(self, *aa, **kw)
+            train_probe._Probe.step_end = _step_end
+    except Exception as e:  # noqa: BLE001
+        print(f"[geak-capture] not installed: {e!r}", flush=True)
     trainer.train()
+
+
+def lr_factor(step, lr, min_lr, warmup, decay_iters):
+    """Megatron's schedule as a LambdaLR factor. `step` is 0 for the first optimizer step, which
+    Megatron calls iteration 1: warmup lr*i/warmup for i <= warmup, then cosine from lr to min_lr over
+    (decay_iters - warmup), then min_lr. Verified against Megatron's logged LRs in
+    tests/test_adapter_argv.py (9.090909e-07 at 1, 1e-05 at 11, 9.933586e-06 at 30)."""
+    import math
+    i = step + 1
+    if warmup > 0 and i <= warmup:
+        return (lr * i / warmup) / lr
+    if i > decay_iters:
+        return min_lr / lr
+    ratio = (i - warmup) / max(1, decay_iters - warmup)
+    return (min_lr + 0.5 * (math.cos(math.pi * ratio) + 1.0) * (lr - min_lr)) / lr
 
 
 if __name__ == "__main__":
