@@ -95,12 +95,19 @@ default 0.1 untuned** (DECISIONS 4.21).
 * All stacked bundles are NOT cleared for production training (DECISIONS 4.22).
 * Full log: `knowledge/gate_convergence.md`.
 
-**Running (2026-10-16):** P0-4c, pre-registered in commit 6788bf22.
-* Command: `quality_ab.sh --seeds 9012,1123,2234,3345,4456 --arms ref,s2 --name qabs2`. 10 legs,
-  about 3.3 h; driver `runs/qabs2_driver.log`.
-* Clears rope+swiglu iff: 0 severe-or-worse; |ΔPV| ≤ 0.0046; t < 2.776.
-* Score with the severity scale; PV with `quality_ab_pv.py`-style pairing. There is no CTRL arm
-  (the fixed yardstick is +0.0184).
+**User clarification (2026-10-16):** "no tuning" means general default training practice (warmup
+allowed), kept fixed during optimisation, not constant LR.
+* New descriptor `workloads/qwen2_5_math_7b_packed_cosine.env`: warmup 11, cosine to 1e-6 over 358.
+* The older descriptors are argv-identical, so no pinned bundle is affected.
+* P0-4c (s2 under constant LR) was stopped during its first leg and never analysed. When stopping
+  it, `TaskStop` left the container running; it was stopped by ID after `docker inspect`.
+
+**Running (2026-10-16):** P0-4d, pre-registered in commit e29ca475.
+* Command: `quality_ab.sh --workload workloads/qwen2_5_math_7b_packed_cosine.env --seeds
+  9012,1123,2234,3345,4456 --arms ref,s8,ctrl70 --name qabcos`. 15 legs, about 5 h; driver
+  `runs/qabcos_driver.log`.
+* Verdict: `python3 scripts/quality_ab_verdict.py /home/treemann/geak_train/runs/qabcos_<stamp>`.
+  It gives stability and quality separately; CLEARED iff both PASS.
 
 **Next:** the prioritised list is `ROADMAP.md` "Near-term priorities (2026-10-14)". In short:
 * P0-1: GBS + dropout decision (owner).
