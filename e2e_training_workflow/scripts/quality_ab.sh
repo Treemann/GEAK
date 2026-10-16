@@ -46,6 +46,11 @@ for SEED in ${SEEDS//,/ }; do
     case "$ARM" in
       ref) ;;
       s[2-8]) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$ARM" --out "$OUT_HOST" --install "$OVL_HOST")" ;;
+      # The accepted stack with every side stream disabled (fc1/qkv wgrad overlap -> serial, lm-head
+      # single stream): same kernel bytes, single-stream scheduling. Tests the side-stream race
+      # hypothesis for the late-training instability (2026-10-16).
+      s8serial) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond s8 --out "$OUT_HOST" --install "$OVL_HOST")"
+                EXTRA="$EXTRA FC1_BWD_MODE=serial QKV_BWD_MODE=serial LMHEAD_CE_TWO_STREAM=0" ;;
       only-*) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "only:${ARM#only-}" --out "$OUT_HOST" --install "$OVL_HOST/${ARM}")" ;;
       ctrl) TARGS="$TARGS --lr 7.0e-6" ;;
       *) echo "unknown arm: $ARM" >&2; exit 2;;

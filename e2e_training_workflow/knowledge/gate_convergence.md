@@ -1561,3 +1561,32 @@ Reference ranges for the scale:
 * The severity criteria are fixed BEFORE that data: severe = max loss after step 150 > 1.90 or max10
   > 0.25; catastrophic = max loss ≥ 5.
 
+**Isolation (2026-10-16)**, `runs/qabiso_1016_030317_*`, scored on the pre-fixed severity scale:
+* fc1 alone: 1/4 severe (seed 7890: max loss 2.02, max10 0.32).
+* lmhead alone: 1/4 severe (seed 6789: max loss 2.69, max10 0.47, gn 1,158).
+* No catastrophic event with either alone.
+* Progressive validation was above REF on 4/4 seeds for each: fc1 +0.024 / +0.018 / +0.003 /
+  +0.049; lmhead +0.014 / +0.016 / +0.076 / +0.011. That is CTRL-sized, but n = 4.
+
+**The wgrad-precision hypothesis is REFUTED in situ** (`runs/wgprobe_1016_*`, the overlays' own
+probes, `GEAK_FC1_WGRAD_PROBE` / `GEAK_LMHEAD_WGRAD_PROBE`):
+* fc1's increment to `main_grad` is within 1.7e-7 of the fp32 reference, against bf16 rounding of
+  2.7e-4.
+* lmhead's is within 0.7–1.0e-6, against 0.5–1.4e-3.
+* Both are genuinely fp32 and `+=`. The lm-head integrator's unreproduced "1.39e-3" was a
+  mis-measurement.
+
+**What correlates instead: side streams.**
+* No events: REF (0/9), CTRL (0/8) and rope+swiglu (0/4), all single-stream.
+* Events with each overlay that runs a second stream: fc1 (wgrad on a side stream) and lmhead
+  (dgrad on a side stream), each 1/4.
+* Events most often with S8: fc1, qkv and lmhead all two-stream, 7/11.
+
+That is the signature of a rare race: correct when probed, wrong now and then.
+
+**Test, criteria fixed before data:**
+* s8 with every side stream off: `FC1_BWD_MODE=serial QKV_BWD_MODE=serial LMHEAD_CE_TWO_STREAM=0`.
+  The kernel bytes are unchanged; arm `s8serial` in `quality_ab.sh`.
+* It runs on the five P0-4b seeds, where s8 had 4/5 severe-or-worse.
+* ≤ 1/5 severe-or-worse supports the race hypothesis; ≥ 3/5 refutes it; 2/5 is inconclusive.
+
