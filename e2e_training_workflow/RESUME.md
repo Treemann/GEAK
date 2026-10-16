@@ -165,4 +165,4 @@ also matches the calling shell. Kernel-track runs need `kernel_workflow/` in the
 ## Decisions waiting on the user / workload owner
 1. ~~GBS after packing~~ DECIDED 2026-10-15: GBS 16 packs (DECISIONS 4.21).
 2. ~~Whether the reference recipe should drop dropout to the model's own 0.0.~~ DECIDED 2026-10-15: keep the default 0.1, no tuning.
-3. Review of the uncommitted agent changes (09-24 batch + knowledge/critical_path.md from 10-09).
+3. ~~Review of the uncommitted agent changes~~ DONE 2026-10-16 (060347f9): all committed after review.
