@@ -1695,3 +1695,60 @@ and 4456 (P0-4c's, never analysed). 15 legs. `scripts/quality_ab_verdict.py` app
   * Otherwise INCONCLUSIVE.
 * **CLEARED iff PASS-stability AND PASS-quality.** All rules are fixed now.
 
+### P0-4d RESULT (2026-10-16): NOT CLEARED by the pre-registered rule; under the standard schedule the catastrophic episodes are gone and the final model matches REF
+
+`runs/qabcos_1016_*`, 15 legs, all ok; the cosine LR schedule is verified in the logs.
+
+| seed | PV REF / S8 / CTRL70 | max10 S8 / REF(rev) / CTRL70 | held-out REF / S8 / CTRL70 |
+|---|---|---|---|
+| 1123 | 1.4550 / 1.5645 / 1.5248 | **0.379** / 0.006 / 0.108 | 1.2959 / 1.2978 / 1.3205 |
+| 2234 | 1.4586 / 1.4594 / 1.5232 | 0.010 / 0.003 / 0.112 | 1.2951 / 1.2967 / 1.3236 |
+| 3345 | 1.4873 / 1.4617 / 1.5326 | −0.006 / 0.088 / 0.095 | 1.2997 / 1.2990 / 1.3150 |
+| 4456 | 1.4671 / 1.4950 / 1.5114 | 0.156 / 0.018 / 0.065 | 1.3003 / 1.3025 / 1.3145 |
+| 9012 | 1.4610 / 1.4563 / 1.6249 | 0.002 / 0.011 / **0.527** | 1.2985 / 1.2962 / 1.3188 |
+
+**Pre-registered verdicts (`quality_ab_verdict.py`).**
+* The control is DETECTED: CTRL70 − REF PV = +0.0776, t = 3.50.
+* Stability: INCONCLUSIVE. S8 severe 1/5 against REF 0/5; CTRL70 also 1/5. No catastrophic leg in
+  any arm.
+* Quality: INCONCLUSIVE. S8 − REF PV = +0.0216, which is 0.28 × the control, just above 0.25. It is
+  carried almost entirely by seed 1123's episode.
+* **Overall NOT CLEARED.**
+
+**Reading (exploratory where marked).**
+* **The standard schedule removed the catastrophic class.** S8 had 2/5 catastrophic under constant
+  LR and 0/5 under cosine.
+* Severe transients still occur at about 1 in 5 for S8, but **also for a correct implementation**
+  (CTRL70 9012: max loss 2.68, max10 0.53). On this evidence a severe transient is a recipe-level
+  event, not an S8 signature. 1 S8 against 1 CTRL70 against 0 REF is not a difference.
+* **Exploratory: with LR decay, the end-of-training held-out loss becomes a clean instrument.**
+  * REF spans 1.2951–1.3003.
+  * S8 − REF paired: +0.0019 / +0.0015 / −0.0007 / +0.0023 / −0.0023, mean **+0.0005**.
+  * CTRL70 − REF: +0.0246 / +0.0284 / +0.0153 / +0.0142 / +0.0203, mean **+0.0206**, all positive.
+  * S8's effect is about 1/40 of the control's. The decayed final model shows no trace of the
+    mid-run transient.
+  * The P0-4 end-eval failure was a constant-LR artefact: there was no decay to settle the weights.
+  * This metric was chosen after seeing these data, so these legs cannot confirm it. P0-4e below
+    does that.
+
+## P0-4e PRE-REGISTRATION: confirm the stack under the standard schedule (written 2026-10-16, before any leg)
+
+* Descriptor `qwen2_5_math_7b_packed_cosine.env`, same data and protocol as P0-4d.
+* Arms REF and S8 only. Seeds 5567, 6678, 7789, 8890 and 9901, never used before. 10 legs.
+* `scripts/quality_ab_final.py` applies the rules below.
+
+**Primary quality metric:** the end-of-training held-out loss, paired by seed. The yardstick is
+FIXED from P0-4d: the ×0.7 schedule's effect of +0.0206.
+* PASS-quality iff |mean d| ≤ 0.00515 (0.25 × yardstick), and not (mean > 0 with t ≥ 2.776).
+* FAIL-quality iff mean > 0.00515 with t ≥ 2.776.
+* Otherwise INCONCLUSIVE.
+
+**Stability:**
+* FAIL iff any S8 leg has max10 > 1.0.
+* PASS iff there is none and at most 1 S8 leg has max10 > 0.25. The null rate is about 1 in 5:
+  CTRL70 under this schedule.
+* Otherwise INCONCLUSIVE.
+
+**CLEARED iff both PASS.** The P0-4d legs chose this metric and are not pooled. Applied to them for
+reference only, the script returns the line printed in the commit that adds it.
+
