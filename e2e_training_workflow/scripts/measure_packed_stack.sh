@@ -13,6 +13,7 @@
 #
 # Usage: measure_packed_stack.sh [--conds ref,s5,s6,s7] [--reps 3] [--iters 30] [--name pstack]
 #                                [--profile 12:13]   (profiler window on ranks 0,4: NOT a throughput leg)
+#                                [--workload workloads/qwen2_5_math_7b_packed_cosine.env]
 #                                [--gbs-list 16,24,64]  (GBS in PACKS; every condition at every GBS,
 #                                 interleaved within a rep; legs are named <cond>g<gbs><rep>. Legs at
 #                                 different GBS do not see the same batches, so compare them per leg,
@@ -21,6 +22,7 @@ set -euo pipefail
 GEAK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_HOST="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
 CONDS="ref,s5,s6,s7"; REPS=3; ITERS=30; NAME=pstack; PROFILE=""; GBS_LIST=""
+WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed.env"
 while [ $# -gt 0 ]; do
   case "$1" in
     --conds) CONDS="$2"; shift 2;;
@@ -29,13 +31,13 @@ while [ $# -gt 0 ]; do
     --name) NAME="$2"; shift 2;;
     --profile) PROFILE="$2"; shift 2;;
     --gbs-list) GBS_LIST="$2"; shift 2;;
+    --workload) WORKLOAD="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
 for c in ${CONDS//,/ }; do
   case "$c" in ref|s2|s3|s4|s5|s6|s7|s8) ;; *) echo "unknown condition: $c" >&2; exit 2;; esac
 done
-WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed.env"
 STAMP="$(date +%m%d_%H%M%S)"
 OVL_HOST="$WORK_HOST/overlays/${NAME}_$STAMP"     # fresh per measurement run, never rm -rf'd
 [ -e "$OVL_HOST" ] && { echo "!!! $OVL_HOST exists" >&2; exit 3; }
