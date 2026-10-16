@@ -1516,3 +1516,15 @@ The episodes are catastrophic, not drift:
 training** until the defect is found and the stack passes a P0-4b-style test. The throughput
 numbers stand; the training-safety claim does not.
 
+**Bisection log** (cumulative stack, scored against the P0-4b REF leg of the same seed with the
+P0-4b episode rule):
+
+| condition | overlays | seeds → episode? |
+|---|---|---|
+| s8 | all 8 | 4567 ✗279, 5678 ✗254, 6789 ✗196, 7890 ✗327, 8901 ✓ |
+| s7 | no rmsnorm | 1234 ✗ (PV 2.91) |
+| s4 | rope, swiglu, fc1, lmhead | 4567 ✓, 5678 ✓, 6789 ✗292 (max loss 8.30) |
+
+So the defect is in rope / swiglu / fc1 / lmhead. Running next: s2 (rope, swiglu) and s3 (+fc1) on
+seeds 6789, 5678, 4567 and 7890.
+
