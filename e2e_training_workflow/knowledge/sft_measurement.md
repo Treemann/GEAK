@@ -1254,3 +1254,24 @@ hipBLASLt solutions, so the gap needs something deeper:
 Next, once the GPUs are free: microbenchmark peak and each layout's attainable rate for these
 shapes, before spending a kernel lane (ROADMAP P2-1).
 
+**CORRECTION (same day, measured): GEMM headroom is small. The "~54%" was a concurrency artefact.**
+A microbenchmark on one MI308X (`geak_train/scratch/gemm_bench.py`, one-off, out of the repo;
+results in `scratch/gemm_bench_1016.json`) replaced the desk numbers above:
+* **Sustained bf16 peak: 199 TFLOP/s** (8192³), not the 233 inferred from the max clock. The part
+  does not hold 1,420 MHz under a dense GEMM.
+* **Every training GEMM shape, in isolation, reaches 160–197 TFLOP/s** in the best layout: fc1
+  dgrad 197, fc1 wgrad 197, fc2 dgrad 194, fc2 wgrad 197, lm-head wgrad 199, forwards 175–195. The
+  fp32-out beta=1 `addmm` used for wgrad reaches 160–195. One layout is pathological (fc2 wgrad
+  NT, 74), but it is not the one in use.
+* So the backward GEMMs are NOT slow kernels. The profile's long per-kernel durations come from
+  fc1's side-stream wgrad running CONCURRENTLY with dgrad and sharing the CUs. Per-kernel time
+  under overlap is not efficiency: the same error class as DECISIONS 4.16.
+* **Whole-step model-FLOP utilisation** on the cleared s8 recipe: about 43 GFLOP per token (6 ×
+  ~7.07 B matmul parameters including the lm-head, plus varlen attention), at about 3,530 total
+  tokens/s/GPU, is **about 152 TFLOP/s, or 76% of the sustained peak**.
+* What is left is the other 24%: exposed communication (5–12%), non-GEMM ops (~5%), and the gaps
+  between kernels.
+
+**ROADMAP P2-1 is therefore de-prioritised**: no GEMM lane is worth a run on this evidence. The
+next lever is the exposed DP communication (P2-3).
+
