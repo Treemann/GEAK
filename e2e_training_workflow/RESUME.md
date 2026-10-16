@@ -82,12 +82,25 @@ default 0.1 untuned** (DECISIONS 4.21).
 * Progressive validation was chosen as the instrument. See `knowledge/gate_convergence.md`.
 * The stack is NOT yet cleared for long training.
 
-**Running (2026-10-15):**
-* The diagnostics `runs/qabdiag_1015_180143_*` (s7 and S8 seed 2345, exploratory) are chained
-  into **P0-4b**: `quality_ab.sh --seeds 4567,5678,6789,7890,8901 --arms ref,s8,ctrl --name qabpv`.
-  15 legs, about 5 h. Driver `runs/qabpv_driver_1015.log`.
-* Analyse with `python3 scripts/quality_ab_pv.py /home/treemann/geak_train/runs/qabpv_<stamp>`.
-* The verdict rules are pre-registered (commit c86e9f93).
+**Done 2026-10-16:** P0-4b, the bisection, isolation and the side-stream test.
+* **The accepted 8-kernel stack FAILS on late-training instability.** s8-family legs are
+  severe-or-worse on 9/16, against 0/9 null legs. Catastrophic episodes (loss 5–9) occur only with
+  ≥ 4 overlays.
+* rope and swiglu are cleared at bisection resolution. fc1 and lmhead are each mildly implicated
+  alone.
+* Ruled out as the main cause: wgrad precision (probed in situ, fp32-exact) and side streams (s8
+  serial still has a catastrophic episode).
+* The mechanism is open. The leading lead is per-parameter gradient differences on identical
+  weights (the step-1 grad norm moves 20–85% between stacks).
+* All stacked bundles are NOT cleared for production training (DECISIONS 4.22).
+* Full log: `knowledge/gate_convergence.md`.
+
+**Running (2026-10-16):** P0-4c, pre-registered in commit 6788bf22.
+* Command: `quality_ab.sh --seeds 9012,1123,2234,3345,4456 --arms ref,s2 --name qabs2`. 10 legs,
+  about 3.3 h; driver `runs/qabs2_driver.log`.
+* Clears rope+swiglu iff: 0 severe-or-worse; |ΔPV| ≤ 0.0046; t < 2.776.
+* Score with the severity scale; PV with `quality_ab_pv.py`-style pairing. There is no CTRL arm
+  (the fixed yardstick is +0.0184).
 
 **Next:** the prioritised list is `ROADMAP.md` "Near-term priorities (2026-10-14)". In short:
 * P0-1: GBS + dropout decision (owner).
