@@ -129,13 +129,15 @@ allowed), kept fixed during optimisation, not constant LR.
 * A regression from the adapter change (`DDP_EXTRA_ARGS` unbound under `set -u`) was found by the
   headline run, fixed in 07ce1c5d, and is guarded by `test_adapter_argv.py`.
 
-**Next (autonomous):** P2-2 HF TRL exit criterion.
-1. HF descriptor support: schedule and FSDP read from the descriptor, argv unchanged for old ones,
-   pinned by a test like the Megatron one.
-2. 7B HF smoke and profile.
-3. Port the rmsnorm kernel to `Qwen2RMSNorm` (the most portable accepted op; HF RMSNorm is several
-   eager elementwise kernels) and gate it with the same gates, run through the workflow with
-   `stack: hf_trl`.
+**Done:** HF infrastructure, DECISIONS 4.26 (commit 65044881).
+* Descriptor-driven schedule and FSDP; exact Megatron schedule translation; capture hook.
+* Descriptor `qwen2_5_math_7b_hf_cosine.env`.
+* 7B HF smoke: 1,152 useful tok/s/GPU.
+
+**Running:** the P2-2 attempt `wf_4385c413-a19`. A full fast-mode workflow run on `stack: hf_trl`,
+7B, budget 2, max_gates 3, kernel_budget 3, t0_epoch_ms 1792185709841. Resume with
+`resumeFromRunId`. The exit criterion is one kernel accepted on HF through the same gates. Expect
+infrastructure findings: record them and fix them inside `scripts/adapters/`.
 
 **AUTONOMOUS PLAN (user offline 2026-10-16 → 10-18; instruction: never stop, decide professionally, record
 everything).** In order:
