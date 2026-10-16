@@ -1590,3 +1590,56 @@ That is the signature of a rare race: correct when probed, wrong now and then.
 * It runs on the five P0-4b seeds, where s8 had 4/5 severe-or-worse.
 * ≤ 1/5 severe-or-worse supports the race hypothesis; ≥ 3/5 refutes it; 2/5 is inconclusive.
 
+**Side-stream test result (2026-10-16), `runs/qabser_1016_053856_*`.** `lmhead two_stream=False`
+was confirmed on every leg, and throughput fell to 3,408 (from 3,488) as expected without overlap.
+
+| seed | s8 (P0-4b) | s8serial |
+|---|---|---|
+| 4567 | severe | within |
+| 5678 | catastrophic 9.36 | within |
+| 6789 | catastrophic 8.39 | within |
+| 7890 | severe | severe (2.04) |
+| 8901 | within | **catastrophic 8.72** |
+
+* By the fixed criteria this is 2/5, INCONCLUSIVE. On substance, **the side-stream race hypothesis
+  is rejected as the main cause**: a catastrophic episode occurs with every side stream off.
+* PV is still above REF on 5/5 seeds (+0.037 / +0.021 / +0.003 / +0.030 / +0.70).
+
+**Where the evidence stands**, events at "severe or worse" on the fixed scale:
+
+| arm | legs | severe+ | catastrophic | note |
+|---|---|---|---|---|
+| CTRL (correct, LR x0.7) | 8 | 0 | 0 | out-of-sample null (the REF legs defined the scale, so they cannot be their own null) |
+| REF rerun | 1 | 0 | 0 | same-code null |
+| s2 rope+swiglu | 4 | 0 | 0 | |
+| s3 (+fc1) | 4 | 1 | 0 | |
+| fc1 alone | 4 | 1 | 0 | |
+| lmhead alone | 4 | 1 | 0 | |
+| s4 | 3 | 1 | 1 | |
+| s7 | 1 | 1 | 1 | |
+| s8 (incl. reruns) | 11 | 7 | 2 | |
+| s8serial | 5 | 2 | 1 | |
+
+* s8-family 9/16 against the nulls' 0/9: Fisher p ≈ 0.004.
+* Catastrophic events appear only with ≥ 4 overlays (5 of 24 legs), never in 17 null legs. On its
+  own that is not yet significant (p ≈ 0.06).
+
+**Reading.**
+* The stack makes late-training excursions much more likely. Side streams are not the cause, and
+  wgrad precision is not the cause.
+* Single overlays give a milder signal; the effect grows with how many are stacked.
+* Two candidate mechanisms remain, and they are not exclusive:
+  1. An ill-conditioned recipe tipped over by accumulated, individually tolerable numerical
+     differences. Constant LR 1e-5, no warmup or decay, and grad norms of 100–7,000 early show
+     the recipe is marginal on its own; every arm has spikes.
+  2. A specific numerical defect that per-op L0 cannot see and that combines across overlays. For
+     example, the step-1 grad norm moves 20–85% between "correct" stacks, while a same-code rerun
+     moves it 0%.
+* The step-1 grad-norm sensitivity was dismissed as a "numerics hash" (4.20). In light of this it
+  deserves a per-parameter look: which parameters carry that norm, and how they differ between REF
+  and s8 on identical weights and batch.
+
+**Production status.** Not cleared. **rope + swiglu (s2)** is the only part of the stack with no
+event in 4 legs: +7.2% over packed REF. That is too few legs to clear it, but it is the natural
+candidate for a reduced stack that a P0-4b-style test could clear.
+
