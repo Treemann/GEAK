@@ -102,12 +102,15 @@ allowed), kept fixed during optimisation, not constant LR.
 * P0-4c (s2 under constant LR) was stopped during its first leg and never analysed. When stopping
   it, `TaskStop` left the container running; it was stopped by ID after `docker inspect`.
 
-**Running (2026-10-16):** P0-4d, pre-registered in commit e29ca475.
+**Done 2026-10-16:** P0-4d (`runs/qabcos_1016_092855_*`).
+* NOT CLEARED by its rules: both INCONCLUSIVE.
+* Under the standard schedule the catastrophic episodes are gone (S8 0/5). The decayed held-out
+  loss puts S8 at +0.0005 against the control's +0.0206.
+
+**Running (2026-10-16):** P0-4e, the confirmatory run, pre-registered in commit 8405b435.
 * Command: `quality_ab.sh --workload workloads/qwen2_5_math_7b_packed_cosine.env --seeds
-  9012,1123,2234,3345,4456 --arms ref,s8,ctrl70 --name qabcos`. 15 legs, about 5 h; driver
-  `runs/qabcos_driver.log`.
-* Verdict: `python3 scripts/quality_ab_verdict.py /home/treemann/geak_train/runs/qabcos_<stamp>`.
-  It gives stability and quality separately; CLEARED iff both PASS.
+  5567,6678,7789,8890,9901 --arms ref,s8 --name qabfin`. 10 legs, about 3.3 h.
+* Verdict: `python3 scripts/quality_ab_final.py /home/treemann/geak_train/runs/qabfin_<stamp>`.
 
 **Next:** the prioritised list is `ROADMAP.md` "Near-term priorities (2026-10-14)". In short:
 * P0-1: GBS + dropout decision (owner).

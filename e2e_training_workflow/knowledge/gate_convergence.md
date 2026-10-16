@@ -1750,5 +1750,6 @@ FIXED from P0-4d: the ×0.7 schedule's effect of +0.0206.
 * Otherwise INCONCLUSIVE.
 
 **CLEARED iff both PASS.** The P0-4d legs chose this metric and are not pooled. Applied to them for
-reference only, the script returns the line printed in the commit that adds it.
+reference only, the script returns CLEARED: mean +0.00054, t 0.60, 1 severe, 0 catastrophic. That
+is exactly why they cannot be the confirmation.
 
