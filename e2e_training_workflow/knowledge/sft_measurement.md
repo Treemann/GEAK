@@ -1310,3 +1310,13 @@ supplies it.
   > 1.0, PASS on ≤ 1 severe and none catastrophic).
 * ACCEPT the lever iff CLEARED.
 
+**P0-4f RESULT: CLEARED. `--ddp-average-in-collective` is ACCEPTED** (`runs/qabavg_1016_175311_*`).
+* Held-out, cand − s8: −0.0081 / +0.0060 / +0.0004 / −0.0168 / +0.0008. Mean −0.0036, t −0.89:
+  inside the ±0.00515 margin.
+* Stability: 0 severe, 0 catastrophic.
+* Throughput on these one-epoch legs: s8 3,429–3,434, cand 3,461–3,466, **+0.88%**. That
+  reproduces the 30-iter sweep.
+* Shipped as the recommended production descriptor `workloads/qwen2_5_math_7b_packed_cosine_avg.env`:
+  the scheduled recipe plus `DDP_EXTRA_ARGS="--ddp-average-in-collective"`, read by the adapter.
+  The argv for every older descriptor is byte-identical (diffed, 80 tokens).
+
