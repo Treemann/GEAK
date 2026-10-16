@@ -112,6 +112,27 @@ allowed), kept fixed during optimisation, not constant LR.
   5567,6678,7789,8890,9901 --arms ref,s8 --name qabfin`. 10 legs, about 3.3 h.
 * Verdict: `python3 scripts/quality_ab_final.py /home/treemann/geak_train/runs/qabfin_<stamp>`.
 
+**AUTONOMOUS PLAN (user offline 2026-10-16 → 10-18; instruction: never stop, decide professionally, record
+everything).** In order:
+1. **P0-4e verdict** (`quality_ab_final.py`).
+   * CLEARED: write DECISIONS 4.23 (the stack is cleared for training under the standard schedule;
+     under the constant-LR recipe it is NOT). Update bundle status in the docs, ROADMAP and README.
+   * NOT CLEARED: debug. Compare per-parameter gradients REF vs S8 on identical weights and batch
+     (which parameters carry the step-1 grad-norm gap), localise, fix, re-test. Do not move on
+     until resolved.
+2. **Headline on the recommended recipe.** Interleaved ref vs s8 on the cosine descriptor, 3 reps
+   (30 iters), so the published numbers carry that recipe's config_digest. Throughput is expected
+   to be unchanged.
+3. **P0-2, review the uncommitted agent changes.** No GPU. Read each diff and run the tests.
+   * Commit what is correct and useful, with a message that says so.
+   * Leave anything doubtful in place and document why.
+   * Never discard work silently.
+4. **Fold the outcome test into the workflow** as an optional final gate (`quality_gate` arg:
+   REF vs the final stack, 5 seeds, `quality_ab_final.py` rules), so a stack is never shipped on
+   30-step gates alone (DECISIONS 4.22). Dry-run test it.
+5. Then the P2 items in ROADMAP order (GEMM efficiency analysis first, then comm bucket levers,
+   then HF TRL).
+
 **Next:** the prioritised list is `ROADMAP.md` "Near-term priorities (2026-10-14)". In short:
 * P0-1: GBS + dropout decision (owner).
 * P0-2: review the uncommitted agent changes.
