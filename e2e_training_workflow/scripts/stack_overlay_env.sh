@@ -63,11 +63,11 @@ case "$COND" in
   ref) echo ""; exit 0;;
   s2) N=2;; s3) N=3;; s4) N=4;; s5) N=5;; s6) N=6;; s7) N=7;; s8) N=8;;
   # The SECOND STACK (HF TRL, 7B): its own accepted overlays (wf_4385c413-a19, DECISIONS 4.27).
-  hf1) N=1; HFSTACK=1;; hf2) N=2; HFSTACK=1;;
+  hf1) N=1; HFSTACK=1;; hf2) N=2; HFSTACK=1;; hf3) N=3; HFSTACK=1;;
   # ONE overlay on the bare workload, for isolating a defect (2026-10-16 instability bisection).
   # Not a shippable condition: qkv alone is invalid (it chains after fc1) and is refused below.
   only:*) N=1; ONLY="${COND#only:}";;
-  *) echo "--cond must be one of ref,s2..s8,hf1,hf2,only:<overlay> (got '$COND')" >&2; exit 2;;
+  *) echo "--cond must be one of ref,s2..s8,hf1,hf2,hf3,only:<overlay> (got '$COND')" >&2; exit 2;;
 esac
 [ -n "$OUT_HOST" ] || { echo "--out <leg dir on the host> is required" >&2; exit 2; }
 case "$OUT_HOST" in "$WORK_HOST"/*) ;; *) echo "--out must live under $WORK_HOST (mounted at /work)" >&2; exit 2;; esac
@@ -99,10 +99,12 @@ OVERLAYS=(
 # HF TRL stack: attn (CK/aiter flash fwd+bwd replacing SDPA), then the fused Qwen2RMSNorm. Manifest
 # basenames are the gated ones (m_attn_cand.json / m_rmsn_cand.json), so impl_digest reproduces.
 HF_BUNDLE="$WORK_HOST/runs/finalize_bundle_1017_hf_attn_rmsn"
+HF_MLP_BUNDLE="$WORK_HOST/runs/finalize_bundle_1017_hf2_mlp"     # hf3: gated ON hf2 (wf_bda82b0e-152)
 if [ -n "${HFSTACK:-}" ]; then
   OVERLAYS=(
     "attn_fmha_ck_hf|bundle|$HF_BUNDLE|torch.nn.functional:scaled_dot_product_attention|entry|attn|m_attn_cand.json"
     "hf_rmsnorm_fused_fwdbwd|bundle|$HF_BUNDLE|transformers.models.qwen2.modeling_qwen2:Qwen2RMSNorm.forward|entry|rmsn|m_rmsn_cand.json"
+    "hf_mlp_gateup_swiglu|bundle|$HF_MLP_BUNDLE|transformers.models.qwen2.modeling_qwen2:Qwen2MLP.forward|entry|mlp|m_mlp_cand.json"
   )
 fi
 if [ -n "${ONLY:-}" ]; then
