@@ -1335,3 +1335,39 @@ recipe cleared for training.
 * The first attempt (`hl_1016_203710`) lost its REF legs to the unbound-variable bug fixed in
   07ce1c5d.
 
+### SECOND STACK: two kernels accepted on HF TRL through the same gates (P2-2 exit criterion MET, 2026-10-17)
+
+Run `wf_4385c413-a19`: fast mode, `stack: hf_trl`, `workloads/qwen2_5_math_7b_hf_cosine.env` (7B,
+unpacked, GBS 64, FSDP full_shard, warmup + cosine). 71 agents, 0 errors, 6.8 h.
+
+| head | gated | band | L0 / L1 | memory | reference |
+|---|---|---|---|---|---|
+| `attn_fmha_ck_hf`: CK / aiter flash attention fwd+bwd replacing SDPA | **+6.64%** | 0.93% | pass / pass | +1.27% | bare HF |
+| `hf_rmsnorm_fused_fwdbwd`: fused `Qwen2RMSNorm` fwd+bwd | **+2.15%** | 0.25% | pass / pass | −1.90% | HF + attn |
+
+* Director validation: bare 1,097, stack 1,193–1,197 useful tok/s/GPU, **+9.33%** (paired +9.46 /
+  +9.14%; null pairs −0.06 / +0.04%).
+* Bundle `runs/finalize_bundle_1017_hf_attn_rmsn` (`launch.sh` with `--attn` / `--ref` /
+  `--dry-run`), cold-started 3 times.
+* Every adapter-side change for this stack is inside `scripts/adapters/` (DECISIONS 4.26). The
+  overlay mechanism, gates and workflow ran unchanged.
+
+**Findings the second stack produced.**
+* **The bare HF stack is bit-deterministic:** 3 baseline legs and a fresh ref match bitwise at all
+  30 steps. L1's per-step envelope therefore has ZERO width, and any non-bitwise kernel "exceeds"
+  it on every step. It was correctly advisory, and the voting detectors (step-1 loss, strict sign
+  rule) carried the verdict: the attention step-1 loss moved −0.018%, rmsnorm 0.018%. On a
+  deterministic stack the envelope has no information by construction.
+* **Config diagnosis `config_first`: 30.2% of the step is exposed communication.** FSDP
+  `full_shard` re-gathers every layer's weights for each of the 8 micro-batches (GBS 64 / 8 ranks).
+  Keeping parameters gathered across micro-batches (`shard_grad_op`, ZeRO-2) is the obvious lever.
+  At 7B with fp32 master weights it needs about 30 GB of replicated params plus sharded
+  grads/optimizer per GPU, which fits the 192 GB MI308X. Next to measure.
+* The unexplored head is `hf_mlp_gateup_swiglu` (33% share, +1.87% expected).
+* **Risk carried by the attention kernel** (from its L0 audit): the backward recasts q/k/v to fp16
+  with no overflow guard. Live |k| max is 528 against 65,504, about 124× headroom. Its dk/dv
+  scale-bias is consistently slightly negative (−3e-4 to −7e-4, inside the 2e-3 tolerance).
+* **The HF stack is NOT cleared for long training.** `quality_ab.sh` is the Megatron/packed
+  protocol, and HF has no outcome test yet (DECISIONS 4.22/4.23). An HF version of the outcome test
+  is a prerequisite for shipping it.
+
