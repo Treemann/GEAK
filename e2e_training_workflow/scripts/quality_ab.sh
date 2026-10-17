@@ -18,6 +18,7 @@ GEAK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_HOST="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
 SEEDS="1234,2345,3456"; ARMS="ref,s8,ctrl"; ITERS=358; NAME=qab
 WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed.env"; CAND_CMD=""; CAND_TARGS=""
+STACK=megatron; TRAIN=""; HELDOUT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --seeds) SEEDS="$2"; shift 2;;
@@ -27,20 +28,31 @@ while [ $# -gt 0 ]; do
     --workload) WORKLOAD="$2"; shift 2;;
     --cand-cmd) CAND_CMD="$2"; shift 2;;
     --cand-train-args) CAND_TARGS="$2"; shift 2;;   # e.g. a config lever under test, cand arm only
+    # Second stack (HF TRL): unpacked data -- HF pads dynamically and does not take Megatron packs.
+    --stack) STACK="$2"; shift 2;;
+    --train) TRAIN="$2"; shift 2;;
+    --heldout) HELDOUT="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
-TRAIN=/work/data/sft_ultrachat20k_train19k_packed_7b.jsonl
-HELDOUT=/work/data/sft_ultrachat20k_heldout1k_packed_7b.jsonl
+if [ "$STACK" = hf_trl ]; then
+  TRAIN="${TRAIN:-/work/data/sft_ultrachat20k_train19k.jsonl}"
+  HELDOUT="${HELDOUT:-/work/data/sft_ultrachat20k_heldout1k.jsonl}"
+  EVAL_ARGS="--valid-data-path $HELDOUT"          # hf_sft.py evaluates once, after training
+else
+  TRAIN="${TRAIN:-/work/data/sft_ultrachat20k_train19k_packed_7b.jsonl}"
+  HELDOUT="${HELDOUT:-/work/data/sft_ultrachat20k_heldout1k_packed_7b.jsonl}"
+  EVAL_ARGS="--valid-data-path $HELDOUT --eval-interval 1000000 --eval-iters 19"
+fi
 # The pre-registered data, by content: a different file is a different experiment.
-( cd "$WORK_HOST/data" && sha256sum sft_ultrachat20k_train19k_packed_7b.jsonl sft_ultrachat20k_heldout1k_packed_7b.jsonl ) \
+( cd "$WORK_HOST/data" && sha256sum "$(basename "$TRAIN")" "$(basename "$HELDOUT")" ) \
   | awk '{print substr($1,1,16), $2}' | while read -r h f; do
     case "$f:$h" in
       sft_ultrachat20k_train19k_packed_7b.jsonl:e3bb6e7b7194d07a|sft_ultrachat20k_heldout1k_packed_7b.jsonl:54fad019ad78a761) ;;
-      *) echo "!!! $f sha $h is not the pre-registered one -- refusing" >&2; exit 3;;
+      sft_ultrachat20k_train19k.jsonl:89f8aa068165b0ff|sft_ultrachat20k_heldout1k.jsonl:6409b13001becc78) ;;
+      *) echo "!!! $f sha $h is not a pre-registered data file -- refusing" >&2; exit 3;;
     esac
   done
-EVAL_ARGS="--valid-data-path $HELDOUT --eval-interval 1000000 --eval-iters 19"
 STAMP="$(date +%m%d_%H%M%S)"
 OVL_HOST="$WORK_HOST/overlays/${NAME}_$STAMP"
 for SEED in ${SEEDS//,/ }; do
@@ -68,7 +80,7 @@ for SEED in ${SEEDS//,/ }; do
       *) echo "unknown arm: $ARM" >&2; exit 2;;
     esac
     echo ">>> $(date +%H:%M:%S) leg $LEG -> $OUT_HOST"
-    "$GEAK_ROOT/scripts/bench_train.sh" --workload "$WORKLOAD" --stack megatron --nproc 8 \
+    "$GEAK_ROOT/scripts/bench_train.sh" --workload "$WORKLOAD" --stack "$STACK" --nproc 8 \
       --iters "$ITERS" --data "$TRAIN" --out "$OUT_HOST" --tag "${NAME}_${LEG}" \
       --extra-train-args "$TARGS" ${EXTRA:+--extra-env "$EXTRA"} || echo "!!! leg $LEG returned non-zero"
   done

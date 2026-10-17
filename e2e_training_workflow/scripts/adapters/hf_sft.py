@@ -64,6 +64,9 @@ def parse():
     ap.add_argument("--lr-decay-style", default="constant")
     ap.add_argument("--lr-warmup-iters", type=int, default=0)
     ap.add_argument("--lr-decay-iters", type=int, default=None)
+    # Held-out evaluation ONCE, after training (the outcome test, quality_ab.sh --stack hf_trl). The
+    # result is printed in Megatron's format so the same analysis (quality_ab_final.py) reads both.
+    ap.add_argument("--valid-data-path", default=None)
     ap.add_argument("--weight-decay", type=float, default=0.1)
     ap.add_argument("--clip-grad", type=float, default=1.0)
     ap.add_argument("--adam-beta1", type=float, default=0.9)
@@ -80,7 +83,10 @@ def parse():
     # Parallel strategy. DDP replicates fp32 master weights, grads and AdamW state on every GPU and
     # OOMs at 7B (183.5 GB allocated at step 3 on a 192 GB device). full_shard is FSDP with fp32
     # master shards and bf16 compute -- the counterpart of Megatron's --use-distributed-optimizer.
-    ap.add_argument("--hf-fsdp", choices=("none", "full_shard"), default="none")
+    # shard_grad_op = ZeRO-2: params stay gathered for the whole optimizer step (no per-micro-batch
+    # re-gather), grads + optimizer state sharded. Added 2026-10-17: full_shard exposed 30% of the 7B
+    # step as un-hidden all-gathers (8 micro-batches each re-gathering every layer).
+    ap.add_argument("--hf-fsdp", choices=("none", "full_shard", "shard_grad_op"), default="none")
     ap.add_argument("--master-weights", choices=("fp32", "bf16"), default="fp32",
                     help="fp32 = fp32 master weights + bf16 autocast (Megatron --bf16); bf16 = pure bf16")
     ap.add_argument("--output-dir", required=True)
@@ -151,6 +157,7 @@ def main():
     cfg = SFTConfig(
         output_dir=a.output_dir,
         per_device_train_batch_size=a.micro_batch_size,
+        per_device_eval_batch_size=a.micro_batch_size,
         gradient_accumulation_steps=grad_accum,
         max_steps=a.train_iters,
         learning_rate=a.lr,
@@ -174,11 +181,15 @@ def main():
         dataloader_drop_last=True,
         gradient_checkpointing=False,
         ddp_find_unused_parameters=False,
-        **({"fsdp": "full_shard auto_wrap",
+        **({"fsdp": f"{a.hf_fsdp} auto_wrap",
             "fsdp_config": {"transformer_layer_cls_to_wrap": [_decoder_layer_cls(a.load)]}}
-           if a.hf_fsdp == "full_shard" else {}),
+           if a.hf_fsdp in ("full_shard", "shard_grad_op") else {}),
     )
-    trainer = SFTTrainer(model=model, args=cfg, train_dataset=ds, processing_class=tok)
+    # The held-out set goes through the SAME SFTTrainer preprocessing as the training set (chat
+    # template, tokenisation, labels); handing a raw dataset to evaluate() later fails on columns.
+    ev = load_dataset("json", data_files=a.valid_data_path, split="train") if a.valid_data_path else None
+    trainer = SFTTrainer(model=model, args=cfg, train_dataset=ds, processing_class=tok,
+                         **({"eval_dataset": ev} if ev is not None else {}))
     if a.lr_decay_style == "cosine":
         from torch.optim.lr_scheduler import LambdaLR
 
@@ -204,7 +215,27 @@ def main():
             train_probe._Probe.step_end = _step_end
     except Exception as e:  # noqa: BLE001
         print(f"[geak-capture] not installed: {e!r}", flush=True)
+    # HF Qwen2RMSNorm fwd+bwd capture (head hf_rmsnorm_fused_fwdbwd). Separate module: the op's weight
+    # is module state, not an argument, so the generic capture cannot give its dweight. No-op unless
+    # GEAK_HFRMSN_CAPTURE_DIR/STEP are set; never breaks a run.
+    try:
+        import capture_hf_rmsnorm as _hfrmsn
+        if _hfrmsn.ENABLED and _hfrmsn.install(model):
+            _orig_step_end2 = train_probe._Probe.step_end
+
+            def _step_end2(self, *aa, **kw):
+                _hfrmsn.note_step(self.step + 1)   # = steps COMPLETED (step_end increments after)
+                return _orig_step_end2(self, *aa, **kw)
+            train_probe._Probe.step_end = _step_end2
+    except Exception as e:  # noqa: BLE001
+        print(f"[geak-hfrmsn] not installed: {e!r}", flush=True)
     trainer.train()
+    if ev is not None:
+        m = trainer.evaluate()
+        if int(os.environ.get("RANK", "0")) == 0:
+            print(f" validation loss at iteration {a.train_iters} on validation set | "
+                  f"lm loss value: {m['eval_loss']:.6E} | [hf_sft eval over {len(ev)} conversations]",
+                  flush=True)
 
 
 def lr_factor(step, lr, min_lr, warmup, decay_iters):
