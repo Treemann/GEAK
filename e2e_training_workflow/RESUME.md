@@ -151,7 +151,8 @@ allowed), kept fixed during optimisation, not constant LR.
 **Done 2026-10-18: P0-4h CLEARED.** The final HF configuration (2.07x) is safe to train with
 (4.32).
 
-**Next (autonomous):** the remaining HF heads, on top of hf3 with the `_nm` descriptor:
+**Running:** `wf_499a73c3-cd2` (t0 1792279052542, `baseline_overlay` hf3, descriptor `_nm`, skipping the 3
+accepted heads). Remaining HF heads:
 `hf_mlp_down_proj_gemm` (17.7%, +2.95%), `hf_attn_qkvo_proj_gemm` (7.5%), `hf_lmhead_gemm` (4.4%).
 
 **AUTONOMOUS PLAN (user offline 2026-10-16 → 10-18; instruction: never stop, decide professionally, record
