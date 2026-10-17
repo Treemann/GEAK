@@ -148,12 +148,11 @@ allowed), kept fixed during optimisation, not constant LR.
 * TRL step metrics off: +32% bare, +22% on the stack, bitwise identical (4.31).
 * **HF 2.07x** (1,096 → 2,269). Recommended descriptor `qwen2_5_math_7b_hf_cosine_zero2_nm.env` + hf3.
 
-**Running:** P0-4h, pre-registered in 947b2002, runner `/tmp/p04h.sh`, log `runs/p04h_driver.log`.
-1. A check leg: bare seed 1111 on `_nm_q` (`runs/qabhfchk_*`) must equal P0-4g `ref_seed1111`
-   bitwise.
-2. Five cand legs (hf3 + metrics off, `runs/qabhf3_*`).
-3. Then symlink P0-4g's `ref_seed*` and `ctrl70_seed*` into the qabhf3 prefix and run
-   `quality_ab_final.py <qabhf3 prefix> --base ref --cand cand --ctrl ctrl70`.
+**Done 2026-10-18: P0-4h CLEARED.** The final HF configuration (2.07x) is safe to train with
+(4.32).
+
+**Next (autonomous):** the remaining HF heads, on top of hf3 with the `_nm` descriptor:
+`hf_mlp_down_proj_gemm` (17.7%, +2.95%), `hf_attn_qkvo_proj_gemm` (7.5%), `hf_lmhead_gemm` (4.4%).
 
 **AUTONOMOUS PLAN (user offline 2026-10-16 → 10-18; instruction: never stop, decide professionally, record
 everything).** In order:

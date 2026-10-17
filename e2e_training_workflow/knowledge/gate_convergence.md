@@ -1872,3 +1872,23 @@ unchanged:
 on) bitwise: loss and grad_norm at all 296 steps, and held-out loss 1.265669 on both. P0-4g's REF
 legs are therefore this test's REF. Running: the five cand legs `runs/qabhf3_1017_210912_*`.
 
+### P0-4h RESULT (2026-10-18): **CLEARED** — the final HF configuration (2.07x) is safe to train with
+
+`runs/qabhf3_1017_210912_*`: 5 cand legs plus P0-4g's REF and ctrl70 legs, linked into the prefix
+(reuse validated bitwise). Every cand leg has 24 overlay proofs with fallback 0.
+
+| seed | held-out ref | cand (hf3 + metrics off) | d |
+|---|---|---|---|
+| 1111 | 1.265669 | 1.265674 | +0.00001 |
+| 2222 | 1.265321 | 1.265369 | +0.00005 |
+| 3333 | 1.265618 | 1.265718 | +0.00010 |
+| 4444 | 1.265519 | 1.265550 | +0.00003 |
+| 5555 | 1.265823 | 1.265824 | +0.00000 |
+
+* **Quality: PASS.** Mean +0.00004, which is 0.6% of the control's +0.00646 (margin 0.00161).
+  t = 2.06 is below 2.776, so the difference is not significant.
+* **Stability: PASS.** max10 = 0 on every leg.
+* **Overall: CLEARED.**
+* Stated, not hidden: all five d are ≥ 0. Even if the shift is real, it is about 40× inside the
+  equivalence margin.
+

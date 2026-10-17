@@ -18,8 +18,9 @@ Second stack (HF TRL, 7B, unpacked): **1,096 -> 2,269 useful tok/s/GPU (2.07x)**
   metric gathers.
 * Three kernels accepted through the same workflow and gates: attention, RMSNorm, MLP gate/up +
   SwiGLU.
-* The 1.35x configuration below is cleared. The final 2.07x configuration's outcome test (P0-4h)
-  is running.
+* The final configuration is **cleared for training**: held-out +0.00004 vs a control of +0.0065,
+  no episodes (DECISIONS 4.32).
+* Recipe: `workloads/qwen2_5_math_7b_hf_cosine_zero2_nm.env` + `stack_overlay_env.sh --cond hf3`.
 Recipe `workloads/qwen2_5_math_7b_hf_cosine_zero2.env` + `stack_overlay_env.sh --cond hf2`. It is
 **cleared for training** by the same one-epoch outcome test: held-out −0.00004 vs a control +0.0065,
 no episodes (DECISIONS 4.29).
