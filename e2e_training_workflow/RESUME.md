@@ -134,10 +134,19 @@ allowed), kept fixed during optimisation, not constant LR.
 * Descriptor `qwen2_5_math_7b_hf_cosine.env`.
 * 7B HF smoke: 1,152 useful tok/s/GPU.
 
-**Running:** the P2-2 attempt `wf_4385c413-a19`. A full fast-mode workflow run on `stack: hf_trl`,
-7B, budget 2, max_gates 3, kernel_budget 3, t0_epoch_ms 1792185709841. Resume with
-`resumeFromRunId`. The exit criterion is one kernel accepted on HF through the same gates. Expect
-infrastructure findings: record them and fix them inside `scripts/adapters/`.
+**Done 2026-10-17:** **P2-2 exit criterion MET** (`wf_4385c413-a19`, DECISIONS 4.27).
+* `attn_fmha_ck_hf` +6.64% and `hf_rmsnorm_fused_fwdbwd` +2.15%, validated together +9.33%.
+* HF ZeRO-2 (`shard_grad_op`): +21%, bitwise-identical trajectory (4.28). Recommended HF descriptor
+  `qwen2_5_math_7b_hf_cosine_zero2.env`.
+
+**Running (chained):**
+1. HF headline `measure_packed_stack.sh --stack hf_trl --workload ..._hf_cosine_zero2.env --conds
+   ref,hf2 --reps 2` (`runs/hfz2hl_*`).
+2. Then **P0-4g**, the HF outcome test, pre-registered in a02adb18:
+   * `quality_ab.sh --stack hf_trl --workload ..._hf_cosine_zero2_q.env --iters 296 --seeds
+     1111..5555 --arms ref,cand,ctrl70 --cand-cmd "stack_overlay_env.sh --cond hf2" --name qabhf`.
+   * 15 legs, about 10 h; driver log `runs/qabhf_driver.log`.
+   * Verdict: `quality_ab_final.py <prefix> --base ref --cand cand --ctrl ctrl70`.
 
 **AUTONOMOUS PLAN (user offline 2026-10-16 → 10-18; instruction: never stop, decide professionally, record
 everything).** In order:
