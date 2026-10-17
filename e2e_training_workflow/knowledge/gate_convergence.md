@@ -1845,3 +1845,25 @@ Analysis fix: `quality_ab_final.py` had the Megatron protocol's 358 steps hardco
 296-step HF legs as INCOMPLETE. It now requires equal step counts covering the episode window. The
 P0-4e verdict is unchanged (re-checked: CLEARED).
 
+## P0-4h PRE-REGISTRATION: outcome test of the FINAL HF configuration (written 2026-10-17, before any leg)
+
+**Candidate.** hf3 (attn + rmsnorm + mlp gate/up+SwiGLU) with TRL step metrics off, on
+`workloads/qwen2_5_math_7b_hf_cosine_zero2_nm_q.env`. Same protocol as P0-4g: 296 iterations, 19k / 1k
+unpacked split, held-out evaluation over 1,000 conversations. Seeds 1111..5555, the SAME as P0-4g.
+
+**Reference reused from P0-4g, justified and checked.**
+* The bare HF stack is bitwise deterministic (4.28).
+* Metrics off is bitwise identical to metrics on (4.31).
+* So P0-4g's `ref_seed*` legs ARE the REF of this test.
+* **Check, run first:** one bare leg at seed 1111 on the `_nm_q` descriptor. Its per-step loss and
+  its held-out loss must equal P0-4g's `ref_seed1111` exactly. If they do not, reuse is void and all
+  five REF legs are re-run.
+* The yardstick is P0-4g's in-run control: ctrl70 legs, +0.00646, t 138. Those legs are linked into
+  the same prefix.
+
+**Verdict.** `quality_ab_final.py <prefix> --base ref --cand cand --ctrl ctrl70`. P0-4g's rules,
+unchanged:
+* PASS-quality iff |mean d| ≤ 0.25 × 0.00646 and not significantly worse;
+* stability FAIL on any max10 > 1.0.
+* CLEARED iff both pass.
+
