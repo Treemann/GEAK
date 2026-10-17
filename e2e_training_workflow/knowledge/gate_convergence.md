@@ -1867,3 +1867,8 @@ unchanged:
 * stability FAIL on any max10 > 1.0.
 * CLEARED iff both pass.
 
+**P0-4h REF-reuse check: PASSED.** The bare seed-1111 leg on the `_nm_q` descriptor
+(`runs/qabhfchk_1017_203738_ref_seed1111`, TRL metrics off) matches P0-4g's `ref_seed1111` (metrics
+on) bitwise: loss and grad_norm at all 296 steps, and held-out loss 1.265669 on both. P0-4g's REF
+legs are therefore this test's REF. Running: the five cand legs `runs/qabhf3_1017_210912_*`.
+
