@@ -48,6 +48,9 @@ def main():
     ap.add_argument("prefix")
     ap.add_argument("--cand", default="s8")
     ap.add_argument("--base", default="ref", help="the comparison arm (e.g. s8 when testing a lever ON the stack)")
+    ap.add_argument("--ctrl", default=None,
+                    help="measure the yardstick IN THIS RUN from a positive-control arm (e.g. ctrl70) instead of "
+                         "the fixed P0-4d value; the control must then be DETECTED (mean > 0, t >= 2.776)")
     a = ap.parse_args()
     P = a.prefix.rstrip("/")
     seeds = sorted({int(m.group(1)) for f in glob.glob(P + f"_{a.base}_seed*") for m in [re.search(r"seed(\d+)$", f)] if m})
@@ -64,14 +67,32 @@ def main():
         d.append(hc - hr)
         sev.append(m10)
         print(f"seed {s}: held-out {a.base} {hr:.6f} {a.cand} {hc:.6f} d {hc - hr:+.5f} | max10 {m10:.3f}")
+    yard, ctrl_note = YARDSTICK, "fixed (P0-4d)"
+    if a.ctrl:
+        cd = []
+        for s in seeds:
+            hb, hk = heldout(f"{P}_{a.base}_seed{s}"), heldout(f"{P}_{a.ctrl}_seed{s}")
+            if hk is None:
+                print(f"INCOMPLETE: control seed {s} has no held-out loss")
+                return
+            cd.append(hk - hb)
+        cm, csd = statistics.fmean(cd), statistics.stdev(cd)
+        ct = cm / (csd / math.sqrt(len(cd))) if csd > 0 else math.copysign(math.inf, cm)
+        print(f"control {a.ctrl} - {a.base}: d {[round(x, 5) for x in cd]} mean {cm:+.5f} t {ct:.2f}")
+        if not (cm > 0 and ct >= T_CRIT):
+            print("QUALITY:   INCONCLUSIVE-quality: the positive control was not detected")
+            print("OVERALL:   NOT CLEARED")
+            return
+        yard, ctrl_note = cm, f"measured in-run from {a.ctrl} (t {ct:.2f})"
+    margin = 0.25 * yard
     m, sd = statistics.fmean(d), statistics.stdev(d)
     t = m / (sd / math.sqrt(len(d))) if sd > 0 else math.copysign(math.inf, m)
-    if m > MARGIN and t >= T_CRIT:
-        qual = f"FAIL-quality: mean {m:+.5f} > margin {MARGIN:.5f}, t {t:.2f}"
-    elif abs(m) <= MARGIN and not (m > 0 and t >= T_CRIT):
-        qual = f"PASS-quality: |mean {m:+.5f}| <= {MARGIN:.5f} (0.25 x yardstick {YARDSTICK}), t {t:.2f}"
+    if m > margin and t >= T_CRIT:
+        qual = f"FAIL-quality: mean {m:+.5f} > margin {margin:.5f}, t {t:.2f}"
+    elif abs(m) <= margin and not (m > 0 and t >= T_CRIT):
+        qual = f"PASS-quality: |mean {m:+.5f}| <= {margin:.5f} (0.25 x yardstick {yard:.5f}, {ctrl_note}), t {t:.2f}"
     else:
-        qual = f"INCONCLUSIVE-quality: mean {m:+.5f}, t {t:.2f}, margin {MARGIN:.5f}"
+        qual = f"INCONCLUSIVE-quality: mean {m:+.5f}, t {t:.2f}, margin {margin:.5f} ({ctrl_note})"
     n_cat, n_sev = sum(x > CATASTROPHIC for x in sev), sum(x > SEVERE for x in sev)
     if n_cat:
         stab = f"FAIL-stability: {n_cat} catastrophic leg(s)"

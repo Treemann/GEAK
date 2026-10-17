@@ -1790,3 +1790,32 @@ Process note: the P0-4e driver exited with code 2 AFTER its tenth leg. `quality_
 (the `cand` arm) while it was running; bash reads a script incrementally, so the tail failed to
 parse. No leg was affected. Never edit a shell script that a running job is executing.
 
+## P0-4g PRE-REGISTRATION: outcome test of the HF stack (written 2026-10-17, before any leg)
+
+**Question.** Is the HF TRL stack (`hf2`: attention CK/aiter flash + fused Qwen2RMSNorm, DECISIONS
+4.27) safe to train with? Its attention backward recasts to fp16 without an overflow guard, and no
+30-step gate can see a late failure.
+
+**Protocol.** `quality_ab.sh --stack hf_trl --workload workloads/qwen2_5_math_7b_hf_cosine_zero2_q.env
+--iters 296`.
+* Data: the unpacked 19k / 1k split (`sft_ultrachat20k_train19k.jsonl` sha 89f8aa06, held-out
+  `..._heldout1k.jsonl` sha 6409b130).
+* Recipe: ZeRO-2, GBS 64, warmup 9, cosine to 10% over 296 iterations, i.e. one epoch.
+* Held-out evaluation after training, over all 1,000 conversations (`hf_sft.py --valid-data-path`).
+* Arms, interleaved per seed:
+  * `ref`: bare;
+  * `cand`: `--cand-cmd "stack_overlay_env.sh --cond hf2"`;
+  * `ctrl70`: the schedule ×0.7, as a positive control measured IN THIS RUN. The Megatron yardstick
+    is a different stack, data and GBS, so it is not reused.
+* Seeds 1111, 2222, 3333, 4444 and 5555. 15 legs.
+
+**Verdict** (`quality_ab_final.py <prefix> --base ref --cand cand --ctrl ctrl70`, rules fixed now):
+* **Control:** ctrl70 − ref held-out must have mean > 0 and t ≥ 2.776. Otherwise quality is
+  INCONCLUSIVE and the stack is not cleared.
+* **Quality PASS:** |mean(cand − ref)| ≤ 0.25 × the measured control effect, and not significantly
+  worse.
+* **Quality FAIL:** mean > margin with t ≥ 2.776.
+* **Stability:** FAIL if any cand leg has max10 > 1.0. PASS if none, with at most 1 at > 0.25.
+* **CLEARED iff both PASS.** The bare HF stack is bit-deterministic, so ref legs are exact repeats of
+  a seed. The arms decorrelate only through the kernels and the LR.
+
