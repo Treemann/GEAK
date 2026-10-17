@@ -144,7 +144,8 @@ allowed), kept fixed during optimisation, not constant LR.
 * **P0-4g CLEARED: the HF stack is safe to train with** (4.29).
 
 **Next (autonomous):**
-1. HF unexplored head `hf_mlp_gateup_swiglu` (33% share, +1.87% expected): a fast run on
+1. RUNNING `wf_bda82b0e-152` (t0 1792248576540; resume with `resumeFromRunId`): HF unexplored head
+   `hf_mlp_gateup_swiglu` (33% share, +1.87% expected): a fast run on
    `stack: hf_trl` with `baseline_overlay "stack_overlay_env.sh --cond hf2"`, `skip_heads` set to the
    two accepted heads, and the zero2 descriptor.
 2. Refresh PROGRESS.md for the user's return.
