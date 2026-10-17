@@ -1371,3 +1371,16 @@ unpacked, GBS 64, FSDP full_shard, warmup + cosine). 71 agents, 0 errors, 6.8 h.
   protocol, and HF has no outcome test yet (DECISIONS 4.22/4.23). An HF version of the outcome test
   is a prerequisite for shipping it.
 
+**HF headline on the recommended HF recipe (2026-10-17).** `measure_packed_stack.sh --stack hf_trl
+--workload qwen2_5_math_7b_hf_cosine_zero2.env --conds ref,hf2 --reps 2` (`runs/hfz2hl_1017_045111_*`), all ok and
+clean, attn and rmsnorm engaged on 8/8 ranks with fallback 0.
+* ZeRO-2 bare: 1,336 / 1,339.
+* ZeRO-2 + hf2: 1,474 / 1,474.
+* Paired: **+9.85 / +9.71%**. The kernels keep their gain under ZeRO-2.
+
+Cumulative on HF: **1,096 (full_shard, bare) → 1,474 useful tok/s/GPU, 1.35x**. That is ZeRO-2
++21%, then the kernels +10%.
+
+Training safety is pending P0-4g. Until then the HF kernel stack is not cleared for long training;
+ZeRO-2 alone is (bitwise-identical trajectory).
+

@@ -13,6 +13,11 @@ throughput** instead of serving throughput.
 
 Every number is useful (non-pad, loss-unmasked) tokens, paired against an interleaved reference.
 
+Second stack (HF TRL, 7B, unpacked): **1,096 -> 1,474 useful tok/s/GPU (1.35x)**, from ZeRO-2 (+21%,
+bitwise-identical trajectory) and two kernels accepted through the same workflow and gates (+10%).
+Recipe `workloads/qwen2_5_math_7b_hf_cosine_zero2.env`. The kernel stack's outcome test (P0-4g) is
+running.
+
 Training safety: the 8-kernel stack is **cleared for training under a standard LR schedule**
 (warmup + cosine, `workloads/qwen2_5_math_7b_packed_cosine.env`). That rests on a pre-registered
 one-epoch, multi-seed outcome test: held-out loss −0.0023 vs REF, no instability episodes
