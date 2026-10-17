@@ -143,12 +143,17 @@ allowed), kept fixed during optimisation, not constant LR.
 * HF headline: 1,096 → 1,474 useful tok/s/GPU (1.35x).
 * **P0-4g CLEARED: the HF stack is safe to train with** (4.29).
 
-**Next (autonomous):**
-1. RUNNING `wf_bda82b0e-152` (t0 1792248576540; resume with `resumeFromRunId`): HF unexplored head
-   `hf_mlp_gateup_swiglu` (33% share, +1.87% expected): a fast run on
-   `stack: hf_trl` with `baseline_overlay "stack_overlay_env.sh --cond hf2"`, `skip_heads` set to the
-   two accepted heads, and the zero2 descriptor.
-2. Refresh PROGRESS.md for the user's return.
+**Done 2026-10-17 (evening):**
+* `hf_mlp_gateup_swiglu` accepted, +22.3% on hf2 (4.30); condition `hf3`.
+* TRL step metrics off: +32% bare, +22% on the stack, bitwise identical (4.31).
+* **HF 2.07x** (1,096 → 2,269). Recommended descriptor `qwen2_5_math_7b_hf_cosine_zero2_nm.env` + hf3.
+
+**Running:** P0-4h, pre-registered in 947b2002, runner `/tmp/p04h.sh`, log `runs/p04h_driver.log`.
+1. A check leg: bare seed 1111 on `_nm_q` (`runs/qabhfchk_*`) must equal P0-4g `ref_seed1111`
+   bitwise.
+2. Five cand legs (hf3 + metrics off, `runs/qabhf3_*`).
+3. Then symlink P0-4g's `ref_seed*` and `ctrl70_seed*` into the qabhf3 prefix and run
+   `quality_ab_final.py <qabhf3 prefix> --base ref --cand cand --ctrl ctrl70`.
 
 **AUTONOMOUS PLAN (user offline 2026-10-16 → 10-18; instruction: never stop, decide professionally, record
 everything).** In order:

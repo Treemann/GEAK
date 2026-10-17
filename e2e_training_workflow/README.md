@@ -13,8 +13,13 @@ throughput** instead of serving throughput.
 
 Every number is useful (non-pad, loss-unmasked) tokens, paired against an interleaved reference.
 
-Second stack (HF TRL, 7B, unpacked): **1,096 -> 1,474 useful tok/s/GPU (1.35x)**, from ZeRO-2 (+21%,
-bitwise-identical trajectory) and two kernels accepted through the same workflow and gates (+10%).
+Second stack (HF TRL, 7B, unpacked): **1,096 -> 2,269 useful tok/s/GPU (2.07x)**.
+* Two levers with a bitwise-identical trajectory: ZeRO-2 +21%, and skipping TRL's per-micro-batch
+  metric gathers.
+* Three kernels accepted through the same workflow and gates: attention, RMSNorm, MLP gate/up +
+  SwiGLU.
+* The 1.35x configuration below is cleared. The final 2.07x configuration's outcome test (P0-4h)
+  is running.
 Recipe `workloads/qwen2_5_math_7b_hf_cosine_zero2.env` + `stack_overlay_env.sh --cond hf2`. It is
 **cleared for training** by the same one-epoch outcome test: held-out −0.00004 vs a control +0.0065,
 no episodes (DECISIONS 4.29).
