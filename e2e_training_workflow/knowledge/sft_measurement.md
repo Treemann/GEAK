@@ -1384,3 +1384,34 @@ Cumulative on HF: **1,096 (full_shard, bare) → 1,474 useful tok/s/GPU, 1.35x**
 Training safety is pending P0-4g. Until then the HF kernel stack is not cleared for long training;
 ZeRO-2 alone is (bitwise-identical trajectory).
 
+### HF: the barrier was TRL's logging, not communication (2026-10-17)
+
+The `wf_bda82b0e-152` profiler found 32.9% of the ZeRO-2 step spent in exposed "communication".
+Real FSDP collectives were 92% overlapped. The rest was ranks waiting at about 3 scalar all-gathers
+per micro-batch. Those come from TRL 0.21 `SFTTrainer.compute_loss`, which on EVERY micro-batch runs:
+* `gather_for_metrics(num_tokens).item()`;
+* an argmax over the full [seq, 151,680] logits (after a contiguous copy);
+* two more gathers + `.item()` for `mean_token_accuracy`.
+These are logging only; the loss is `Trainer.compute_loss`. With unequal sequence lengths per rank,
+each micro-batch becomes a barrier.
+
+`hf_sft.py --hf-train-metrics off` (descriptor `HF_TRAIN_METRICS=off`; argv-identical when unset)
+uses `Trainer.compute_loss` directly (`runs/hfmet_1017_195512_*`, 2 interleaved reps each):
+
+| stack | metrics on | metrics off | paired |
+|---|---|---|---|
+| bare ZeRO-2 | 1,338 | **1,792** | +32.3 / +31.7% |
+| hf3 (attn + rmsnorm + mlp) | 1,761 | **2,269** | +21.9 / +21.7% |
+
+On the bare stack the trajectory is **bitwise identical** with metrics on or off: loss, grad_norm
+and useful_tokens at all 30 steps, both reps. It is a pure removal of logging work.
+
+**HF cumulative: 1,096 → 2,269 useful tok/s/GPU = 2.07x.**
+* ZeRO-2: +21%.
+* attn + rmsnorm: +10%.
+* mlp gate/up+SwiGLU: +22%.
+* metrics off: +22% on the stack.
+
+The recommended HF descriptor is `qwen2_5_math_7b_hf_cosine_zero2_nm.env`. The outcome test of the
+final configuration is P0-4h.
+

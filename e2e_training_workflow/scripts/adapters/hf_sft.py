@@ -67,6 +67,12 @@ def parse():
     # Held-out evaluation ONCE, after training (the outcome test, quality_ab.sh --stack hf_trl). The
     # result is printed in Megatron's format so the same analysis (quality_ab_final.py) reads both.
     ap.add_argument("--valid-data-path", default=None)
+    # TRL's SFTTrainer.compute_loss adds, for EVERY micro-batch, two logging-only metrics: num_tokens
+    # and mean_token_accuracy. That is 3 gather_for_metrics + 2 .item() host syncs plus an argmax over
+    # the full [seq, vocab] logits (and a contiguous copy of them). The loss itself comes from
+    # Trainer.compute_loss and is untouched. The gathers make every micro-batch a cross-rank barrier:
+    # 32.9% of the 7B ZeRO-2 step was ranks waiting there (wf_bda82b0e-152). `off` skips them.
+    ap.add_argument("--hf-train-metrics", choices=("on", "off"), default="on")
     ap.add_argument("--weight-decay", type=float, default=0.1)
     ap.add_argument("--clip-grad", type=float, default=1.0)
     ap.add_argument("--adam-beta1", type=float, default=0.9)
@@ -188,8 +194,19 @@ def main():
     # The held-out set goes through the SAME SFTTrainer preprocessing as the training set (chat
     # template, tokenisation, labels); handing a raw dataset to evaluate() later fails on columns.
     ev = load_dataset("json", data_files=a.valid_data_path, split="train") if a.valid_data_path else None
-    trainer = SFTTrainer(model=model, args=cfg, train_dataset=ds, processing_class=tok,
-                         **({"eval_dataset": ev} if ev is not None else {}))
+    trainer_cls = SFTTrainer
+    if a.hf_train_metrics == "off":
+        from transformers import Trainer
+
+        class _SFTTrainerNoStepMetrics(SFTTrainer):
+            """SFTTrainer whose compute_loss is exactly Trainer.compute_loss (the loss SFTTrainer itself
+            computes first), without the per-micro-batch logging metrics and their cross-rank gathers."""
+            def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+                return Trainer.compute_loss(self, model, inputs, return_outputs=return_outputs,
+                                            num_items_in_batch=num_items_in_batch)
+        trainer_cls = _SFTTrainerNoStepMetrics
+    trainer = trainer_cls(model=model, args=cfg, train_dataset=ds, processing_class=tok,
+                          **({"eval_dataset": ev} if ev is not None else {}))
     if a.lr_decay_style == "cosine":
         from torch.optim.lr_scheduler import LambdaLR
 
@@ -229,6 +246,21 @@ def main():
             train_probe._Probe.step_end = _step_end2
     except Exception as e:  # noqa: BLE001
         print(f"[geak-hfrmsn] not installed: {e!r}", flush=True)
+    # HF Qwen2MLP gate/up + SwiGLU fwd+bwd capture (head hf_mlp_gateup_swiglu). Separate module for
+    # the same reason as the norm: both weights are module state, and h (down_proj's input) is not a
+    # return value of any call the generic capture can see. No-op unless GEAK_HFMLP_CAPTURE_DIR/STEP
+    # are set; never breaks a run.
+    try:
+        import capture_hf_mlp_gateup as _hfmlp
+        if _hfmlp.ENABLED and _hfmlp.install(model):
+            _orig_step_end3 = train_probe._Probe.step_end
+
+            def _step_end3(self, *aa, **kw):
+                _hfmlp.note_step(self.step + 1)    # = steps COMPLETED (step_end increments after)
+                return _orig_step_end3(self, *aa, **kw)
+            train_probe._Probe.step_end = _step_end3
+    except Exception as e:  # noqa: BLE001
+        print(f"[geak-hfmlp] not installed: {e!r}", flush=True)
     trainer.train()
     if ev is not None:
         m = trainer.evaluate()

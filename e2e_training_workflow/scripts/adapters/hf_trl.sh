@@ -64,6 +64,7 @@ adapter_launch() {
       --lr-warmup-iters "${LR_WARMUP_ITERS:-0}" ${LR_DECAY_ITERS:+--lr-decay-iters "$LR_DECAY_ITERS"} \
       --weight-decay 0.1 --clip-grad 1.0 --adam-beta1 0.9 --adam-beta2 0.95 \
       --bf16 --sft --seed "${SEED:-1234}" --master-weights fp32 --hf-fsdp "${HF_FSDP:-none}" \
+      ${HF_TRAIN_METRICS:+--hf-train-metrics "$HF_TRAIN_METRICS"} \
       --attention-backend "${ATTENTION_BACKEND:-sdpa}" \
       --output-dir "$OUT_DIR/hf_out" \
       $EXTRA_TRAIN_ARGS \

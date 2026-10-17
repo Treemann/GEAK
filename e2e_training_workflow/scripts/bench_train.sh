@@ -111,7 +111,7 @@ PROBE_DIR="$OUT_DIR/probe"
 mkdir -p "$PROBE_DIR"
 export MLM_DIR MODEL_CKPT TOKENIZER_DIR DATA_PATH OUT_DIR PROBE_DIR NPROC ITERS MBS GBS SEQ \
        ARCH_ARGS ROPE_BASE EXTRA_TRAIN_ARGS EXTRA_ENV GEAK_SCRIPTS PROFILE_STEPS PROFILE_RANKS \
-       LR MIN_LR LR_DECAY_STYLE LR_WARMUP_ITERS LR_DECAY_ITERS DDP_EXTRA_ARGS HF_FSDP
+       LR MIN_LR LR_DECAY_STYLE LR_WARMUP_ITERS LR_DECAY_ITERS DDP_EXTRA_ARGS HF_FSDP HF_TRAIN_METRICS
 
 # shellcheck disable=SC1090
 source "$GEAK_SCRIPTS/adapters/${STACK}.sh"
@@ -185,7 +185,7 @@ done
 # Matches EVERY capture entry point, not just the generic one: the LM-head composite capture
 # (GEAK_LMHEAD_CAPTURE_DIR) writes a multi-GB record from a backward hook and would otherwise have
 # produced a throughput number that looks like a measurement and is not.
-if printf '%s' "${EXTRA_ENV:-}" | grep -qE 'GEAK_CAPTURE_TARGET|GEAK_LMHEAD_CAPTURE_DIR|GEAK_MLP_CAPTURE_DIR|GEAK_ROPE_CAPTURE_DIR|GEAK_RMSN_CAPTURE_DIR|GEAK_GRADTAIL_CAPTURE_DIR'; then
+if printf '%s' "${EXTRA_ENV:-}" | grep -qE 'GEAK_CAPTURE_TARGET|GEAK_LMHEAD_CAPTURE_DIR|GEAK_MLP_CAPTURE_DIR|GEAK_ROPE_CAPTURE_DIR|GEAK_RMSN_CAPTURE_DIR|GEAK_HFRMSN_CAPTURE_DIR|GEAK_HFMLP_CAPTURE_DIR|GEAK_GRADTAIL_CAPTURE_DIR'; then
   echo ">>> NOTE: shape/oracle capture was active; this run's throughput is NOT a valid measurement." \
     | tee -a "$OUT_DIR/train.log"
   echo '{"captured_run": true}' > "$OUT_DIR/captured.json"
