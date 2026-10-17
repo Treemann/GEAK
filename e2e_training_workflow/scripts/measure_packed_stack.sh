@@ -22,7 +22,7 @@ set -euo pipefail
 GEAK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_HOST="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
 CONDS="ref,s5,s6,s7"; REPS=3; ITERS=30; NAME=pstack; PROFILE=""; GBS_LIST=""
-WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed.env"
+WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed.env"; STACK=megatron
 while [ $# -gt 0 ]; do
   case "$1" in
     --conds) CONDS="$2"; shift 2;;
@@ -32,11 +32,12 @@ while [ $# -gt 0 ]; do
     --profile) PROFILE="$2"; shift 2;;
     --gbs-list) GBS_LIST="$2"; shift 2;;
     --workload) WORKLOAD="$2"; shift 2;;
+    --stack) STACK="$2"; shift 2;;     # hf_trl with the hf1/hf2 conditions
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
 for c in ${CONDS//,/ }; do
-  case "$c" in ref|s2|s3|s4|s5|s6|s7|s8) ;; *) echo "unknown condition: $c" >&2; exit 2;; esac
+  case "$c" in ref|s2|s3|s4|s5|s6|s7|s8|hf1|hf2) ;; *) echo "unknown condition: $c" >&2; exit 2;; esac
 done
 STAMP="$(date +%m%d_%H%M%S)"
 OVL_HOST="$WORK_HOST/overlays/${NAME}_$STAMP"     # fresh per measurement run, never rm -rf'd
@@ -55,7 +56,7 @@ for i in $(seq 1 "$REPS"); do
     # Installs on first use and re-verifies the gated bytes on every leg; refuses on any mismatch.
     EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$MODE" --out "$OUT_HOST" --install "$OVL_HOST")"
     echo ">>> $(date +%H:%M:%S) leg $LEG -> $OUT_HOST"
-    "$GEAK_ROOT/scripts/bench_train.sh" --workload "$WORKLOAD" --stack megatron --nproc 8 \
+    "$GEAK_ROOT/scripts/bench_train.sh" --workload "$WORKLOAD" --stack "$STACK" --nproc 8 \
       --iters "$ITERS" --out "$OUT_HOST" --tag "${NAME}_${LEG}" ${EXTRA:+--extra-env "$EXTRA"} \
       "${GARG[@]}" ${PROFILE:+--profile-steps "$PROFILE" --profile-ranks 0,4}
   done
