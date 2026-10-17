@@ -1819,3 +1819,29 @@ parse. No leg was affected. Never edit a shell script that a running job is exec
 * **CLEARED iff both PASS.** The bare HF stack is bit-deterministic, so ref legs are exact repeats of
   a seed. The arms decorrelate only through the kernels and the LR.
 
+### P0-4g RESULT (2026-10-17): **CLEARED** — the HF stack is safe to train with
+
+`runs/qabhf_1017_051602_*`, 15 legs, all ok, 296 steps each. Every cand leg has 16 overlay proofs
+with fallback 0.
+
+| seed | held-out ref | cand (hf2) | d | ctrl70 − ref |
+|---|---|---|---|---|
+| 1111 | 1.265669 | 1.265579 | −0.00009 | +0.00633 |
+| 2222 | 1.265321 | 1.265395 | +0.00007 | +0.00658 |
+| 3333 | 1.265618 | 1.265624 | +0.00001 | +0.00640 |
+| 4444 | 1.265519 | 1.265456 | −0.00006 | +0.00656 |
+| 5555 | 1.265823 | 1.265705 | −0.00012 | +0.00642 |
+
+* **Control: detected.** +0.00646, t = 138. The deterministic HF stack has no same-seed noise, so
+  the instrument is extremely sharp here.
+* **Quality: PASS.** Mean d = −0.00004, about 0.6% of the control effect (margin 0.00161), t −1.10.
+* **Stability: PASS.** max10 ≈ 0 on every leg; max training loss after step 150 is 1.39–1.41.
+* **Overall: CLEARED.**
+
+The attention backward's unguarded fp16 recast did no measurable harm over one epoch. The two HF
+models are numerically almost identical.
+
+Analysis fix: `quality_ab_final.py` had the Megatron protocol's 358 steps hardcoded and reported the
+296-step HF legs as INCOMPLETE. It now requires equal step counts covering the episode window. The
+P0-4e verdict is unchanged (re-checked: CLEARED).
+

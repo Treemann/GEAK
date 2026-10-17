@@ -59,7 +59,9 @@ def main():
         r, c = f"{P}_{a.base}_seed{s}", f"{P}_{a.cand}_seed{s}"
         sr, sc = steps(r), steps(c)
         hr, hc = heldout(r), heldout(c)
-        if len(sr) < 358 or len(sc) < 358 or hr is None or hc is None:
+        # Complete = both legs ran the same number of steps, enough to cover the episode window after
+        # step AFTER (358 on the Megatron protocol, 296 on HF's one-epoch protocol), and both evaluated.
+        if len(sr) != len(sc) or len(sr) < AFTER + WIN + 1 or hr is None or hc is None:
             print(f"INCOMPLETE: seed {s} ref {len(sr)} steps / {hr}, cand {len(sc)} steps / {hc}")
             return
         diff = [x["loss"] - y["loss"] for x, y in zip(sc, sr)]

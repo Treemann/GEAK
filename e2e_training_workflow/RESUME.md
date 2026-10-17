@@ -139,14 +139,15 @@ allowed), kept fixed during optimisation, not constant LR.
 * HF ZeRO-2 (`shard_grad_op`): +21%, bitwise-identical trajectory (4.28). Recommended HF descriptor
   `qwen2_5_math_7b_hf_cosine_zero2.env`.
 
-**Running (chained):**
-1. HF headline `measure_packed_stack.sh --stack hf_trl --workload ..._hf_cosine_zero2.env --conds
-   ref,hf2 --reps 2` (`runs/hfz2hl_*`).
-2. Then **P0-4g**, the HF outcome test, pre-registered in a02adb18:
-   * `quality_ab.sh --stack hf_trl --workload ..._hf_cosine_zero2_q.env --iters 296 --seeds
-     1111..5555 --arms ref,cand,ctrl70 --cand-cmd "stack_overlay_env.sh --cond hf2" --name qabhf`.
-   * 15 legs, about 10 h; driver log `runs/qabhf_driver.log`.
-   * Verdict: `quality_ab_final.py <prefix> --base ref --cand cand --ctrl ctrl70`.
+**Done 2026-10-17:**
+* HF headline: 1,096 → 1,474 useful tok/s/GPU (1.35x).
+* **P0-4g CLEARED: the HF stack is safe to train with** (4.29).
+
+**Next (autonomous):**
+1. HF unexplored head `hf_mlp_gateup_swiglu` (33% share, +1.87% expected): a fast run on
+   `stack: hf_trl` with `baseline_overlay "stack_overlay_env.sh --cond hf2"`, `skip_heads` set to the
+   two accepted heads, and the zero2 descriptor.
+2. Refresh PROGRESS.md for the user's return.
 
 **AUTONOMOUS PLAN (user offline 2026-10-16 → 10-18; instruction: never stop, decide professionally, record
 everything).** In order:
