@@ -1916,3 +1916,11 @@ caused by the warmup defect fixed in DECISIONS 4.33.
 * CLEARED iff PASS-quality and PASS-stability.
 * Run before it: an interleaved throughput confirmation, hf3 vs hf4, 2 reps on `_nm`.
 
+### P0-4i RESULT (2026-10-18): **CLEARED** — hf4 (attn + rmsnorm + mlp gate/up + down_proj, metrics off) is safe to train with
+
+* Throughput confirmation (`runs/hf34_1018_034217_*`, corrected detector): hf3 2,181 / 2,176, hf4 2,290 / 2,290.
+  Paired **+7.09 / +7.29%**, fallback 0.
+* Outcome (`runs/qabhf4_1018_040121_*`, REF and ctrl70 reused from P0-4g): held-out d −0.00011 / +0.00002 /
+  +0.00004 / +0.00016 / −0.00019, mean −0.00002 (t −0.28), against a control of +0.00646.
+  Stability: max10 0 everywhere. 32 proofs per cand leg, fallback 0. **CLEARED.**
+

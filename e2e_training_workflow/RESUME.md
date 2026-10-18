@@ -156,11 +156,10 @@ allowed), kept fixed during optimisation, not constant LR.
   Fixed (DECISIONS 4.33), and the HF figures were CORRECTED to 1,083 → 2,178, 2.01x. The head was
   then re-adjudicated as a win, +7.18% (4.34); condition `hf4`.
 
-**Running:** `/tmp/p04i.sh`, log `runs/p04i_driver.log`.
-1. hf3 vs hf4 throughput, 2 reps (`runs/hf34_*`).
-2. P0-4i: 5 cand legs on hf4 (`runs/qabhf4_*`). Afterwards symlink P0-4g's `ref_seed*` /
-   `ctrl70_seed*` into the qabhf4 prefix and run `quality_ab_final.py <prefix> --base ref --cand
-   cand --ctrl ctrl70`.
+**Done 2026-10-18: P0-4i CLEARED.** hf4 is the recommended HF stack: **2,290, 2.11x** (4.35).
+
+**Next (autonomous):** the remaining HF heads on top of hf4 with `_nm`: lm_head ~7.9%, q/o_proj ~7.2%,
+k/v_proj ~2%. Also the engine-side ZeRO flat-grad `cat` on side streams (~4.8% of the span).
 
 **AUTONOMOUS PLAN (user offline 2026-10-16 → 10-18; instruction: never stop, decide professionally, record
 everything).** In order:
