@@ -79,6 +79,29 @@ def detect_warmup_end(durs, tol=0.02, patience=3):
     return 0
 
 
+def detect_warmup_end_variable(durs, toks, tol=0.02, patience=3, k=3.0):
+    """Warmup end for a VARIABLE-shape step (dynamic padding: total_tokens varies step to step).
+
+    The fixed-shape rule asks step TIME to settle within 2% of the back-half median. A dynamically
+    padded step's time follows its token count (cv ~20% on HF), so that never holds and the boundary
+    drifted to the end: on the 7B HF ZeRO-2 stack (2026-10-18) warmup was declared at step 26 of 30
+    while the run had settled by step 3 (31.5 s, 10.1 s, then ~4.5 s), leaving 4 steady steps and an
+    unusable reference -- a +6.3% candidate could not be judged. Here the quantity is time PER TOKEN
+    and the tolerance is the back half's own robust spread (k x 1.4826 x MAD), never below `tol`.
+    """
+    rates = [d / t for d, t in zip(durs, toks) if t]
+    if len(rates) != len(durs) or len(rates) < patience + 1:
+        return detect_warmup_end(durs, tol=tol, patience=patience)
+    back = rates[len(rates) // 2:]
+    ref = statistics.median(back)
+    mad = statistics.median(abs(r - ref) for r in back)
+    limit = ref + max(tol * ref, k * 1.4826 * mad)
+    for i in range(len(rates) - patience + 1):
+        if all(r <= limit for r in rates[i:i + patience]):
+            return i
+    return 0
+
+
 def dispersion(vals):
     """Report spread AND a robust spread, so 'wide because of warmup' is distinguishable from
     'wide because of periodic stalls'. Never collapse them into one number."""
@@ -213,6 +236,9 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
 
     per_rank, world = {}, max(len(ranks), int(next(iter(ranks.values()))[0].get("world_size", 1)))
     per_rank_tokens = []
+    # Shape decides the warmup RULE, so it is read from every step up front (the steady-window value
+    # reported below as step_shape is computed the same way, after the window is known).
+    shape_all = _step_shape([[s.get("total_tokens", 0) for s in st] for _, st in ranks.values()])
     for rank, (h, steps) in sorted(ranks.items()):
         durs = [s["dur_ms"] for s in steps]
         # force_warmup/max_steps exist so two legs can be summarised on a COMMON window. The headline
@@ -221,7 +247,13 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         # two steps later contains DIFFERENT SAMPLES and the headline moves -- measured at 1.1%
         # across three runs of the same config, i.e. 9x the machine's own 0.118% reproducibility.
         # Data order is deterministic, so aligning the window makes that term cancel exactly.
-        i0 = int(force_warmup) if force_warmup is not None else detect_warmup_end(durs, tol=tol)
+        if force_warmup is not None:
+            i0, rule = int(force_warmup), "forced"
+        elif shape_all == "variable":
+            i0 = detect_warmup_end_variable(durs, [s.get("total_tokens", 0) for s in steps], tol=tol)
+            rule = "variable: time per token, tol max(2%, 3 x 1.4826 x MAD of the back half)"
+        else:
+            i0, rule = detect_warmup_end(durs, tol=tol), "fixed: step time within 2% of the back half"
         steady = steps[i0:]
         if max_steps:
             steady = steady[:int(max_steps)]
@@ -237,7 +269,7 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         # too loose, so the number is flagged rather than quietly used.
         reliable = len(sd) >= MIN_STEADY_FOR_DISPERSION
         per_rank[rank] = {
-            "steps_total": len(steps), "warmup_steps": i0, "steady_steps": len(sd),
+            "steps_total": len(steps), "warmup_steps": i0, "warmup_rule": rule, "steady_steps": len(sd),
             "dispersion_reliable": reliable,
             **disp,
             # Per-GPU rate: this rank's own tokens over its own step time.

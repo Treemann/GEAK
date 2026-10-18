@@ -13,7 +13,9 @@ throughput** instead of serving throughput.
 
 Every number is useful (non-pad, loss-unmasked) tokens, paired against an interleaved reference.
 
-Second stack (HF TRL, 7B, unpacked): **1,096 -> 2,269 useful tok/s/GPU (2.07x)**.
+Second stack (HF TRL, 7B, unpacked): **1,083 -> 2,178 useful tok/s/GPU (2.01x)**. These are the
+corrected figures (DECISIONS 4.33): the earlier "2,269 / 2.07x" came from a warmup detector that
+over-trimmed variable-shape legs.
 * Two levers with a bitwise-identical trajectory: ZeRO-2 +21%, and skipping TRL's per-micro-batch
   metric gathers.
 * Three kernels accepted through the same workflow and gates: attention, RMSNorm, MLP gate/up +

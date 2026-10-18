@@ -1415,3 +1415,26 @@ and useful_tokens at all 30 steps, both reps. It is a pure removal of logging wo
 The recommended HF descriptor is `qwen2_5_math_7b_hf_cosine_zero2_nm.env`. The outcome test of the
 final configuration is P0-4h.
 
+### CORRECTION (2026-10-18): HF absolute throughput was overstated 2–9%; HF is 2.01x, not 2.07x
+
+The warmup detector's fixed-shape rule (step time within 2% of the back-half median) cannot settle
+on dynamically padded HF steps, whose time follows a token count with cv ~20%. On the 7B ZeRO-2 legs
+it put warmup at step 26 of 30, so every HF summary was a median over the last 4–5 steps, which
+happened to be faster. The new variable-shape rule (time per token, robust tolerance; DECISIONS
+4.33) settles at step 2–5.
+
+Re-summarised, same legs:
+
+| configuration | was | corrected |
+|---|---|---|
+| full_shard bare (the HF start) | 1,096 | **1,083** |
+| ZeRO-2 bare | 1,338 | 1,308 (+20.8%) |
+| ZeRO-2 + hf2 | 1,474 | 1,433 (+9.6%) |
+| ZeRO-2 bare, metrics off | 1,792 | 1,640 (+25.4% vs 1,308) |
+| ZeRO-2 + hf3, metrics on | 1,761 | 1,761 |
+| **ZeRO-2 + hf3, metrics off (final)** | 2,269 | **2,178** |
+
+**HF cumulative: 2.01x.** No accept/reject verdict changes: each accepted lever cleared its band by
+a wide margin, and the outcome tests use held-out loss. Megatron legs are fixed-shape and unaffected
+(re-checked: `pcos_1016_170258_s81` gives the same warmup, 7).
+
