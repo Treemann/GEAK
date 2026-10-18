@@ -151,9 +151,16 @@ allowed), kept fixed during optimisation, not constant LR.
 **Done 2026-10-18: P0-4h CLEARED.** The final HF configuration (2.07x) is safe to train with
 (4.32).
 
-**Running:** `wf_499a73c3-cd2` (t0 1792279052542, `baseline_overlay` hf3, descriptor `_nm`, skipping the 3
-accepted heads). Remaining HF heads:
-`hf_mlp_down_proj_gemm` (17.7%, +2.95%), `hf_attn_qkvo_proj_gemm` (7.5%), `hf_lmhead_gemm` (4.4%).
+**Done 2026-10-18:**
+* `wf_499a73c3-cd2`: `hf_mlp_down_proj` was returned `unusable_ref` because of the warmup defect.
+  Fixed (DECISIONS 4.33), and the HF figures were CORRECTED to 1,083 → 2,178, 2.01x. The head was
+  then re-adjudicated as a win, +7.18% (4.34); condition `hf4`.
+
+**Running:** `/tmp/p04i.sh`, log `runs/p04i_driver.log`.
+1. hf3 vs hf4 throughput, 2 reps (`runs/hf34_*`).
+2. P0-4i: 5 cand legs on hf4 (`runs/qabhf4_*`). Afterwards symlink P0-4g's `ref_seed*` /
+   `ctrl70_seed*` into the qabhf4 prefix and run `quality_ab_final.py <prefix> --base ref --cand
+   cand --ctrl ctrl70`.
 
 **AUTONOMOUS PLAN (user offline 2026-10-16 → 10-18; instruction: never stop, decide professionally, record
 everything).** In order:
