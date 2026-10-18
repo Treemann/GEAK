@@ -1892,3 +1892,27 @@ legs are therefore this test's REF. Running: the five cand legs `runs/qabhf3_101
 * Stated, not hidden: all five d are ≥ 0. Even if the shift is real, it is about 40× inside the
   equivalence margin.
 
+## `hf_mlp_down_proj` re-adjudicated after the warmup fix, and P0-4i PRE-REGISTRATION (2026-10-18, before any P0-4i leg)
+
+**Re-adjudication.** `wf_499a73c3-cd2` returned `hf_mlp_down_proj` as `unusable_ref`: 4 steady steps,
+caused by the warmup defect fixed in DECISIONS 4.33.
+* L0 passed: 18/18 checks, error equal to the original's.
+* L1 passed on re-gate. The first pair's strict sign rule fired with the candidate LOWER; two
+  further pairs passed with the direction flipping.
+* The SAME gate legs (`runs/gate_hf_mlp_down_proj_1018_023628`) re-summarised with the corrected
+  detector give 25 steady steps: aligned +6.54%, **paired +7.18%**, ratio IQR 2.45%.
+* The workflow's own `gateVerdict` (extracted and applied unchanged) returns **win: +7.18% > band
+  1.82%**.
+* Engagement on the cand leg: attn / rmsnorm / mlp / down all on 8 ranks. mlp and down are both
+  6,720 forward and backward, fallback 0.
+* down_proj chains on `Qwen2MLP.forward` after the gate/up wrapper (`_PREV`).
+* **Accepted** (DECISIONS 4.34). Stack condition `hf4` = hf3 + down_proj (gate-dir install, bytes
+  verified against its SHA256SUMS).
+
+**P0-4i PRE-REGISTRATION.** It is P0-4h with cand = hf4.
+* Descriptor `_nm_q`, 296 iterations, seeds 1111..5555.
+* REF and ctrl70 are P0-4g's legs: the bitwise reuse was already validated in P0-4h.
+* `quality_ab_final.py <prefix> --base ref --cand cand --ctrl ctrl70`, rules unchanged.
+* CLEARED iff PASS-quality and PASS-stability.
+* Run before it: an interleaved throughput confirmation, hf3 vs hf4, 2 reps on `_nm`.
+
