@@ -162,19 +162,17 @@ allowed), kept fixed during optimisation, not constant LR.
 
 **Done 2026-10-19:** `wf_39ac0dc6-211`: `hf_lmhead_fused_ce` accepted on hf5, +2.60% (2,344 to 2,402) = **hf6** (4.37). `hf_rope_layout_fused` rejected by the L1 direction rule; remedy = bf16-rounding-exact variant.
 
-**In flight 2026-10-19 15:43:** `geak_train/scratch/p04j_driver.sh` (log `runs/p04j_driver.log`):
-* hf4 vs hf6 throughput confirmation (`runs/hf46_1019_154350_*`).
-* P0-4j outcome test, cand = hf6 (`runs/qabhf6_*`).
+**Done 2026-10-19: P0-4j CLEARED.** hf6 is the recommended HF stack: **2,406, 2.22x** (4.38).
+* hf6 vs hf4: +5.23% paired.
+* The first outcome attempt lost eval_loss to the overlay signature bug (fixed 410207cb, re-run `qabhf6b`).
 
-**After it:**
-* Symlink `ref`/`ctrl70` from `qabhf_1017_051602_*` into the qabhf6 prefix (as P0-4i did).
-* Run `quality_ab_final.py <prefix> --base ref --cand cand --ctrl ctrl70`.
-* CLEARED: hf6 becomes the recommended HF stack; update README and ROADMAP.
-* NOT CLEARED: bisect with cand = hf5.
+**Next (autonomous):** the remaining HF time is config, not kernels:
+* ZeRO-2 reduce overlap: exposed comm 9.4% on rank 0, reduce only 53% overlapped.
+* The no_sync flat-grad cat: ~7.6% of span.
+* DP token imbalance: ~18% rank wait. It changes data order, so it is a workload decision, not a lever.
+* Kernel follow-up: a bf16-rounding-exact rope variant (+2.9% if its step-1 delta is exactly 0).
 
-**Then:** the remaining levers are config, not kernels: ZeRO-2 reduce overlap (exposed comm 9.4%) and the flat-grad cat (7.6%). Also the bf16-exact rope variant (+2.9% if its step-1 delta is 0).
-
-**Next (autonomous):** the remaining HF heads on top of hf4 with `_nm`: lm_head ~7.9%, q/o_proj ~7.2%,
+**Older next-list (kept for history):** the remaining HF heads on top of hf4 with `_nm`: lm_head ~7.9%, q/o_proj ~7.2%,
 k/v_proj ~2%. Also the engine-side ZeRO flat-grad `cat` on side streams (~4.8% of the span).
 
 **AUTONOMOUS PLAN (user offline 2026-10-16 → 10-18; instruction: never stop, decide professionally, record

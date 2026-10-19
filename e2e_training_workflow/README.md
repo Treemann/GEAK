@@ -13,19 +13,17 @@ throughput** instead of serving throughput.
 
 Every number is useful (non-pad, loss-unmasked) tokens, paired against an interleaved reference.
 
-Second stack (HF TRL, 7B, unpacked): **1,083 -> 2,290 useful tok/s/GPU (2.11x)**, cleared for
-training (DECISIONS 4.35). These are corrected figures (4.33): an earlier "2,269 / 2.07x" for hf3
+Second stack (HF TRL, 7B, unpacked): **1,083 -> 2,406 useful tok/s/GPU (2.22x)**, cleared for
+training (DECISIONS 4.38). These are corrected figures (4.33): an earlier "2,269 / 2.07x" for hf3
 came from a warmup detector that over-trimmed variable-shape legs.
 * Two levers with a bitwise-identical trajectory: ZeRO-2 +21%, and skipping TRL's per-micro-batch
   metric gathers.
-* Four kernels accepted through the same workflow and gates: attention, RMSNorm, MLP gate/up +
-  SwiGLU, and MLP down_proj.
-* The final configuration is **cleared for training**: held-out +0.00004 vs a control of +0.0065,
-  no episodes (DECISIONS 4.32).
-* Recipe: `workloads/qwen2_5_math_7b_hf_cosine_zero2_nm.env` + `stack_overlay_env.sh --cond hf4`.
-Recipe `workloads/qwen2_5_math_7b_hf_cosine_zero2.env` + `stack_overlay_env.sh --cond hf2`. It is
-**cleared for training** by the same one-epoch outcome test: held-out −0.00004 vs a control +0.0065,
-no episodes (DECISIONS 4.29).
+* Six kernels accepted through the same workflow and gates: attention, RMSNorm, MLP gate/up + SwiGLU,
+  MLP down_proj, the fused q/k/v/o projections, and the fused lm_head + loss. One was rejected:
+  RoPE, by the L1 direction rule.
+* The final configuration (hf6) is **cleared for training** by the one-epoch, 5-seed outcome test
+  (P0-4j): held-out −0.00001 vs a control of +0.0065, no episodes.
+* Recipe: `workloads/qwen2_5_math_7b_hf_cosine_zero2_nm.env` + `stack_overlay_env.sh --cond hf6`.
 
 Training safety: the 8-kernel stack is **cleared for training under a standard LR schedule**
 (warmup + cosine, `workloads/qwen2_5_math_7b_packed_cosine.env`). That rests on a pre-registered

@@ -1950,3 +1950,14 @@ On this stack the grad_norm envelope does not discriminate: the hf4-vs-hf4 null 
     find_labels `[]` -> `['labels']`. VAR_KEYWORD, which Trainer's `model_accepts_loss_kwargs` reads,
     is unchanged, so the training path, the gates and the throughput above are unaffected.
 * Protocol unchanged. The 5 cand legs are re-run as `qabhf6b_*`.
+
+### P0-4j RESULT (2026-10-19): **CLEARED** — hf6 (hf4 + qkvo + lm_head/CE) is safe to train with
+
+* Outcome legs: `runs/qabhf6b_1019_175827_*`. REF and ctrl70 are symlinks to P0-4g's `qabhf_1017_051602_*`.
+* Held-out d: −0.00015 / +0.00013 / −0.00003 / −0.00006 / +0.00006, mean **−0.00001** (t −0.19).
+  Control ctrl70 − ref: +0.00646 (t 138). PASS-quality: |mean| ≤ 0.00161.
+* Stability: max10 0 on every leg, PASS.
+* Engagement per cand leg, 8/8 ranks: attn, rmsn, mlp, down, qkvo and lmce all fallback 0 in training.
+  lmce: 2,368 candidate fwd = bwd per rank. Its 125 `grad_disabled` fallbacks per rank are the eval
+  pass, which runs HF's own lm_head + loss.
+* **CLEARED.** hf6 replaces hf4 as the recommended HF stack (DECISIONS 4.38).
