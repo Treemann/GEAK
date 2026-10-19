@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
 import json
 import os
 
@@ -161,6 +162,16 @@ def _install_one(manifest_path):
             COUNTS["forward"] += 1
             return out
 
+        # Keep the ORIGINAL's signature visible. HF Trainer introspects the model class's forward
+        # (find_labels -> label_names, can_return_loss); behind a bare (*a, **kw) it finds no
+        # `labels`, so evaluate() never computes a loss and returns no eval_loss. Hit 2026-10-19 by the
+        # first model-level rebind (Qwen2ForCausalLM.forward, P0-4j): training was unaffected, every
+        # held-out evaluation was lost. Introspection only; the call path is unchanged.
+        if name != "apply":
+            try:
+                wrapped.__signature__ = inspect.signature(orig)
+            except (TypeError, ValueError):
+                pass
         if name == "apply" and isinstance(owner, type):
             setattr(owner, name, staticmethod(wrapped))
         else:
