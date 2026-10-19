@@ -160,7 +160,19 @@ allowed), kept fixed during optimisation, not constant LR.
 
 **Done 2026-10-19:** `wf_65926511-100` accepted `hf_attn_qkvo_proj` on hf4, +2.63% (2,291 to 2,352): condition **hf5**, DECISIONS 4.36, pending the outcome test. Commit 09577e34 put the HF capture/oracle tooling in the tree.
 
-**In flight 2026-10-19:** `wf_39ac0dc6-211` — the same args on `--cond hf5`, skipping the five HF heads, 8 h budget. Targets `hf_lmhead_fused_ce` (exp. +2.7%) and `hf_rope_layout_fused` (+2.0%). **Then:** ONE outcome test (quality_ab, 5 seeds, `_zero2_nm_q`) of the final stack vs hf4 plus ctrl70, which saves a 3.5 h test per head. If it fails, bisect hf5 first.
+**Done 2026-10-19:** `wf_39ac0dc6-211`: `hf_lmhead_fused_ce` accepted on hf5, +2.60% (2,344 to 2,402) = **hf6** (4.37). `hf_rope_layout_fused` rejected by the L1 direction rule; remedy = bf16-rounding-exact variant.
+
+**In flight 2026-10-19 15:43:** `geak_train/scratch/p04j_driver.sh` (log `runs/p04j_driver.log`):
+* hf4 vs hf6 throughput confirmation (`runs/hf46_1019_154350_*`).
+* P0-4j outcome test, cand = hf6 (`runs/qabhf6_*`).
+
+**After it:**
+* Symlink `ref`/`ctrl70` from `qabhf_1017_051602_*` into the qabhf6 prefix (as P0-4i did).
+* Run `quality_ab_final.py <prefix> --base ref --cand cand --ctrl ctrl70`.
+* CLEARED: hf6 becomes the recommended HF stack; update README and ROADMAP.
+* NOT CLEARED: bisect with cand = hf5.
+
+**Then:** the remaining levers are config, not kernels: ZeRO-2 reduce overlap (exposed comm 9.4%) and the flat-grad cat (7.6%). Also the bf16-exact rope variant (+2.9% if its step-1 delta is 0).
 
 **Next (autonomous):** the remaining HF heads on top of hf4 with `_nm`: lm_head ~7.9%, q/o_proj ~7.2%,
 k/v_proj ~2%. Also the engine-side ZeRO flat-grad `cat` on side streams (~4.8% of the span).
