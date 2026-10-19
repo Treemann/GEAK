@@ -1936,3 +1936,17 @@ On this stack the grad_norm envelope does not discriminate: the hf4-vs-hf4 null 
 * CLEARED iff PASS-quality and PASS-stability.
 * If NOT CLEARED: bisect by running cand = hf5. hf4 stays the recommended stack until then.
 * Run before it: interleaved throughput confirmation hf4 vs hf6, 2 reps on `_nm`.
+
+### P0-4j, first attempt (2026-10-19): throughput confirmed; outcome legs lost their evaluation (harness bug, fixed)
+
+* **Throughput** (`runs/hf46_1019_154350_*`, corrected detector): hf4 2,286 / 2,289, hf6 2,406 / 2,407.
+  Paired **+5.23 / +5.24%** (ratio IQR 0.9 / 1.1%), same_batches, occupancy clean.
+* **Outcome legs `runs/qabhf6_1019_160153_cand_*` are INCOMPLETE.** Every leg trained all 296 steps,
+  then died in `trainer.evaluate()` with `KeyError: 'eval_loss'`.
+  * Cause: the overlay wrapper's bare `(*a, **kw)` signature. HF Trainer's `find_labels(model.__class__)`
+    found no `labels` on the rebound `Qwen2ForCausalLM.forward`, so evaluation computed no loss.
+  * hf6 is the first model-level rebind; every earlier overlay rebinds a submodule.
+  * Fix 410207cb: `wrapped.__signature__ = inspect.signature(orig)`. Verified in the image:
+    find_labels `[]` -> `['labels']`. VAR_KEYWORD, which Trainer's `model_accepts_loss_kwargs` reads,
+    is unchanged, so the training path, the gates and the throughput above are unaffected.
+* Protocol unchanged. The 5 cand legs are re-run as `qabhf6b_*`.
