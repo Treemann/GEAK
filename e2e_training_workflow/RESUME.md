@@ -158,7 +158,9 @@ allowed), kept fixed during optimisation, not constant LR.
 
 **Done 2026-10-18: P0-4i CLEARED.** hf4 is the recommended HF stack: **2,290, 2.11x** (4.35).
 
-**In flight 2026-10-19:** `wf_65926511-100` — hf_trl on `_zero2_nm`, `baseline_overlay --cond hf4`, skip the four accepted HF heads, budget 2 / max_gates 3 / 6 h. Targets the remaining heads below. Any acceptance needs the outcome test before it ships (4.23). Also 2026-10-19: commit 09577e34 put the HF capture/oracle tooling (capture_hf_*.py, sdpa/gateup references, holdout oracles) in the tree.
+**Done 2026-10-19:** `wf_65926511-100` accepted `hf_attn_qkvo_proj` on hf4, +2.63% (2,291 to 2,352): condition **hf5**, DECISIONS 4.36, pending the outcome test. Commit 09577e34 put the HF capture/oracle tooling in the tree.
+
+**In flight 2026-10-19:** `wf_39ac0dc6-211` — the same args on `--cond hf5`, skipping the five HF heads, 8 h budget. Targets `hf_lmhead_fused_ce` (exp. +2.7%) and `hf_rope_layout_fused` (+2.0%). **Then:** ONE outcome test (quality_ab, 5 seeds, `_zero2_nm_q`) of the final stack vs hf4 plus ctrl70, which saves a 3.5 h test per head. If it fails, bisect hf5 first.
 
 **Next (autonomous):** the remaining HF heads on top of hf4 with `_nm`: lm_head ~7.9%, q/o_proj ~7.2%,
 k/v_proj ~2%. Also the engine-side ZeRO flat-grad `cat` on side streams (~4.8% of the span).
