@@ -166,6 +166,8 @@ allowed), kept fixed during optimisation, not constant LR.
 * hf6 vs hf4: +5.23% paired.
 * The first outcome attempt lost eval_loss to the overlay signature bug (fixed 410207cb, re-run `qabhf6b`).
 
+**In flight 2026-10-19 20:12:** `wf_02793feb-78a`. Fast mode, `--cond hf6`, skipping the six accepted heads, budget 2 / 8 h. Candidates: the rope bf16-exact remedy, hf_fsdp_flatgrad_accum, hf_gateup_wgrad_reselect. Any acceptance needs an outcome test (cand = hf7).
+
 **Next (autonomous):** the remaining HF time is config, not kernels:
 * ZeRO-2 reduce overlap: exposed comm 9.4% on rank 0, reduce only 53% overlapped.
 * The no_sync flat-grad cat: ~7.6% of span.
