@@ -275,6 +275,50 @@ def main():
             train_probe._Probe.step_end = _step_end4
     except Exception as e:  # noqa: BLE001
         print(f"[geak-hfdown] not installed: {e!r}", flush=True)
+    # HF Qwen2Attention q/k/v/o projections fwd+bwd capture (head hf_attn_qkvo_proj). Module hooks on the
+    # 4 x 28 projection instances; the golden is an isolated re-run of all four inside the last of their
+    # grad_output hooks. No-op unless GEAK_HFATTN_CAPTURE_DIR/STEP are set; never breaks a run.
+    try:
+        import capture_hf_attn_proj as _hfattn
+        if _hfattn.ENABLED and _hfattn.install(model):
+            _orig_step_end5 = train_probe._Probe.step_end
+
+            def _step_end5(self, *aa, **kw):
+                _hfattn.note_step(self.step + 1)   # = steps COMPLETED (step_end increments after)
+                return _orig_step_end5(self, *aa, **kw)
+            train_probe._Probe.step_end = _step_end5
+    except Exception as e:  # noqa: BLE001
+        print(f"[geak-hfattn] not installed: {e!r}", flush=True)
+    # HF Qwen2ForCausalLM lm_head + causal-LM loss fwd+bwd capture (head hf_lmhead_fused_ce). Hooks on the
+    # model instance (labels / num_items_in_batch kwargs, the loss's grad_output) and its lm_head; the
+    # golden is an isolated re-run of lm_head + model.loss_function inside the loss's grad_output hook.
+    # No-op unless GEAK_HFLMCE_CAPTURE_DIR/STEP are set; never breaks a run.
+    try:
+        import capture_hf_lmhead_ce as _hflmce
+        if _hflmce.ENABLED and _hflmce.install(model):
+            _orig_step_end6 = train_probe._Probe.step_end
+
+            def _step_end6(self, *aa, **kw):
+                _hflmce.note_step(self.step + 1)   # = steps COMPLETED (step_end increments after)
+                return _orig_step_end6(self, *aa, **kw)
+            train_probe._Probe.step_end = _step_end6
+    except Exception as e:  # noqa: BLE001
+        print(f"[geak-hflmce] not installed: {e!r}", flush=True)
+    # HF Qwen2 apply_rotary_pos_emb (q AND k of one layer) fwd+bwd capture (head hf_rope_layout_fused).
+    # Rebinds the modeling_qwen2 module global the ORIGINAL Qwen2Attention body looks up (also under the
+    # hf5 qkvo wrapper); the golden is an isolated re-run inside the second grad_output hook. No-op
+    # unless GEAK_HFROPE_CAPTURE_DIR/STEP are set; never breaks a run.
+    try:
+        import capture_hf_rope as _hfrope
+        if _hfrope.ENABLED and _hfrope.install(model):
+            _orig_step_end7 = train_probe._Probe.step_end
+
+            def _step_end7(self, *aa, **kw):
+                _hfrope.note_step(self.step + 1)   # = steps COMPLETED (step_end increments after)
+                return _orig_step_end7(self, *aa, **kw)
+            train_probe._Probe.step_end = _step_end7
+    except Exception as e:  # noqa: BLE001
+        print(f"[geak-hfrope] not installed: {e!r}", flush=True)
     trainer.train()
     if ev is not None:
         m = trainer.evaluate()

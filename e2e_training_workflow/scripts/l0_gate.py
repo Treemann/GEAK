@@ -392,6 +392,99 @@ def gateup_swiglu_reference(x, weight_gate, weight_up):
     return torch.nn.functional.silu(gate) * up
 
 
+def attn_qkvo_proj_reference(x, weight_q, bias_q, weight_k, bias_k, weight_v, bias_v, x_o, weight_o):
+    """Independent fp32 reference for HF `Qwen2Attention`'s FOUR projections of one layer as ONE op
+    (head `hf_attn_qkvo_proj`, the hf_trl stack). Returns (q, k, v, o):
+
+        q = x @ Wq^T + bq   [1,M,3584]      k = x @ Wk^T + bk   [1,M,512]
+        v = x @ Wv^T + bv   [1,M,512]       o = x_o @ Wo^T      [1,M,3584]   (o_proj has NO bias)
+
+    * x IS SHARED by q/k/v (the input_layernorm output). Its gradient is therefore the SUM of three
+      dgrads -- what one fused [4608,3584] QKV dgrad GEMM produces, and what autograd's accumulation of
+      the three bf16 dgrads approximates. Scored once, as `dgrad`.
+    * x_o is a DIFFERENT tensor (the attention output reshaped to [1,M,3584]); its gradient is
+      `dgrad_o`. The two inputs have the same shape: swapping them is same-shaped and wrong.
+    * k and v share every shape ([512,3584] weights, [512] biases, [1,M,512] outputs): a candidate that
+      swaps Wk/Wv, bk/bv, or the k/v slices of a fused output passes every shape check and is wrong;
+      the outputs and the gradients are scored per role.
+    * THE BIASES ARE LEARNED: dbias_q/k/v = column sums of the grad_outputs over M, scored.
+    * fp32 throughout. The original rounds each GEMM output to bf16 (with the bias added in the GEMM
+      epilogue) under autocast; that is the error measured, not the truth.
+    """
+    xf = x.float()
+    lin = torch.nn.functional.linear
+    q = lin(xf, weight_q.float(), bias_q.float())
+    k = lin(xf, weight_k.float(), bias_k.float())
+    v = lin(xf, weight_v.float(), bias_v.float())
+    o = lin(x_o.float(), weight_o.float())
+    return q, k, v, o
+
+
+def hf_lmhead_ce_reference(hidden_states, weight, labels, num_items_in_batch, ignore_index=-100):
+    """Independent fp32 reference for HF `Qwen2ForCausalLM`'s LM head + causal-LM loss as ONE op (head
+    `hf_lmhead_fused_ce`, the hf_trl stack). Returns the scalar loss the model returns:
+
+        logits = hidden_states @ W^T                      [1, S, V]   (lm_head, NO bias)
+        tgt    = pad(labels, (0, 1), ignore_index)[..., 1:]           (HF's own shift)
+        loss   = sum_{t: tgt[t] != ignore_index} (logsumexp(logits[t]) - logits[t, tgt[t]])
+                 / num_items_in_batch
+
+    * num_items_in_batch IS AN INPUT, not a constant: the Trainer's global count of labels != -100 over
+      the step's microbatches on all ranks. The sum is divided by it (reduction="sum" path of HF's
+      fixed_cross_entropy); dividing by the local token count (reduction="mean") is a different loss.
+    * THE SHIFT IS PART OF THE OP: position t predicts labels[t + 1], and the LAST position never
+      carries loss. Scoring against unshifted labels is same-shaped and wrong.
+    * ignore_index rows contribute nothing to the loss AND nothing to dgrad / wgrad (the masked holdout
+      exercises it; on this workload every row but the last carries loss).
+    * fp32 throughout and written without F.cross_entropy, so it shares no code with the original
+      (bf16 logits under autocast -> .float() -> F.cross_entropy).
+    """
+    h = hidden_states.float()
+    w = weight.float()
+    logits = torch.nn.functional.linear(h, w)                         # [1, S, V]
+    vocab = logits.shape[-1]
+    tgt = torch.nn.functional.pad(labels, (0, 1), value=ignore_index)[..., 1:]
+    lf = logits.reshape(-1, vocab)
+    t = tgt.reshape(-1)
+    valid = t != ignore_index
+    safe = torch.where(valid, t, torch.zeros_like(t))
+    lse = torch.logsumexp(lf, dim=-1)
+    pred = lf.gather(-1, safe.unsqueeze(-1)).squeeze(-1)
+    per = torch.where(valid, lse - pred, torch.zeros_like(lse))
+    return per.sum() / num_items_in_batch.to(per.device).float()
+
+
+def hf_rope_qk_reference(q, k, cos, sin):
+    """Independent fp32 reference for HF Qwen2 `apply_rotary_pos_emb(q, k, cos, sin)` (transformers
+    4.55.0, head `hf_rope_layout_fused`, the hf_trl stack). Returns (q_embed, k_embed):
+
+        x_embed = x * cos + rotate_half(x) * sin,   rotate_half(x) = cat(-x[..., D/2:], x[..., :D/2])
+
+    q [1, 28, S, 128], k [1, 4, S, 128] bf16 (BHSD shape; live they are transposed views of the
+    projection outputs -- the layout is NOT part of the contract, only the values); cos / sin [1, S, 128]
+    bf16, broadcast over the head dim (unsqueeze(1)), not differentiable.
+
+    * HALF-SPLIT (NeoX) PAIRING, not interleaved: element d pairs with d +- D/2. An interleaved (2i,
+      2i+1) rotation is same-shaped and wrong.
+    * THE SIGN IS ON THE SECOND HALF: out[:D/2] = x1*cos1 - x2*sin1, out[D/2:] = x2*cos2 + x1*sin2.
+      The opposite sign is a rotation by -theta: same-shaped, same magnitude, wrong.
+    * cos / sin are the CAPTURED bf16 tables (HF rounds its fp32 table to the hidden dtype); a kernel
+      that recomputes them in fp32 from positions computes a slightly different op and is scored as
+      such. Both halves of each table are equal on Qwen2 (emb = cat(freqs, freqs)), but the reference
+      reads each half from its own position, so a kernel that reads only one half is exercised by the
+      values, not trusted.
+    * fp32 throughout; written on explicit halves so it shares no code with the original.
+    """
+    def _one(x):
+        xf = x.float()
+        h = xf.shape[-1] // 2
+        c = cos.float().unsqueeze(1)
+        s = sin.float().unsqueeze(1)
+        x1, x2 = xf[..., :h], xf[..., h:]
+        return torch.cat((x1 * c[..., :h] - x2 * s[..., :h], x2 * c[..., h:] + x1 * s[..., h:]), dim=-1)
+    return _one(q), _one(k)
+
+
 REFERENCES = {"rmsnorm_linear": rmsnorm_linear_reference,
               "rmsnorm_linear_bias": rmsnorm_linear_reference,
               "rmsnorm_linear_swiglu": rmsnorm_linear_swiglu_reference,
@@ -403,7 +496,10 @@ REFERENCES = {"rmsnorm_linear": rmsnorm_linear_reference,
               "rope_qk_thd": rope_qk_thd_reference,
               "rmsnorm": rmsnorm_reference,
               "sdpa_gqa_causal": sdpa_gqa_causal_reference,
-              "gateup_swiglu": gateup_swiglu_reference}
+              "gateup_swiglu": gateup_swiglu_reference,
+              "attn_qkvo_proj": attn_qkvo_proj_reference,
+              "hf_lmhead_ce": hf_lmhead_ce_reference,
+              "hf_rope_qk": hf_rope_qk_reference}
 
 # Which captured tensor plays which role, per reference. The names are the ORDER the reference's
 # signature expects, and they are also the labels the oracle's outputs carry.
@@ -474,6 +570,34 @@ LAYOUTS = {
     "gateup_swiglu": {"args": ["x", "weight_gate", "weight_up"],
                       "grad_labels": ["dgrad", "wgrad_gate", "wgrad_up"],
                       "grad_of": ["x", "weight_gate", "weight_up"]},
+    # HF Qwen2Attention q/k/v/o projections of one layer (head hf_attn_qkvo_proj): FOUR forward outputs
+    # and four grad_outputs. Every tensor is differentiable, the biases included (learned). dgrad is
+    # d/dx summed over q, k and v; dgrad_o is d/dx_o of o_proj.
+    "attn_qkvo_proj": {"args": ["x", "weight_q", "bias_q", "weight_k", "bias_k", "weight_v", "bias_v",
+                                "x_o", "weight_o"],
+                       "out_labels": ["q", "k", "v", "o"],
+                       "grad_labels": ["dgrad", "wgrad_q", "dbias_q", "wgrad_k", "dbias_k", "wgrad_v",
+                                       "dbias_v", "dgrad_o", "wgrad_o"],
+                       "grad_of": ["x", "weight_q", "bias_q", "weight_k", "bias_k", "weight_v", "bias_v",
+                                   "x_o", "weight_o"]},
+    # HF Qwen2ForCausalLM lm_head + ForCausalLMLoss (head hf_lmhead_fused_ce): ONE scalar output (the
+    # loss the model returns) and so one scalar grad_output (d total / d loss). labels are int64 index
+    # metadata and num_items_in_batch an int64 0-d count, neither differentiable.
+    "hf_lmhead_ce": {"args": ["hidden_states", "weight", "labels", "num_items_in_batch"],
+                     "out_labels": ["loss"],
+                     "grad_labels": ["dgrad", "wgrad"],
+                     "grad_of": ["hidden_states", "weight"]},
+    # HF Qwen2 apply_rotary_pos_emb on the (q, k) pair of one layer (head hf_rope_layout_fused): two
+    # forward outputs and two grad_outputs. cos / sin are bf16 tables from Qwen2RotaryEmbedding (no_grad),
+    # not differentiable; only q and k are.
+    "hf_rope_qk": {"args": ["q", "k", "cos", "sin"],
+                   "out_labels": ["q_embed", "k_embed"],
+                   "grad_labels": ["dq", "dk"],
+                   "grad_of": ["q", "k"],
+                   # The timed span includes the live layout copies around the op (build_task_dir
+                   # UNITTEST: glue): q / k arrive as transposed views of the q_proj / k_proj outputs,
+                   # and sdpa_attention_forward calls .contiguous() on q_embed / k_embed.
+                   "glue": {"view_from_base": ["q", "k"], "contiguous_out": True}},
 }
 
 

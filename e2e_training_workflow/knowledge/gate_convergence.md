@@ -1924,3 +1924,15 @@ caused by the warmup defect fixed in DECISIONS 4.33.
   +0.00004 / +0.00016 / −0.00019, mean −0.00002 (t −0.28), against a control of +0.00646.
   Stability: max10 0 everywhere. 32 proofs per cand leg, fallback 0. **CLEARED.**
 
+
+## P0-4j PRE-REGISTRATION (2026-10-19, before any P0-4j leg): the outcome test of hf6
+
+hf5 (`hf_attn_qkvo_proj`, 4.36) and hf6 (`hf_lmhead_fused_ce`, 4.37) were accepted on 30-step gates only.
+On this stack the grad_norm envelope does not discriminate: the hf4-vs-hf4 null already reaches 23.6x.
+**One** outcome test covers both increments, P0-4i's protocol with cand = hf6:
+* Descriptor `_nm_q`, 296 iterations, seeds 1111..5555, arm `cand` = `stack_overlay_env.sh --cond hf6`.
+* REF and ctrl70 reused from P0-4g (`qabhf_1017_051602_*`). Bitwise reuse was validated in P0-4h.
+* `quality_ab_final.py <prefix> --base ref --cand cand --ctrl ctrl70`, rules unchanged.
+* CLEARED iff PASS-quality and PASS-stability.
+* If NOT CLEARED: bisect by running cand = hf5. hf4 stays the recommended stack until then.
+* Run before it: interleaved throughput confirmation hf4 vs hf6, 2 reps on `_nm`.

@@ -179,7 +179,8 @@ def _record(rec, layout):
 
 
 def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=None,
-          notes=None, engagement=None, ulp_labels=None, holdouts=None):
+          notes=None, engagement=None, ulp_labels=None, holdouts=None, ulp_floor=None,
+          abs_floor_max_ulp=None):
     """`holdouts`: optional list of (tag, capture_path) for the SAME op at other call sites / ranks /
     shapes. Each is frozen as holdout_<tag>.pt with its OWN base error (the original's error differs
     per call: on hf_rmsnorm_fused_fwdbwd out max_abs is 0.029 at layer 0 and 1.12 at model.norm), and
@@ -282,6 +283,28 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
             # max_abs is set by where the 1-ulp disagreements happened to land (see
             # l0_gate.max_ulp_bf16). The bias checks below are unchanged for every output.
             "ulp_labels": list(ulp_labels or []),
+            # Per-label FLOOR (in bf16 ulps) under the ulp limit of an `ulp_labels` output, for outputs
+            # where the original is EXACTLY round_bf16(fp32 reference) (base max_ulp_bf16 == 0, so the
+            # x margin limit is 0 and only a bitwise-identical rounding passes). First needed on
+            # hf_attn_qkvo_proj (2026-10-19): the original's dbias is an fp32-accumulated column sum
+            # rounded once, and matches the fp32 reference bitwise on all 4608 elements of every
+            # case; an equally correct fp32 sum in a different ORDER flips the final rounding by 1 ulp
+            # wherever the fp32 value sits within ~1e-7 relative of a rounding midpoint. A floor of
+            # 1 ulp admits faithful rounding and nothing else: a bf16-accumulated sum is off by many
+            # ulps and still fails (negative control dbias_bf16acc). The bias checks are unchanged.
+            "ulp_floor": dict(ulp_floor or {}),
+            # Per-label FLOOR under the ABSOLUTE magnitude limit, in bf16 ulps of the case's LARGEST
+            # reference element: limit = max(base max_abs x margin, k * ulp_bf16(max|ref|)). WHY: on a
+            # bf16-rounded GEMM output the original's max_abs is ONE rounding flip, and which binade
+            # it landed in is luck. Measured on hf_attn_qkvo_proj (2026-10-19): the original's own
+            # numerics with the three bf16 q/k/v dgrads summed in a different ORDER failed dgrad at
+            # 9.5e-7 vs a limit of 6.0e-7 (original 4.8e-7), and an fp32 split-K wgrad (MORE
+            # accurate) failed wgrad_v at 3.8e-6 vs 1.2e-6 -- in both, one flip at a larger element.
+            # One ulp at the tensor's largest element is the error a correctly rounded result may
+            # carry there; anything a real defect produces (bf16/fp16 accumulation, a dropped M tail,
+            # a swapped role, x1.004) is far above it or is caught by the bias checks, which are
+            # unchanged (negative controls in the task's extract_controls_summary.json).
+            "abs_floor_max_ulp": dict(abs_floor_max_ulp or {}),
             "why_bias_tests": ("sign_balance catches an ADDITIVE bias; a MULTIPLICATIVE one leaves it "
                                "at 0.5, because the error simply follows the value's sign. Proven by "
                                "a negative test: a x1.005 candidate passed BOTH the magnitude and the "
@@ -325,7 +348,7 @@ A training op is judged on forward AND backward together, so the measured callab
 returns (out, dgrad, dln_weight, wgrad). The harness compares multi-tensor returns component-wise,
 so one closure gives correctness on every quantity and a combined-latency measurement.
 """
-import importlib.util, json, os, sys
+import importlib.util, json, math, os, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location("harness_lib", os.path.join(HERE, "harness_lib.py"))
@@ -376,10 +399,30 @@ def make_call(entry):
     out_labels = LAYOUT.get("out_labels", ["out"])
     n_go = len(out_labels)          # one grad_output per forward output, appended after the inputs
 
+    # Optional LAYOUT GLUE (layout["glue"]; absent on every older task -> unchanged behaviour). It makes
+    # the timed callable span the live layout copies AROUND the op, so a candidate that removes them is
+    # credited for it and one that adds them is charged (first used by hf_rope_layout_fused):
+    #   view_from_base: [names] -- the live arg is a [B,H,S,D] TRANSPOSED VIEW of a [B,S,H*D] projection
+    #       output. The leaf is that contiguous base; the op receives base.view(B,S,H,D).transpose(1,2)
+    #       (exactly the live view), and the gradient is taken on the base -- so whatever layout the
+    #       candidate's dgrad has, the ViewBackward copy it costs in training is timed here too. It is
+    #       reported back as [B,H,S,D] (a view, values unchanged) for scoring.
+    #   contiguous_out: true -- each output goes through .contiguous() before the backward, as the
+    #       consumer does live (sdpa_attention_forward); a no-op for an output already contiguous.
+    glue = LAYOUT.get("glue") or {}
+    from_base = set(glue.get("view_from_base") or [])
+
     def call(args):
         tensors, gos = list(args[:-n_go]), list(args[-n_go:])
-        named = {}
+        named, leaves = {}, {}
         for name, t in zip(names, tensors):
+            if name in from_base:
+                B, H, S, D = t.shape
+                base = t.detach().transpose(1, 2).reshape(B, S, H * D).clone()
+                base.requires_grad_(name in LAYOUT["grad_of"])
+                leaves[name] = base
+                named[name] = base.view(B, S, H, D).transpose(1, 2)
+                continue
             c = t.detach().clone()
             # Exactly the roles the layout calls differentiable. `!= "bias"` was a Linear-ism:
             # attention's cu_seqlens are int32 index metadata and requires_grad_ on them RAISES.
@@ -393,8 +436,14 @@ def make_call(entry):
                 raise RuntimeError(f"entry returned {len(outs)} outputs, the op has {n_go}")
         else:
             outs = (out[0] if isinstance(out, (list, tuple)) else out,)
-        wrt = [named[n] for n in LAYOUT["grad_of"] if named.get(n) is not None]
+        if glue.get("contiguous_out"):
+            outs = tuple(o.contiguous() for o in outs)
+        wrt_names = [n for n in LAYOUT["grad_of"] if named.get(n) is not None]
+        wrt = [leaves.get(n, named[n]) for n in wrt_names]
         grads = torch.autograd.grad(outs, wrt, grad_outputs=gos, allow_unused=True)
+        grads = tuple(g.view(named[n].shape[0], named[n].shape[2], named[n].shape[1],
+                             named[n].shape[3]).transpose(1, 2)
+                      if (g is not None and n in leaves) else g for n, g in zip(wrt_names, grads))
         return outs + tuple(g for g in grads if g is not None)
     return call
 
@@ -448,6 +497,12 @@ def main():
                   "scale_bias": float((d * rr).sum() / rr2) if rr2 > 0 else 0.0,
                   "offset_bias": float(d.mean() / denom)}
             lim = base[label]["max_abs"] * margin
+            _fl = float(acc.get("abs_floor_max_ulp", {}).get(label, 0.0))
+            if _fl > 0:
+                _m = float(rr.abs().max())
+                if _m > 0:
+                    st["floor_max_ulp"] = _fl * 2.0 ** (math.floor(math.log2(_m)) - 7)
+                    lim = max(lim, st["floor_max_ulp"])
             mag_ok = st["max_abs"] <= lim
             if label in acc.get("ulp_labels", []):
                 # Magnitude in bf16 ulps of the (bf16-rounded) reference; see acceptance.ulp_labels.
@@ -455,7 +510,8 @@ def main():
                                   torch.exp2(torch.floor(torch.log2(rr.abs().clamp_min(2.0 ** -126))) - 7),
                                   torch.full_like(rr, 2.0 ** -133))
                 st["max_ulp_bf16"] = float((d.abs() / ulp).max())
-                lim_ulp = base[label]["max_ulp_bf16"] * margin
+                lim_ulp = max(base[label]["max_ulp_bf16"] * margin,
+                              float(acc.get("ulp_floor", {}).get(label, 0.0)))
                 st["limit_ulp"] = lim_ulp
                 mag_ok = st["max_ulp_bf16"] <= lim_ulp
             # Significance guard (acceptance.sign_min_z): a few one-sided disagreements on a near-exact
@@ -527,6 +583,10 @@ if __name__ == "__main__":
     ap.add_argument("--ulp-labels", default="",
                     help="comma list of outputs whose magnitude check is in bf16 ulps "
                          "(see acceptance.ulp_labels)")
+    ap.add_argument("--ulp-floor", default=None,
+                    help="JSON dict label -> floor in bf16 ulps (see acceptance.ulp_floor)")
+    ap.add_argument("--abs-floor-max-ulp", default=None,
+                    help="JSON dict label -> k (see acceptance.abs_floor_max_ulp)")
     ap.add_argument("--holdout", action="append", default=[],
                     help="TAG=capture.pt; repeatable. Gated holdout cases (see build(holdouts=...))")
     a = ap.parse_args()
@@ -537,4 +597,6 @@ if __name__ == "__main__":
                        json.loads(open(a.engagement[1:]).read() if a.engagement.startswith("@")
                                   else a.engagement) if a.engagement else None,
                        [s for s in a.ulp_labels.split(",") if s.strip()],
-                       [tuple(x.split("=", 1)) for x in a.holdout]), indent=2))
+                       [tuple(x.split("=", 1)) for x in a.holdout],
+                       json.loads(a.ulp_floor) if a.ulp_floor else None,
+                       json.loads(a.abs_floor_max_ulp) if a.abs_floor_max_ulp else None), indent=2))

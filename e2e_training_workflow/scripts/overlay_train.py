@@ -139,6 +139,16 @@ def _install_one(manifest_path):
 
         def wrapped(*a, **kw):
             out = call(*a, **kw)
+            # A model-level rebind (e.g. HF *ForCausalLM.forward) returns a ModelOutput -- a dict, not
+            # a tuple -- whose differentiable result is its "loss". Tag that, and CLONE the tagged
+            # value: _Counter returns its input as-is, i.e. a view, and HF Trainer.compute_loss then
+            # does `loss *= num_processes` IN PLACE, which autograd forbids on a custom-Function view.
+            # (A 0-d clone; no other output type takes this branch, so existing overlays are unchanged.)
+            if (not torch.is_tensor(out) and not isinstance(out, (list, tuple))
+                    and hasattr(out, "keys") and "loss" in out.keys()
+                    and torch.is_tensor(out["loss"]) and out["loss"].requires_grad):
+                out["loss"] = _Counter.apply(out["loss"], slot).clone()
+                return out
             tgt = out[0] if isinstance(out, (list, tuple)) and torch.is_tensor(out[0]) else out
             if torch.is_tensor(tgt) and tgt.requires_grad:
                 tagged = _Counter.apply(tgt, slot)
