@@ -336,6 +336,62 @@ def rmsnorm_reference(x, ln_weight, eps=1e-6):
     return xf * rms * ln_weight.float()
 
 
+def sdpa_gqa_causal_reference(q, k, v, scale=None, is_causal=True, dropout_p=0.0, enable_gqa=True,
+                              attn_mask=None):
+    """Independent fp32 reference for torch's DENSE `scaled_dot_product_attention` as HF's sdpa path
+    calls it on Qwen2.5 (head `attn_fmha_ck_hf`, the hf_trl stack): BHSD layout, GQA via
+    enable_gqa, causal, no mask, no dropout. q [B, Hq, S, D], k/v [B, Hkv, S, D].
+
+    * GQA EXPANSION IS repeat_interleave on the head dim (kv head g serves q-heads [g*r, g*r + r)),
+      which is what both torch's enable_gqa and HF's repeat_kv do. Tiling (repeat) is same-shaped and
+      wrong.
+    * CAUSAL IS TOP-LEFT (tril), torch's is_causal semantics; here S_q == S_k so it is unambiguous.
+    * SCALE is the captured constant (HF passes module.scaling = D**-0.5 explicitly).
+    * fp32 throughout; dropout must be 0 (Qwen2.5 attention_dropout 0.0) and the mask None -- the
+      reference refuses anything else rather than computing a different operation.
+    """
+    if dropout_p:
+        raise ValueError("sdpa_gqa_causal_reference is deterministic: dropout_p must be 0")
+    if attn_mask is not None:
+        raise ValueError("sdpa_gqa_causal_reference covers the mask-free (is_causal) path only")
+    qf, kf, vf = q.float(), k.float(), v.float()
+    hq, hkv = qf.shape[-3], kf.shape[-3]
+    if hq % hkv:
+        raise ValueError(f"GQA: {hq} q-heads is not a multiple of {hkv} kv-heads")
+    if hq != hkv:
+        if not enable_gqa:
+            raise ValueError("head counts differ but enable_gqa is False")
+        kf = kf.repeat_interleave(hq // hkv, dim=-3)
+        vf = vf.repeat_interleave(hq // hkv, dim=-3)
+    sc = float(scale) if scale is not None else qf.shape[-1] ** -0.5
+    s = torch.matmul(qf, kf.transpose(-1, -2)) * sc
+    if is_causal:
+        lq, lk = s.shape[-2], s.shape[-1]
+        mask = torch.ones(lq, lk, dtype=torch.bool, device=s.device).tril()
+        s = s.masked_fill(~mask, float("-inf"))
+    return torch.matmul(torch.softmax(s, dim=-1), vf)
+
+
+def gateup_swiglu_reference(x, weight_gate, weight_up):
+    """Independent fp32 reference for HF `Qwen2MLP`'s gate/up projections + SwiGLU (head
+    `hf_mlp_gateup_swiglu`, the hf_trl stack): h = silu(x @ Wg^T) * (x @ Wu^T), the tensor down_proj
+    consumes. x [1, M, 3584], weight_gate / weight_up [18944, 3584] (nn.Linear layout [out, in]), no
+    bias (Qwen2MLP builds both with bias=False).
+
+    * TWO SEPARATE WEIGHTS, NOT ONE [37888, 3584]: HF stores gate_proj and up_proj as distinct
+      Parameters, and the oracle's inputs are what the module hands over. A candidate may concatenate
+      them (as a view when they are adjacent in FSDP's flat buffer, see task_notes), but the
+      gradients are scored per weight: swapping dWg and dWu is same-shaped and wrong.
+    * THE ACTIVATION IS ON THE GATE: silu(gate) * up. silu(up) * gate is same-shaped and wrong.
+    * fp32 THROUGHOUT. The original rounds four times (gate GEMM, silu, up GEMM, product -- all bf16
+      under autocast); this is the truth that error is measured against, not a re-run of it.
+    """
+    xf = x.float()
+    gate = torch.nn.functional.linear(xf, weight_gate.float())
+    up = torch.nn.functional.linear(xf, weight_up.float())
+    return torch.nn.functional.silu(gate) * up
+
+
 REFERENCES = {"rmsnorm_linear": rmsnorm_linear_reference,
               "rmsnorm_linear_bias": rmsnorm_linear_reference,
               "rmsnorm_linear_swiglu": rmsnorm_linear_swiglu_reference,
@@ -345,7 +401,9 @@ REFERENCES = {"rmsnorm_linear": rmsnorm_linear_reference,
               "attention_varlen": attention_varlen_reference,
               "lmhead_ce": lmhead_ce_reference,
               "rope_qk_thd": rope_qk_thd_reference,
-              "rmsnorm": rmsnorm_reference}
+              "rmsnorm": rmsnorm_reference,
+              "sdpa_gqa_causal": sdpa_gqa_causal_reference,
+              "gateup_swiglu": gateup_swiglu_reference}
 
 # Which captured tensor plays which role, per reference. The names are the ORDER the reference's
 # signature expects, and they are also the labels the oracle's outputs carry.
@@ -405,6 +463,17 @@ LAYOUTS = {
                     "out_labels": ["q_out", "k_out"],
                     "grad_labels": ["dq", "dk"],
                     "grad_of": ["q", "k"]},
+    # Dense torch SDPA as HF calls it (BHSD, GQA via enable_gqa, causal, no mask, no dropout). The
+    # constants (scale, is_causal, enable_gqa, dropout_p) travel in layout.const from the capture.
+    "sdpa_gqa_causal": {"args": ["q", "k", "v"],
+                        "grad_labels": ["dq", "dk", "dv"],
+                        "grad_of": ["q", "k", "v"]},
+    # HF Qwen2MLP gate/up + SwiGLU (head hf_mlp_gateup_swiglu): x and the two projection weights, all
+    # differentiable; one output h, three gradients. dgrad = dx is the SUM of both projections'
+    # dgrads (x feeds gate and up), i.e. exactly what one concatenated dgrad GEMM produces.
+    "gateup_swiglu": {"args": ["x", "weight_gate", "weight_up"],
+                      "grad_labels": ["dgrad", "wgrad_gate", "wgrad_up"],
+                      "grad_of": ["x", "weight_gate", "weight_up"]},
 }
 
 

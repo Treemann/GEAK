@@ -261,6 +261,20 @@ def main():
             train_probe._Probe.step_end = _step_end3
     except Exception as e:  # noqa: BLE001
         print(f"[geak-hfmlp] not installed: {e!r}", flush=True)
+    # HF Qwen2MLP.down_proj fwd+bwd capture (head hf_mlp_down_proj). Module hooks on the 28 down_proj
+    # instances, so it sees the live call whether or not Qwen2MLP.forward is rebound by the stack.
+    # No-op unless GEAK_HFDOWN_CAPTURE_DIR/STEP are set; never breaks a run.
+    try:
+        import capture_hf_mlp_down as _hfdown
+        if _hfdown.ENABLED and _hfdown.install(model):
+            _orig_step_end4 = train_probe._Probe.step_end
+
+            def _step_end4(self, *aa, **kw):
+                _hfdown.note_step(self.step + 1)   # = steps COMPLETED (step_end increments after)
+                return _orig_step_end4(self, *aa, **kw)
+            train_probe._Probe.step_end = _step_end4
+    except Exception as e:  # noqa: BLE001
+        print(f"[geak-hfdown] not installed: {e!r}", flush=True)
     trainer.train()
     if ev is not None:
         m = trainer.evaluate()

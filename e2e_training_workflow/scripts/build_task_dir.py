@@ -109,9 +109,8 @@ def _base_error(rec, golden, labels, reference, layout):
         stats[label] = error_stats(gd.float(), r)
     return stats
 
-def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=None,
-          notes=None, engagement=None, ulp_labels=None):
-    rec = torch.load(capture_path, map_location="cpu", weights_only=False)
+def _record(rec, layout):
+    """One capture record -> (harness blob, golden, labels, args_t, grad_output node(s))."""
     iso = rec.get("isolated")
     if not iso:
         raise SystemExit(
@@ -119,7 +118,6 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
             "original op (see capture_train_shapes): intercepting the live backward cannot be paired "
             "to the captured forward, and a mis-paired oracle is worse than none.")
 
-    os.makedirs(os.path.join(task_dir, "baseline_src"), exist_ok=True)
     args_t = _tensors(rec["args"])
     go = rec.get("grad_output")
     # A multi-output op (layout `out_labels`, e.g. RoPE on q AND k) carries one grad_output per
@@ -129,11 +127,6 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
         raise SystemExit("capture has no grad_output; a fwd+bwd task cannot be built without it")
 
     # Order the golden the same way the unittest returns it.
-    from l0_gate import LAYOUTS
-
-    layout = dict(LAYOUTS[reference])
-    if const:
-        layout["const"] = const
     grads = iso.get("grads") or {}
     named_nodes = dict(zip(layout["args"], args_t))
     out_labels = layout.get("out_labels", ["out"])
@@ -182,6 +175,26 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
             "regime": "training",
         }],
     }
+    return blob, golden, labels, args_t, go
+
+
+def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=None,
+          notes=None, engagement=None, ulp_labels=None, holdouts=None):
+    """`holdouts`: optional list of (tag, capture_path) for the SAME op at other call sites / ranks /
+    shapes. Each is frozen as holdout_<tag>.pt with its OWN base error (the original's error differs
+    per call: on hf_rmsnorm_fused_fwdbwd out max_abs is 0.029 at layer 0 and 1.12 at model.norm), and
+    the generated unittest gates on ALL of them. Why gate rather than advise: on that oracle the
+    primary call (layer 14, mean(x^2) >= 3) cannot see a wrong eps or a bf16-rounded rstd, and the
+    layer-0 call (mean(x^2) ~ 4e-10..1e-3, eps-dominated) cannot see a missing dx projection term --
+    no single call covers the op's contract."""
+    rec = torch.load(capture_path, map_location="cpu", weights_only=False)
+    from l0_gate import LAYOUTS
+
+    layout = dict(LAYOUTS[reference])
+    if const:
+        layout["const"] = const
+    os.makedirs(os.path.join(task_dir, "baseline_src"), exist_ok=True)
+    blob, golden, labels, args_t, go = _record(rec, layout)
     ref_path = os.path.join(task_dir, "reference_io.pt")
     torch.save(blob, ref_path)
     sha = hashlib.sha256(open(ref_path, "rb").read()).hexdigest()
@@ -193,6 +206,28 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
     # makes the task self-contained: the unittest never has to pick an rtol, and a candidate is never
     # penalised for rounding the baseline also does.
     base_error = _base_error(rec, golden, labels, reference, layout)
+
+    holdout_meta = []
+    for tag, hpath in (holdouts or []):
+        hrec = torch.load(hpath, map_location="cpu", weights_only=False)
+        hc = (hrec.get("const") or {})
+        if layout.get("const") and hc and any(hc.get(k) != v for k, v in layout["const"].items()
+                                              if k in hc):
+            raise SystemExit(f"holdout {tag} carries const {hc}, the oracle {layout['const']}: "
+                             f"a different operation, not a holdout")
+        hblob, hgold, hlabels, hargs, _ = _record(hrec, layout)
+        if hlabels != labels:
+            raise SystemExit(f"holdout {tag} yields outputs {hlabels}, the oracle {labels}")
+        fn = f"holdout_{tag}.pt"
+        torch.save(hblob, os.path.join(task_dir, fn))
+        os.chmod(os.path.join(task_dir, fn), 0o444)
+        holdout_meta.append({
+            "tag": tag, "file": fn,
+            "sha256": hashlib.sha256(open(os.path.join(task_dir, fn), "rb").read()).hexdigest(),
+            "inputs": [t["shape"] for t in hargs],
+            "captured_from": {"step": hrec.get("step"), "rank": hrec.get("rank"),
+                              "call": hrec.get("call"), "module": hrec.get("module")},
+            "base_error": _base_error(hrec, hgold, hlabels, reference, layout)})
 
     meta = {
         "name": name or (rec["target"].split(":")[-1] + "_fwd_bwd"),
@@ -233,6 +268,14 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
             "sign_tol": 0.15,
             "scale_bias_tol": 0.002,
             "offset_bias_tol": 0.01,
+            # The sign test only votes when the one-sidedness is STATISTICALLY SIGNIFICANT: |#pos -
+            # nz/2| > sign_min_z * sqrt(nz)/2 (binomial, z sigma). Without it a near-EXACT candidate
+            # fails: on the hf_rmsnorm_fused_fwdbwd oracle (2026-10-17) fp64-accumulated dgamma differed
+            # from round_bf16(fp32 ref) on a handful of the 3584 elements, all one way -> sign 0.000
+            # at max_abs 3.7e-9 (the original's is 1.9e-6), and aiter's triton rms_norm scored sign
+            # 1.000 at max_abs 2.9e-11 -- both FAILED. An additive bias that matters moves thousands
+            # of elements and stays far above this bar (the x+0.01*mean|dx| negative still fails).
+            "sign_min_z": 4.0,
             # Outputs whose MAGNITUDE check is measured in bf16 ulps of the reference (limit = the
             # original's max_ulp_bf16 x margin) instead of in absolute units. Only for outputs whose
             # reference is itself bf16-rounded and whose original rounds once -- there the absolute
@@ -259,6 +302,8 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
         # does NOT cover, and what the integration therefore still has to prove. A caveat that lives
         # only in a chat message is a caveat that will be discovered by a failed gate.
         "task_notes": notes or {},
+        # Gated cases beyond reference_io.pt (see build(holdouts=...)). Each carries its own limits.
+        "holdouts": holdout_meta,
     }
     json.dump(meta, open(os.path.join(task_dir, "meta.json"), "w"), indent=2)
 
@@ -270,6 +315,7 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
     # influence, so the oracle is made read-only here rather than by convention.
     os.chmod(ref_path, 0o444)
     return {"task_dir": task_dir, "outputs": labels, "sha256": sha,
+            "holdouts": [{k: h[k] for k in ("tag", "file", "sha256", "inputs")} for h in holdout_meta],
             "inputs": [t["shape"] for t in args_t]}
 
 
@@ -371,67 +417,85 @@ def main():
     for c in per_case:
         print(f"  [structural] {c.get('case','')}: max_rel_err={c.get('max_rel_err')}")
 
-    got = call(cases[0]["args"])
-    ref_call = make_call(_reference)
-    ref_outs = ref_call(cases[0]["args"])
-    _ol = LAYOUT.get("out_labels", ["out"])
-    ref_by_label = dict(zip(_ol, ref_outs[:len(_ol)]))
-    ref_by_label.update(dict(zip(LAYOUT["grad_labels"], ref_outs[len(_ol):])))
+    def _l0(case_args, base, tag=""):
+        """L0 on one frozen case against THAT case's original error (its own limits)."""
+        got = call(case_args)
+        ref_call = make_call(_reference)
+        ref_outs = ref_call(case_args)
+        _ol = LAYOUT.get("out_labels", ["out"])
+        ref_by_label = dict(zip(_ol, ref_outs[:len(_ol)]))
+        ref_by_label.update(dict(zip(LAYOUT["grad_labels"], ref_outs[len(_ol):])))
 
-    base, acc = META.get("base_error", {}), META.get("acceptance", {})
-    margin, sign_tol = acc.get("margin", 1.25), acc.get("sign_tol", 0.15)
-    scale_tol = acc.get("scale_bias_tol", 0.002)
-    offset_tol = acc.get("offset_bias_tol", 0.01)
-    ok, report = True, {}
-    for label, actual in zip(META["signature"]["outputs"], got):
-        r = ref_by_label.get(label)
-        if r is None or label not in base:
-            continue
-        a = actual.detach().float().flatten()
-        rr = r.detach().float().flatten()
-        d = a - rr
-        nz = int((d != 0).sum())
-        denom = rr.abs().mean().clamp_min(1e-12)
-        rr2 = float((rr * rr).sum())
-        st = {"max_abs": float(d.abs().max()),
-              "rel_mean_abs": float(d.abs().mean() / denom),
-              "sign_balance": (float((d > 0).sum()) / nz) if nz else 0.5,
-              "scale_bias": float((d * rr).sum() / rr2) if rr2 > 0 else 0.0,
-              "offset_bias": float(d.mean() / denom)}
-        lim = base[label]["max_abs"] * margin
-        mag_ok = st["max_abs"] <= lim
-        if label in acc.get("ulp_labels", []):
-            # Magnitude in bf16 ulps of the (bf16-rounded) reference; see acceptance.ulp_labels.
-            ulp = torch.where(rr != 0,
-                              torch.exp2(torch.floor(torch.log2(rr.abs().clamp_min(2.0 ** -126))) - 7),
-                              torch.full_like(rr, 2.0 ** -133))
-            st["max_ulp_bf16"] = float((d.abs() / ulp).max())
-            lim_ulp = base[label]["max_ulp_bf16"] * margin
-            st["limit_ulp"] = lim_ulp
-            mag_ok = st["max_ulp_bf16"] <= lim_ulp
-        sign_ok = abs(st["sign_balance"] - 0.5) <= sign_tol or \
-            abs(base[label]["sign_balance"] - 0.5) > sign_tol
-        # A MULTIPLICATIVE bias survives both checks above -- proven by a negative test -- so the
-        # error-vs-value correlation is checked against the original's own.
-        scale_ok = abs(st["scale_bias"]) <= max(scale_tol,
-                                                abs(base[label].get("scale_bias", 0.0)) * margin)
-        offset_ok = abs(st["offset_bias"]) <= max(offset_tol,
-                                                  abs(base[label].get("offset_bias", 0.0)) * margin)
-        good = mag_ok and sign_ok and scale_ok and offset_ok
-        ok = ok and good
-        report[label] = {**st, "limit": lim, "magnitude_ok": mag_ok, "sign_ok": sign_ok,
-                         "scale_ok": scale_ok, "offset_ok": offset_ok,
-                         "base_max_abs": base[label]["max_abs"]}
-        flags = ''.join(x for x, bad in ((' magnitude', not mag_ok), (' sign', not sign_ok),
-                                         (' SCALE-BIAS', not scale_ok),
-                                         (' offset-bias', not offset_ok)) if bad)
-        mag_txt = (f"max_ulp={st['max_ulp_bf16']:.3g} (limit {st['limit_ulp']:.3g} ulp, original "
-                   f"{base[label]['max_ulp_bf16']:.3g}) max_abs={st['max_abs']:.4g}"
-                   if "limit_ulp" in st else
-                   f"max_abs={st['max_abs']:.4g} (limit {lim:.4g}, original "
-                   f"{base[label]['max_abs']:.4g})")
-        print(f"  [L0] {label}: {mag_txt} sign={st['sign_balance']:.3f} "
-              f"scale_bias={st['scale_bias']:+.2e} -> {'PASS' if good else 'FAIL' + flags}")
+        acc = META.get("acceptance", {})
+        margin, sign_tol = acc.get("margin", 1.25), acc.get("sign_tol", 0.15)
+        scale_tol = acc.get("scale_bias_tol", 0.002)
+        offset_tol = acc.get("offset_bias_tol", 0.01)
+        ok, report = True, {}
+        for label, actual in zip(META["signature"]["outputs"], got):
+            r = ref_by_label.get(label)
+            if r is None or label not in base:
+                continue
+            a = actual.detach().float().flatten()
+            rr = r.detach().float().flatten()
+            d = a - rr
+            nz = int((d != 0).sum())
+            npos = int((d > 0).sum())
+            denom = rr.abs().mean().clamp_min(1e-12)
+            rr2 = float((rr * rr).sum())
+            st = {"max_abs": float(d.abs().max()),
+                  "rel_mean_abs": float(d.abs().mean() / denom),
+                  "sign_balance": (float((d > 0).sum()) / nz) if nz else 0.5,
+                  "scale_bias": float((d * rr).sum() / rr2) if rr2 > 0 else 0.0,
+                  "offset_bias": float(d.mean() / denom)}
+            lim = base[label]["max_abs"] * margin
+            mag_ok = st["max_abs"] <= lim
+            if label in acc.get("ulp_labels", []):
+                # Magnitude in bf16 ulps of the (bf16-rounded) reference; see acceptance.ulp_labels.
+                ulp = torch.where(rr != 0,
+                                  torch.exp2(torch.floor(torch.log2(rr.abs().clamp_min(2.0 ** -126))) - 7),
+                                  torch.full_like(rr, 2.0 ** -133))
+                st["max_ulp_bf16"] = float((d.abs() / ulp).max())
+                lim_ulp = base[label]["max_ulp_bf16"] * margin
+                st["limit_ulp"] = lim_ulp
+                mag_ok = st["max_ulp_bf16"] <= lim_ulp
+            # Significance guard (acceptance.sign_min_z): a few one-sided disagreements on a near-exact
+            # output are not a bias. Absent from older metas -> 0.0, i.e. the old behaviour.
+            sign_sig = abs(npos - nz / 2.0) > acc.get("sign_min_z", 0.0) * (nz ** 0.5) / 2.0
+            st["sign_nonzero"] = nz
+            sign_ok = abs(st["sign_balance"] - 0.5) <= sign_tol or not sign_sig or \
+                abs(base[label]["sign_balance"] - 0.5) > sign_tol
+            # A MULTIPLICATIVE bias survives both checks above -- proven by a negative test -- so the
+            # error-vs-value correlation is checked against the original's own.
+            scale_ok = abs(st["scale_bias"]) <= max(scale_tol,
+                                                    abs(base[label].get("scale_bias", 0.0)) * margin)
+            offset_ok = abs(st["offset_bias"]) <= max(offset_tol,
+                                                      abs(base[label].get("offset_bias", 0.0)) * margin)
+            good = mag_ok and sign_ok and scale_ok and offset_ok
+            ok = ok and good
+            report[label] = {**st, "limit": lim, "magnitude_ok": mag_ok, "sign_ok": sign_ok,
+                             "scale_ok": scale_ok, "offset_ok": offset_ok,
+                             "base_max_abs": base[label]["max_abs"]}
+            flags = ''.join(x for x, bad in ((' magnitude', not mag_ok), (' sign', not sign_ok),
+                                             (' SCALE-BIAS', not scale_ok),
+                                             (' offset-bias', not offset_ok)) if bad)
+            mag_txt = (f"max_ulp={st['max_ulp_bf16']:.3g} (limit {st['limit_ulp']:.3g} ulp, original "
+                       f"{base[label]['max_ulp_bf16']:.3g}) max_abs={st['max_abs']:.4g}"
+                       if "limit_ulp" in st else
+                       f"max_abs={st['max_abs']:.4g} (limit {lim:.4g}, original "
+                       f"{base[label]['max_abs']:.4g})")
+            print(f"  [L0]{tag} {label}: {mag_txt} sign={st['sign_balance']:.3f} "
+                  f"scale_bias={st['scale_bias']:+.2e} -> {'PASS' if good else 'FAIL' + flags}")
+
+        return ok, report
+
+    ok, report = _l0(cases[0]["args"], META.get("base_error", {}))
+    # Holdouts GATE (meta.holdouts): the same op at other call sites / ranks / shapes, each against its
+    # own original error. One call site cannot see every defect (see build_task_dir.build).
+    for hd in META.get("holdouts", []):
+        hcases = list(h.iter_eager_cases_from_oracle(os.path.join(HERE, hd["file"]), device="cuda"))
+        hok, hrep = _l0(hcases[0]["args"], hd["base_error"], tag=f"[holdout {hd['tag']}]")
+        ok = ok and hok
+        report[f"holdout:{hd['tag']}"] = hrep
 
     t = h.time_op(lambda: call(cases[0]["args"]))
     ms = t["ms"] if isinstance(t, dict) else t
@@ -463,6 +527,8 @@ if __name__ == "__main__":
     ap.add_argument("--ulp-labels", default="",
                     help="comma list of outputs whose magnitude check is in bf16 ulps "
                          "(see acceptance.ulp_labels)")
+    ap.add_argument("--holdout", action="append", default=[],
+                    help="TAG=capture.pt; repeatable. Gated holdout cases (see build(holdouts=...))")
     a = ap.parse_args()
     print(json.dumps(build(a.capture, a.task_dir, a.reference, a.name,
                        json.loads(a.const) if a.const else None,
@@ -470,4 +536,5 @@ if __name__ == "__main__":
                        if a.notes else None,
                        json.loads(open(a.engagement[1:]).read() if a.engagement.startswith("@")
                                   else a.engagement) if a.engagement else None,
-                       [s for s in a.ulp_labels.split(",") if s.strip()]), indent=2))
+                       [s for s in a.ulp_labels.split(",") if s.strip()],
+                       [tuple(x.split("=", 1)) for x in a.holdout]), indent=2))
