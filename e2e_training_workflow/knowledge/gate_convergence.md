@@ -1973,3 +1973,12 @@ steps, and the flat-grad overlay touches the gradient path of every parameter.
   PASS-stability.
 * If NOT CLEARED: bisect with cand = hf7.
 * Run before it: interleaved throughput confirmation hf6 vs hf8, 2 reps on `_nm`.
+
+### P0-4k RESULT (2026-10-20): **CLEARED** — hf8 (hf6 + flat-grad accumulation + bf16-exact RoPE) is safe to train with
+
+* Throughput (`runs/hf68_1020_020814_*`): hf6 2,399 / 2,404; hf8 2,621 / 2,616. Paired **+9.02 / +8.89%**.
+* Outcome (`runs/qabhf8_1020_022718_*`): held-out d −0.00004 / +0.00003 / +0.00005 / +0.00008 / −0.00022,
+  mean **−0.00002** (t −0.38). Control +0.00646 (t 138). Stability max10 0. **CLEARED.**
+* Engagement in training: 8/8 ranks, fallback 0 for all 8 overlays.
+  * rope: candidate fwd = bwd = 66,304 per rank (296 × 8 × 28).
+  * Eval-only fallbacks: lmce 125 and rope 3,500 per rank, all no_grad, running the original path.
