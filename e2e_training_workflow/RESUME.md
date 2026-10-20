@@ -170,6 +170,16 @@ allowed), kept fixed during optimisation, not constant LR.
 
 **Done 2026-10-20: P0-4k CLEARED.** hf8 is the recommended HF stack: **2,618, 2.42x** (4.40).
 
+**Pre-manual-test fixes DONE 2026-10-20** (commits cd75d661, e5468c9f), user-approved list:
+* Disk: deleted 9 finished HF `exp/team_*` rounds plus `tasks_scratch`; free 29G to 171G.
+* Overlay install failure: the leg is now unusable (rocm_compat exits, bench_train scans train.log).
+* `--stack` guard on stack conditions.
+* Capture detection by pattern.
+* quality_ab_final: t from n, >= 3 seeds.
+* integration-test threshold.
+* RUN.md manual-test section; QualityGate default `_cosine_avg`.
+Still open below: P1-A (bundle on `_cosine_avg`), lr-decay-iters identity, Megatron `sources`, ConfigSweep merge, docs, P2.
+
 **MEGATRON REVIEW 2026-10-20** (two read-only audits plus spot checks). None of the HF-era fixes (4.33
 warmup, 410207cb signature, 4.37, 4.39) changes a Megatron number. The fixed-shape detector path was
 re-verified on the headline legs, and 3,504 / 4.18x stands. Open TODO, in priority order:
