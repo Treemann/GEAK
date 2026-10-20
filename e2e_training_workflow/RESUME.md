@@ -170,11 +170,10 @@ allowed), kept fixed during optimisation, not constant LR.
 
 **Done 2026-10-20: P0-4k CLEARED.** hf8 is the recommended HF stack: **2,618, 2.42x** (4.40).
 
-**Next (autonomous):** the remaining HF time is config, not kernels:
-* ZeRO-2 reduce overlap: exposed comm 9.4% on rank 0, reduce only 53% overlapped.
-* The no_sync flat-grad cat: ~7.6% of span.
-* DP token imbalance: ~18% rank wait. It changes data order, so it is a workload decision, not a lever.
-* Kernel follow-up: a bf16-rounding-exact rope variant (+2.9% if its step-1 delta is exactly 0).
+**Next (autonomous), after hf8 (re-profile of wf_02793feb-78a):** accepted overlays cover 74% of the span.
+* Kernel: `hf_gateup_bwd_gemm`, re-tuning inside the accepted gate/up overlay. Its bwd is 26.8% of the span, exp. +2.3%. Minor: `hf_flatgrad_side_tail` 0.6%, `hf_attn_gqa_kv_nocopy` 0.6%.
+* Config: exposed FSDP comm 8.9% on rank 0, 56% overlapped. That needs adapter support for fsdp_config knobs (backward_prefetch, forward_prefetch, limit_all_gathers).
+* DP token imbalance: a workload decision, not a lever.
 
 **Older next-list (kept for history):** the remaining HF heads on top of hf4 with `_nm`: lm_head ~7.9%, q/o_proj ~7.2%,
 k/v_proj ~2%. Also the engine-side ZeRO flat-grad `cat` on side streams (~4.8% of the span).
