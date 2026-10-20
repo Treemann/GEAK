@@ -166,7 +166,9 @@ allowed), kept fixed during optimisation, not constant LR.
 * hf6 vs hf4: +5.23% paired.
 * The first outcome attempt lost eval_loss to the overlay signature bug (fixed 410207cb, re-run `qabhf6b`).
 
-**In flight 2026-10-19 20:12:** `wf_02793feb-78a`. Fast mode, `--cond hf6`, skipping the six accepted heads, budget 2 / 8 h. Candidates: the rope bf16-exact remedy, hf_fsdp_flatgrad_accum, hf_gateup_wgrad_reselect. Any acceptance needs an outcome test (cand = hf7).
+**Done 2026-10-20:** `wf_02793feb-78a` accepted `hf_fsdp_flatgrad_accum` (+5.81%) and `hf_rope_bf16_exact` (+2.94%), both bitwise to the original. Validated +8.99%, 2,400 to 2,618 = **hf8** (4.39).
+
+**In flight 2026-10-20:** `scratch/p04k_driver.sh` (log `runs/p04k_driver.log`): hf6 vs hf8 x2 (`runs/hf68_*`), then P0-4k, cand = hf8 (`runs/qabhf8_*`). After it: symlink ref/ctrl70 from `qabhf_1017_051602_*`, then `quality_ab_final.py`. CLEARED: hf8 is recommended (2,618 / 1,083 = 2.42x). Otherwise bisect with hf7.
 
 **Next (autonomous):** the remaining HF time is config, not kernels:
 * ZeRO-2 reduce overlap: exposed comm 9.4% on rank 0, reduce only 53% overlapped.
