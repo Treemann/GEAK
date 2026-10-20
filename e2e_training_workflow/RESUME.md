@@ -170,6 +170,8 @@ allowed), kept fixed during optimisation, not constant LR.
 
 **Done 2026-10-20: P0-4k CLEARED.** hf8 is the recommended HF stack: **2,618, 2.42x** (4.40).
 
+**In flight 2026-10-20 04:36:** `wf_7c87df08-799`. Fast mode on `--cond hf8`, skipping the 8 accepted heads, 8 h. Any acceptance needs an outcome test.
+
 **Next (autonomous), after hf8 (re-profile of wf_02793feb-78a):** accepted overlays cover 74% of the span.
 * Kernel: `hf_gateup_bwd_gemm`, re-tuning inside the accepted gate/up overlay. Its bwd is 26.8% of the span, exp. +2.3%. Minor: `hf_flatgrad_side_tail` 0.6%, `hf_attn_gqa_kv_nocopy` 0.6%.
 * Config: exposed FSDP comm 8.9% on rank 0, 56% overlapped. That needs adapter support for fsdp_config knobs (backward_prefetch, forward_prefetch, limit_all_gathers).
