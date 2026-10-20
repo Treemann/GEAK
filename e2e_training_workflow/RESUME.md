@@ -206,7 +206,11 @@ re-verified on the headline legs, and 3,504 / 4.18x stands. Open TODO, in priori
   * New task dirs get sign_min_z 4.0, validated on HF only; run one Megatron negative control.
   * measure_stack3.sh duplicates the stack definition. calibrate_band.py hardcodes the work dir.
   * Tests don't cover stack_overlay_env mapping, overlay_train install/failure, or quality_ab verdicts.
-  * node is absent, so the JS suites cannot run on this box.
+  * JS suites: there is no system node, but `~/.cursor-server/bin/linux-x64/*/node` works (RUNBOOK:148).
+    2026-10-20: test_training_gate and test_workflow_dryrun pass. test_pipeline_integration on a same-config
+    Megatron pair (hl_1016_205202_ref1 vs ref2) fails one check: `window_artifact_pct > 0.05` when warmups
+    differ. That threshold was calibrated on unpacked legs; packed fixed-shape legs give 0.014%. Recalibrate
+    it as a test fix, not a code fix.
   * The flash backend's 2.7x grad gap is unexplained (quarantined).
 
 **PAUSED 2026-10-20 (user request):** `wf_7c87df08-799` (hf8, gate/up bwd GEMM lane) was stopped mid-run; its leftover container was stopped by ID. HF/TRL optimization is paused while the Megatron flow is reviewed.
