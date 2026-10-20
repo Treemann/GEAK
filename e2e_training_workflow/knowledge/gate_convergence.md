@@ -1961,3 +1961,15 @@ On this stack the grad_norm envelope does not discriminate: the hf4-vs-hf4 null 
   lmce: 2,368 candidate fwd = bwd per rank. Its 125 `grad_disabled` fallbacks per rank are the eval
   pass, which runs HF's own lm_head + loss.
 * **CLEARED.** hf6 replaces hf4 as the recommended HF stack (DECISIONS 4.38).
+
+## P0-4k PRE-REGISTRATION (2026-10-20, before any P0-4k leg): the outcome test of hf8
+
+hf8 = hf6 + flat-grad accumulation + bf16-exact RoPE (4.39). Both are bitwise to the original by
+oracle, so the expected outcome is "indistinguishable". The test still runs (4.23): the gates saw 30
+steps, and the flat-grad overlay touches the gradient path of every parameter.
+* P0-4j's protocol with cand = `stack_overlay_env.sh --cond hf8`: `_nm_q`, 296 iterations, seeds 1111..5555.
+* REF and ctrl70 reused from P0-4g.
+* `quality_ab_final.py <prefix> --base ref --cand cand --ctrl ctrl70`. CLEARED iff PASS-quality and
+  PASS-stability.
+* If NOT CLEARED: bisect with cand = hf7.
+* Run before it: interleaved throughput confirmation hf6 vs hf8, 2 reps on `_nm`.

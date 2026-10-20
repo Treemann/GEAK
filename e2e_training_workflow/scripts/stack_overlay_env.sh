@@ -63,11 +63,11 @@ case "$COND" in
   ref) echo ""; exit 0;;
   s2) N=2;; s3) N=3;; s4) N=4;; s5) N=5;; s6) N=6;; s7) N=7;; s8) N=8;;
   # The SECOND STACK (HF TRL, 7B): its own accepted overlays (wf_4385c413-a19, DECISIONS 4.27).
-  hf1) N=1; HFSTACK=1;; hf2) N=2; HFSTACK=1;; hf3) N=3; HFSTACK=1;; hf4) N=4; HFSTACK=1;; hf5) N=5; HFSTACK=1;; hf6) N=6; HFSTACK=1;;
+  hf1) N=1; HFSTACK=1;; hf2) N=2; HFSTACK=1;; hf3) N=3; HFSTACK=1;; hf4) N=4; HFSTACK=1;; hf5) N=5; HFSTACK=1;; hf6) N=6; HFSTACK=1;; hf7) N=7; HFSTACK=1;; hf8) N=8; HFSTACK=1;;
   # ONE overlay on the bare workload, for isolating a defect (2026-10-16 instability bisection).
   # Not a shippable condition: qkv alone is invalid (it chains after fc1) and is refused below.
   only:*) N=1; ONLY="${COND#only:}";;
-  *) echo "--cond must be one of ref,s2..s8,hf1..hf6,only:<overlay> (got '$COND')" >&2; exit 2;;
+  *) echo "--cond must be one of ref,s2..s8,hf1..hf8,only:<overlay> (got '$COND')" >&2; exit 2;;
 esac
 [ -n "$OUT_HOST" ] || { echo "--out <leg dir on the host> is required" >&2; exit 2; }
 case "$OUT_HOST" in "$WORK_HOST"/*) ;; *) echo "--out must live under $WORK_HOST (mounted at /work)" >&2; exit 2;; esac
@@ -109,6 +109,11 @@ HF_QKVO_BUNDLE="$WORK_HOST/runs/finalize_bundle_1019_hf5_qkvo"
 # Its manifest carries a `sources` list (relative to the overlay dir, gated order): GEAK_OVERLAY_SHA, and
 # so impl_digest, hashes those bytes.
 HF_LMCE_BUNDLE="$WORK_HOST/runs/finalize_bundle_1019_hf6_lmce"
+# hf7: + FSDP flat-grad accumulation (FlatParamHandle._get_unflat_views_aligned); hf8: + bf16-exact RoPE.
+# Both gated ON hf6 in wf_02793feb-78a (DECISIONS 4.39), both bitwise to the original.
+HF_FLATROPE_BUNDLE="$WORK_HOST/runs/finalize_bundle_1020_hf6_flat_rope"
+FLAT_SOURCES="kernel_src/kernel.py,kernel_src/flatgrad_hip.py,kernel_src/flatgrad_hip.hip,kernel_src/triton_steal.py,kernel_src/__init__.py"
+ROPE_SOURCES="impl.py,kernel_src/kernel_ext.py,kernel_src/rope_ext.cpp,kernel_src/rope_ext.h,kernel_src/rope_ext.hip,kernel_src/kernel.py,kernel_src/__init__.py"
 LMCE_SOURCES="kernel_src/kernel.py,kernel_src/gemm_select.py,kernel_src/gemm_table_data.py,kernel_src/lmhead_ce_triton.py,kernel_src/transpose_cast.py,kernel_src/tunable_gemm.csv,kernel_src/__init__.py"
 if [ -n "${HFSTACK:-}" ]; then
   OVERLAYS=(
@@ -118,6 +123,8 @@ if [ -n "${HFSTACK:-}" ]; then
     "hf_mlp_down_proj|gate|$HF_DOWN_SRC|transformers.models.qwen2.modeling_qwen2:Qwen2MLP.forward|entry|down|m_down_cand.json"
     "hf_attn_qkvo_proj|bundle|$HF_QKVO_BUNDLE|transformers.models.qwen2.modeling_qwen2:Qwen2Attention.forward|entry|qkvo|m_qkvo_cand.json"
     "hf_lmhead_fused_ce|bundle|$HF_LMCE_BUNDLE|transformers.models.qwen2.modeling_qwen2:Qwen2ForCausalLM.forward|entry|lmce|m_lmce_cand.json|$LMCE_SOURCES"
+    "hf_fsdp_flatgrad_accum|bundle|$HF_FLATROPE_BUNDLE|torch.distributed.fsdp._flat_param:FlatParamHandle._get_unflat_views_aligned|entry|hfflat|m_hfflat_cand.json|$FLAT_SOURCES"
+    "hf_rope_bf16_exact|bundle|$HF_FLATROPE_BUNDLE|transformers.models.qwen2.modeling_qwen2:apply_rotary_pos_emb|entry|rope|m_rope_cand.json|$ROPE_SOURCES"
   )
 fi
 if [ -n "${ONLY:-}" ]; then

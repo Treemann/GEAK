@@ -37,7 +37,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 for c in ${CONDS//,/ }; do
-  case "$c" in ref|s2|s3|s4|s5|s6|s7|s8|hf1|hf2|hf3|hf4|hf5|hf6) ;; *) echo "unknown condition: $c" >&2; exit 2;; esac
+  case "$c" in ref|s2|s3|s4|s5|s6|s7|s8|hf1|hf2|hf3|hf4|hf5|hf6|hf7|hf8) ;; *) echo "unknown condition: $c" >&2; exit 2;; esac
 done
 STAMP="$(date +%m%d_%H%M%S)"
 OVL_HOST="$WORK_HOST/overlays/${NAME}_$STAMP"     # fresh per measurement run, never rm -rf'd
