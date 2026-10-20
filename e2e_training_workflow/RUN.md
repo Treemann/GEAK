@@ -25,10 +25,90 @@ re-measurement contradicts; quote `validated_delta_pct` when it is true. The ban
 or was demoted to advisory. `unexplored_heads` and `stop_reason` say what the run never got to —
 Stage 2 stopped on the wall clock with 3 of 4 heads untried, and nothing used to record that.
 
-## The current reference and queue (2026-10-14): packed 7B, Megatron
+## Manual test of the Megatron workflow (fast mode, no ConfigSweep) — 2026-10-20
 
-Run against `workloads/qwen2_5_math_7b_packed.env`. GBS 16 packs and the default dropout 0.1 are
-CONFIRMED (DECISIONS 4.21). The descriptor still says PENDING because six bundles pin its sha256.
+**Recipe:** `workloads/qwen2_5_math_7b_packed_cosine_avg.env`. That is GBS 16 packs, dropout 0.1, warmup
+11 + cosine to 10%, and `--ddp-average-in-collective`. It is the recipe the s8 stack is CLEARED on
+(DECISIONS 4.24/4.25). Do not use `packed.env`: it is constant LR, no warmup, and NOT cleared (4.22).
+
+**0. Before you start**
+* The 8 GPUs are free: `rocm-smi --showpids` shows no KFD process, and `docker ps` shows no leftover
+  `rocm/primus` container of yours.
+* At least 80 GB free under `/home/treemann/geak_train`: `df -h /home/treemann/geak_train`.
+* `bash scripts/preflight.sh`. This is the full check, including one ~10 min measurement leg; it must
+  say GO.
+
+**1. A session that has the Workflow tool** (see "Getting a session that HAS the Workflow tool" below)
+```bash
+cd <REPO>/e2e_training_workflow && bash scripts/launch_workflow_session.sh
+# in that session ask: "do you have a Workflow tool?"  -- if no, stop here
+date +%s%3N        # paste as t0_epoch_ms
+```
+
+**2a. Test M1: the whole pipeline on the BARE reference.** About 4-6 h. This is the main test.
+It has a known ground truth: on the bare packed reference these heads were accepted before, gated
+alone — `attn_fmha_ck_varlen` +4.27%, `rope_fused_qk` +3.89%, `swiglu_bwd_fwd_bw` +3.15%,
+`lmhead_ce_dense_gemm` +2.27%, `mlp_fc1_gemm` +1.60%.
+```
+Workflow({ scriptPath: "<REPO>/e2e_training_workflow/training_workflow.js", args: {
+  workflow_dir: "<REPO>/e2e_training_workflow",
+  workload: "<REPO>/e2e_training_workflow/workloads/qwen2_5_math_7b_packed_cosine_avg.env",
+  stack: "megatron", nproc: 8, gpu_ids: "0,1,2,3,4,5,6,7", iters: 30,
+  budget: 1, max_gates: 2, kernel_budget: 2, across_job_floor_pct: 0.25,
+  time_budget_ms: 21600000, t0_epoch_ms: "<date +%s%3N>" }})
+```
+**2b. Test M2: gating ON the accepted stack (s8), stop rule included.** About 1.5-3 h.
+The queue on s8 was exhausted on 2026-10-15. The expected outcome is "no head pays", or one small
+head; both are valid results.
+```
+  ... same args, plus
+  baseline_overlay: "<REPO>/e2e_training_workflow/scripts/stack_overlay_env.sh --cond s8",
+  skip_heads: "mlp_fc1_gemm,rope_fused_qk,swiglu_bwd_fwd_bw,lmhead_ce_dense_gemm,mlp_fc2_oproj_gemm,attn_fmha_ck_varlen,qkv_lnlinear_gemm,lmhead_wgrad_reselect,rmsnorm_bwd_fc1_fused,grad_tail_fused_scale_check"
+```
+* Optional on either test: `quality_gate: "true"`. It adds about 3.3 h: REF and the final stack, 5 seeds,
+  one epoch each. The default `quality_workload` is `_cosine_avg` as of 2026-10-20.
+* It runs only if something was accepted.
+
+**3. While it runs**
+* Watch `/workflows` in the session.
+* Legs appear under `/home/treemann/geak_train/runs/` (`baseline_td*`, `gate_*`, `validate_*`).
+* Kernel lanes appear under `<REPO>/exp/team_*`.
+* To stop: use TaskStop in the session. Then check `docker ps` and stop your leftover
+  `rocm/primus` container by ID, after `docker inspect`. TaskStop does not kill it.
+
+**4. What to check in the result**
+
+| field | expected |
+|---|---|
+| `status` | `ok` |
+| `baseline.useful_tok_s_per_gpu` | M1 about 2,870–2,900; M2 about 3,500 |
+| `baseline.occupancy_verdict` | `clean` |
+| `bands.floor_pct` | 0.25 |
+| `config_diagnosis.verdict` | `kernel_work_can_pay` |
+| `accepted[].verdict.delta_source` | `window-aligned` |
+| `accepted[].verdict.estimator` | paired |
+| `audit.l0.pass` / `audit.l1.pass` | `true`, with the evidence paths in the text |
+| engagement | 8/8 ranks, fallback 0 |
+| `validation` | the official number; quote `validated_delta_pct` |
+| `stop_reason`, `unexplored_heads` | what was not tried |
+| M1 deltas | the accepted head's delta is near the ground truth above |
+
+**5. Re-measure by hand, outside the workflow:**
+`scripts/measure_packed_stack.sh --workload workloads/qwen2_5_math_7b_packed_cosine_avg.env --conds ref,s8 --reps 2`.
+Then run `compare_legs.py <ref>/probe <s8>/probe` per pair. Expected s8 vs ref: about +21%.
+
+**Known, not blocking (RESUME "MEGATRON REVIEW 2026-10-20"):**
+* If an overlay fails to install, the leg is not marked unusable. The engagement checks (8/8 ranks)
+  still catch it.
+* `finalize_bundle_1015_s8/launch.sh` runs `packed.env`, so do not use it as the recipe.
+* ConfigSweep merges levers wrongly. It is not exercised here.
+
+## The accepted Megatron stack (s8)
+
+The recipe is `qwen2_5_math_7b_packed_cosine_avg.env` (above).
+* GBS 16 packs and dropout 0.1 are CONFIRMED (DECISIONS 4.21).
+* `packed.env` keeps its "PENDING" note because six bundles pin its sha256. A mismatch only makes
+  `launch.sh` print a WARNING; it does not refuse.
 
 **Accepted** (each gated against the BARE packed reference; increments measured stacked, in order):
 
@@ -44,8 +124,7 @@ CONFIRMED (DECISIONS 4.21). The descriptor still says PENDING because six bundle
 All seven stacked: **+20.7%** (2,866 -> 3,460 useful tok/s/GPU).
 
 **Queue: exhausted.** The re-profile on the stack shows main-stream GEMMs at ~75%, exposed
-all-reduce at 7.4%, and nothing else above 5.3%. A follow-up `fast` run would need
-`skip_heads: mlp_fc1_gemm,rope_fused_qk,swiglu_bwd_fwd_bw,lmhead_ce_dense_gemm,mlp_fc2_oproj_gemm,attn_fmha_ck_varlen,qkv_lnlinear_gemm,lmhead_wgrad_reselect`.
+all-reduce at 7.4%, and nothing else above 5.3%. A follow-up `fast` run on s8 needs the `skip_heads` of Test M2 above.
 `lmhead_wgrad_reselect` is subsumed by the accepted lm-head overlay, which binds the same site.
 
 **Gate the next head ON the stack (2026-10-14).** Pass
@@ -61,8 +140,8 @@ seven + `rmsnorm_bwd_fc1_fused`, accepted ON s7 on 2026-10-15; use the latest co
 re-verifies it on every call, so the CK attention build is paid once.
 
 **Before calling a stack safe to train with, run the outcome gate** (DECISIONS 4.22/4.23).
-* Pass `quality_gate: "true"`. Optional: `quality_seeds`, and `quality_workload` (default the
-  scheduled recipe `qwen2_5_math_7b_packed_cosine.env`).
+* Pass `quality_gate: "true"`. Optional: `quality_seeds`, and `quality_workload` (default
+  `qwen2_5_math_7b_packed_cosine_avg.env` since 2026-10-20).
 * It adds about 3.3 h: REF and the final stack, 5 seeds × one epoch.
 * Outside the workflow: `scripts/quality_ab.sh --workload ... --arms ref,cand --cand-cmd "<cmd>"`,
   then `scripts/quality_ab_final.py <prefix> --cand cand`.

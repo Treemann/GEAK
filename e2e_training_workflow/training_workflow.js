@@ -35,8 +35,11 @@ const BASE_OVERLAY_CMD = String(A.baseline_overlay || '').trim() || null;
 // something (otherwise the stack is unchanged and was judged before).
 const QUALITY_GATE = String(A.quality_gate || '').toLowerCase() === 'true' || A.quality_gate === true;
 const QUALITY_SEEDS = String(A.quality_seeds || '5567,6678,7789,8890,9901');
+// Default = the RECOMMENDED Megatron recipe (warmup + cosine + --ddp-average-in-collective, DECISIONS
+// 4.25), the one the s8 stack was cleared on. It was `_cosine.env` (no avg lever) until 2026-10-20, so
+// a quality gate cleared a recipe that is not the shipped one. HF runs must pass quality_workload.
 const QUALITY_WORKLOAD = String(A.quality_workload ||
-  `${String(A.workflow_dir || '').replace(/\/+$/, '')}/workloads/qwen2_5_math_7b_packed_cosine.env`);
+  `${String(A.workflow_dir || '').replace(/\/+$/, '')}/workloads/qwen2_5_math_7b_packed_cosine_avg.env`);
 
 // ===========================================================================
 // SKELETON STATUS — read this before trusting a result from this file.

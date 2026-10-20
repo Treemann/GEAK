@@ -299,7 +299,7 @@ async function dryRun(args) {
       'quality_gate=true runs the outcome test after Validate and records its verdict');
     const qp = c1.prompts.filter((p) => p.includes('PHASE=quality'));
     ok(qp.length === 1 && qp[0].includes('quality_ab.sh') && qp[0].includes('quality_ab_final.py')
-       && qp[0].includes('qwen2_5_math_7b_packed_cosine.env'),
+       && qp[0].includes('qwen2_5_math_7b_packed_cosine_avg.env'),
       'the quality phase gets the protocol script, the pre-registered verdict script and the scheduled recipe');
     STRAT_HEADS = [];
     const { result: r2, calls: c2 } = await dryRun({ ...base, quality_gate: 'true' });
