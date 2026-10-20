@@ -319,6 +319,21 @@ def main():
             train_probe._Probe.step_end = _step_end7
     except Exception as e:  # noqa: BLE001
         print(f"[geak-hfrope] not installed: {e!r}", flush=True)
+    # FSDP flat-grad accumulation capture (head hf_fsdp_flatgrad_accum): per handle and micro-batch,
+    # the grads reaching SplitWithSizesBackward0 and the prior flat_param.grad, with an in-situ bitwise
+    # check of the live AccumulateGrad result on every rank. Rebinds FlatParamHandle._use_unsharded_views
+    # BEFORE the Trainer wraps the model. No-op unless GEAK_HFFLAT_CAPTURE_DIR/STEP are set.
+    try:
+        import capture_hf_fsdp_flatgrad as _hfflat
+        if _hfflat.ENABLED and _hfflat.install(model):
+            _orig_step_end8 = train_probe._Probe.step_end
+
+            def _step_end8(self, *aa, **kw):
+                _hfflat.note_step(self.step + 1)   # = steps COMPLETED (step_end increments after)
+                return _orig_step_end8(self, *aa, **kw)
+            train_probe._Probe.step_end = _step_end8
+    except Exception as e:  # noqa: BLE001
+        print(f"[geak-hfflat] not installed: {e!r}", flush=True)
     trainer.train()
     if ev is not None:
         m = trainer.evaluate()

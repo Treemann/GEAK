@@ -180,8 +180,16 @@ def _record(rec, layout):
 
 def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=None,
           notes=None, engagement=None, ulp_labels=None, holdouts=None, ulp_floor=None,
-          abs_floor_max_ulp=None):
-    """`holdouts`: optional list of (tag, capture_path) for the SAME op at other call sites / ranks /
+          abs_floor_max_ulp=None, exact_labels=None):
+    """`exact_labels`: outputs that must be BIT-IDENTICAL (value-equal, NaN where NaN) to the frozen
+    golden, i.e. to the ORIGINAL's own output (the golden is the isolated re-run of the original), on
+    the primary case and on every holdout -- in ADDITION to the fp32-reference rule. For a remedy whose
+    whole point is reproducing the original's rounding (hf_rope_bf16_exact, 2026-10-19: a candidate
+    strictly CLOSER to fp32 was rejected by L1 for a deterministic +0.030% step-1 loss shift), "no
+    further from fp32 than the original" is the wrong contract: it admits exactly the variant that
+    failed.
+
+    `holdouts`: optional list of (tag, capture_path) for the SAME op at other call sites / ranks /
     shapes. Each is frozen as holdout_<tag>.pt with its OWN base error (the original's error differs
     per call: on hf_rmsnorm_fused_fwdbwd out max_abs is 0.029 at layer 0 and 1.12 at model.norm), and
     the generated unittest gates on ALL of them. Why gate rather than advise: on that oracle the
@@ -305,6 +313,10 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
             # a swapped role, x1.004) is far above it or is caught by the bias checks, which are
             # unchanged (negative controls in the task's extract_controls_summary.json).
             "abs_floor_max_ulp": dict(abs_floor_max_ulp or {}),
+            # Outputs that must equal the frozen golden (= the original's output) BITWISE; see
+            # build(exact_labels=...). Signed zeros compare equal (-0 == +0); NaN must sit where the
+            # golden has NaN. Absent -> [] (every older task unchanged).
+            "exact_labels": list(exact_labels or []),
             "why_bias_tests": ("sign_balance catches an ADDITIVE bias; a MULTIPLICATIVE one leaves it "
                                "at 0.5, because the error simply follows the value's sign. Proven by "
                                "a negative test: a x1.005 candidate passed BOTH the magnitude and the "
@@ -451,6 +463,13 @@ def make_call(entry):
 def main():
     cases = list(h.iter_eager_cases_from_oracle(os.path.join(HERE, "reference_io.pt"), device="cuda"))
     entry = _reference
+    if META.get("acceptance", {}).get("exact_labels"):
+        # A BITWISE task's baseline is the ORIGINAL (its golden), not the fp32 reference -- which by
+        # construction is not bit-identical to it and would fail every exact check. The fp32 reference
+        # stays the scorer of the fp32 rule below.
+        import importlib
+        _m, _s = META["baseline_callable"].split(":")
+        entry = getattr(importlib.import_module(_m), _s)
     kernel_src = os.path.join(HERE, "kernel_src")
     if os.path.isdir(kernel_src):                    # a candidate has been committed
         sys.path.insert(0, kernel_src)
@@ -466,7 +485,7 @@ def main():
     for c in per_case:
         print(f"  [structural] {c.get('case','')}: max_rel_err={c.get('max_rel_err')}")
 
-    def _l0(case_args, base, tag=""):
+    def _l0(case_args, base, tag="", golden=None):
         """L0 on one frozen case against THAT case's original error (its own limits)."""
         got = call(case_args)
         ref_call = make_call(_reference)
@@ -526,30 +545,55 @@ def main():
                                                     abs(base[label].get("scale_bias", 0.0)) * margin)
             offset_ok = abs(st["offset_bias"]) <= max(offset_tol,
                                                       abs(base[label].get("offset_bias", 0.0)) * margin)
-            good = mag_ok and sign_ok and scale_ok and offset_ok
+            # BITWISE vs the frozen golden (= the original's own output), acceptance.exact_labels.
+            exact_ok = True
+            if label in acc.get("exact_labels", []):
+                gi = META["signature"]["outputs"].index(label)
+                gt = golden[gi] if golden is not None and gi < len(golden) else None
+                if gt is None:
+                    exact_ok = False
+                    st["exact_mismatch"] = -1
+                else:
+                    av = actual.detach()
+                    gv = gt.to(av.device)
+                    if av.dtype != gv.dtype or tuple(av.shape) != tuple(gv.shape):
+                        exact_ok = False
+                        st["exact_mismatch"] = -2
+                        st["exact_note"] = f"dtype/shape {av.dtype}{tuple(av.shape)} vs golden {gv.dtype}{tuple(gv.shape)}"
+                    else:
+                        an, gn = torch.isnan(av), torch.isnan(gv)
+                        mism = ((av != gv) & ~(an & gn)) | (an ^ gn)
+                        st["exact_mismatch"] = int(mism.sum())
+                        st["exact_max_abs"] = float((av.float() - gv.float()).abs().nan_to_num(0).max())
+                        exact_ok = st["exact_mismatch"] == 0
+            good = mag_ok and sign_ok and scale_ok and offset_ok and exact_ok
             ok = ok and good
             report[label] = {**st, "limit": lim, "magnitude_ok": mag_ok, "sign_ok": sign_ok,
-                             "scale_ok": scale_ok, "offset_ok": offset_ok,
+                             "scale_ok": scale_ok, "offset_ok": offset_ok, "exact_ok": exact_ok,
                              "base_max_abs": base[label]["max_abs"]}
             flags = ''.join(x for x, bad in ((' magnitude', not mag_ok), (' sign', not sign_ok),
                                              (' SCALE-BIAS', not scale_ok),
-                                             (' offset-bias', not offset_ok)) if bad)
+                                             (' offset-bias', not offset_ok),
+                                             (f" NOT-BITWISE({st.get('exact_mismatch')} elems)",
+                                              not exact_ok)) if bad)
             mag_txt = (f"max_ulp={st['max_ulp_bf16']:.3g} (limit {st['limit_ulp']:.3g} ulp, original "
                        f"{base[label]['max_ulp_bf16']:.3g}) max_abs={st['max_abs']:.4g}"
                        if "limit_ulp" in st else
                        f"max_abs={st['max_abs']:.4g} (limit {lim:.4g}, original "
                        f"{base[label]['max_abs']:.4g})")
+            ex_txt = (f" bitwise_mismatch={st['exact_mismatch']}" if "exact_mismatch" in st else "")
             print(f"  [L0]{tag} {label}: {mag_txt} sign={st['sign_balance']:.3f} "
-                  f"scale_bias={st['scale_bias']:+.2e} -> {'PASS' if good else 'FAIL' + flags}")
+                  f"scale_bias={st['scale_bias']:+.2e}{ex_txt} -> {'PASS' if good else 'FAIL' + flags}")
 
         return ok, report
 
-    ok, report = _l0(cases[0]["args"], META.get("base_error", {}))
+    ok, report = _l0(cases[0]["args"], META.get("base_error", {}), golden=cases[0].get("ref"))
     # Holdouts GATE (meta.holdouts): the same op at other call sites / ranks / shapes, each against its
     # own original error. One call site cannot see every defect (see build_task_dir.build).
     for hd in META.get("holdouts", []):
         hcases = list(h.iter_eager_cases_from_oracle(os.path.join(HERE, hd["file"]), device="cuda"))
-        hok, hrep = _l0(hcases[0]["args"], hd["base_error"], tag=f"[holdout {hd['tag']}]")
+        hok, hrep = _l0(hcases[0]["args"], hd["base_error"], tag=f"[holdout {hd['tag']}]",
+                        golden=hcases[0].get("ref"))
         ok = ok and hok
         report[f"holdout:{hd['tag']}"] = hrep
 
@@ -587,6 +631,9 @@ if __name__ == "__main__":
                     help="JSON dict label -> floor in bf16 ulps (see acceptance.ulp_floor)")
     ap.add_argument("--abs-floor-max-ulp", default=None,
                     help="JSON dict label -> k (see acceptance.abs_floor_max_ulp)")
+    ap.add_argument("--exact-labels", default="",
+                    help="comma list of outputs that must be BITWISE equal to the original's "
+                         "(see acceptance.exact_labels)")
     ap.add_argument("--holdout", action="append", default=[],
                     help="TAG=capture.pt; repeatable. Gated holdout cases (see build(holdouts=...))")
     a = ap.parse_args()
@@ -599,4 +646,5 @@ if __name__ == "__main__":
                        [s for s in a.ulp_labels.split(",") if s.strip()],
                        [tuple(x.split("=", 1)) for x in a.holdout],
                        json.loads(a.ulp_floor) if a.ulp_floor else None,
-                       json.loads(a.abs_floor_max_ulp) if a.abs_floor_max_ulp else None), indent=2))
+                       json.loads(a.abs_floor_max_ulp) if a.abs_floor_max_ulp else None,
+                       [s for s in a.exact_labels.split(",") if s.strip()]), indent=2))
