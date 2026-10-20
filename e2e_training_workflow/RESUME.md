@@ -170,6 +170,45 @@ allowed), kept fixed during optimisation, not constant LR.
 
 **Done 2026-10-20: P0-4k CLEARED.** hf8 is the recommended HF stack: **2,618, 2.42x** (4.40).
 
+**MEGATRON REVIEW 2026-10-20** (two read-only audits plus spot checks). None of the HF-era fixes (4.33
+warmup, 410207cb signature, 4.37, 4.39) changes a Megatron number. The fixed-shape detector path was
+re-verified on the headline legs, and 3,504 / 4.18x stands. Open TODO, in priority order:
+
+* **P1-A, the deliverable.** `finalize_bundle_1015_s8/launch.sh:51` runs `packed.env`: constant LR, NOT cleared
+  (4.22), and no `--ddp-average-in-collective`. No bundle runs the cleared recipe `_cosine_avg`.
+  * Re-finalize an s8 bundle on `_cosine_avg`, with two cold runs.
+  * The pinned stack_overlay_env sha is stale: 67a6959e vs 87193aa3. Only a warning, but re-verify.
+* **P1-B, measurement integrity (code).**
+  * (1) A failed overlay install prints "STACK INCOMPLETE" but the leg stays `status ok`, and
+    GEAK_OVERLAY_SHA comes from the env, not from what installed. Make bench_train mark the leg unusable.
+    Refuse s-conditions with `--stack hf_trl` and hf-conditions with megatron.
+  * (2) `--lr-decay-iters` is not in train_probe identity keys (needs snapshot v5).
+  * (3) The Megatron overlays' impl hash covers impl.py only. Add `sources` (a deliberate impl_digest break).
+  * (4) The bench_train capture check is a hand-kept list. Match `GEAK_[A-Z]*CAPTURE`.
+* **P1-C, workflow paths never run on Megatron.**
+  * QualityGate default workload is `packed_cosine` (should be the run's WORKLOAD / `_cosine_avg`).
+    The director command lacks `--stack`.
+  * quality_ab hardcodes ITERS=358 and nproc 8. quality_ab_final's T_CRIT 2.776 assumes n=5 unchecked.
+  * ConfigSweep overwrites `config_flags` instead of merging (training_workflow.js:1002/1054),
+    reports the first lever, and never refreshes the digest.
+  * measure_packed_stack / quality_ab default to `packed.env`.
+* **P1-D, docs.** README "no HF kernel" / `ref,s2..s7` / `--cond s7`, and the deployable-bundle line. RUN.md
+  workload and skip_heads (missing rmsnorm_bwd_fc1_fused, grad_tail). ROADMAP P2-3 not marked done, gate table
+  (soak/step-1 retired), dropout "open question". RESUME's old next-lists. The PENDING-descriptor rationale
+  (launch.sh only warns).
+* **P2.**
+  * Megatron `rope_fused_qk` is the same "more accurate RoPE, loss +0.044%" case HF rejected in 4.37.
+    It was accepted only because dropout masks the sign test. A bf16-exact Megatron rope (4.39 remedy)
+    would make the policy consistent.
+  * Why s8 diverges under constant LR is still not localized. The per-parameter grad comparison was never
+    run, so the clearance is recipe-specific.
+  * Megatron L0 oracles have no holdouts.
+  * New task dirs get sign_min_z 4.0, validated on HF only; run one Megatron negative control.
+  * measure_stack3.sh duplicates the stack definition. calibrate_band.py hardcodes the work dir.
+  * Tests don't cover stack_overlay_env mapping, overlay_train install/failure, or quality_ab verdicts.
+  * node is absent, so the JS suites cannot run on this box.
+  * The flash backend's 2.7x grad gap is unexplained (quarantined).
+
 **PAUSED 2026-10-20 (user request):** `wf_7c87df08-799` (hf8, gate/up bwd GEMM lane) was stopped mid-run; its leftover container was stopped by ID. HF/TRL optimization is paused while the Megatron flow is reviewed.
 
 **Next (autonomous), after hf8 (re-profile of wf_02793feb-78a):** accepted overlays cover 74% of the span.
