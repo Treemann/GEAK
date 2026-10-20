@@ -62,18 +62,18 @@ for SEED in ${SEEDS//,/ }; do
     EXTRA=""; TARGS="--seed $SEED $EVAL_ARGS"
     case "$ARM" in
       ref) ;;
-      s[2-8]) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$ARM" --out "$OUT_HOST" --install "$OVL_HOST")" ;;
+      s[2-8]) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$ARM" --stack "$STACK" --out "$OUT_HOST" --install "$OVL_HOST")" ;;
       # The accepted stack with every side stream disabled (fc1/qkv wgrad overlap -> serial, lm-head
       # single stream): same kernel bytes, single-stream scheduling. Tests the side-stream race
       # hypothesis for the late-training instability (2026-10-16).
-      s8serial) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond s8 --out "$OUT_HOST" --install "$OVL_HOST")"
+      s8serial) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond s8 --stack "$STACK" --out "$OUT_HOST" --install "$OVL_HOST")"
                 EXTRA="$EXTRA FC1_BWD_MODE=serial QKV_BWD_MODE=serial LMHEAD_CE_TWO_STREAM=0" ;;
       # A candidate stack given as a COMMAND with the BASE_OVERLAY_CMD contract (append `--out <leg>`,
       # print one `--extra-env` line). This is how the workflow's QualityGate tests a stack that is not
       # (yet) a stack_overlay_env.sh condition, e.g. the base stack plus this run's accepted overlays.
       cand) [ -n "$CAND_CMD" ] || { echo "arm cand needs --cand-cmd" >&2; exit 2; }
             EXTRA="$(eval "$CAND_CMD --out \"$OUT_HOST\"")"; TARGS="$TARGS $CAND_TARGS" ;;
-      only-*) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "only:${ARM#only-}" --out "$OUT_HOST" --install "$OVL_HOST/${ARM}")" ;;
+      only-*) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "only:${ARM#only-}" --stack "$STACK" --out "$OUT_HOST" --install "$OVL_HOST/${ARM}")" ;;
       ctrl) TARGS="$TARGS --lr 7.0e-6" ;;
       # Positive control for a SCHEDULED recipe: the whole schedule scaled x0.7 (peak and floor).
       ctrl70) TARGS="$TARGS --lr 7.0e-6 --min-lr 7.0e-7" ;;

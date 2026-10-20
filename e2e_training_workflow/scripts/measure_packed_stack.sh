@@ -54,7 +54,7 @@ for i in $(seq 1 "$REPS"); do
     if [ "$G" = _ ]; then LEG="${MODE}${i}"; GARG=(); else LEG="${MODE}g${G}${i}"; GARG=(--gbs "$G"); fi
     OUT_HOST="$WORK_HOST/runs/${NAME}_${STAMP}_${LEG}"
     # Installs on first use and re-verifies the gated bytes on every leg; refuses on any mismatch.
-    EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$MODE" --out "$OUT_HOST" --install "$OVL_HOST")"
+    EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$MODE" --stack "$STACK" --out "$OUT_HOST" --install "$OVL_HOST")"
     echo ">>> $(date +%H:%M:%S) leg $LEG -> $OUT_HOST"
     "$GEAK_ROOT/scripts/bench_train.sh" --workload "$WORKLOAD" --stack "$STACK" --nproc 8 \
       --iters "$ITERS" --out "$OUT_HOST" --tag "${NAME}_${LEG}" ${EXTRA:+--extra-env "$EXTRA"} \

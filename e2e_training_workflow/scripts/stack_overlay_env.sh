@@ -49,11 +49,12 @@
 set -euo pipefail
 GEAK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_HOST="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
-COND=""; OUT_HOST=""; OVL_HOST=""
+COND=""; OUT_HOST=""; OVL_HOST=""; STACK_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --cond) COND="$2"; shift 2;;
     --out) OUT_HOST="$2"; shift 2;;
+    --stack) STACK_ARG="$2"; shift 2;;   # optional: refuse a condition of the other stack
     --install) OVL_HOST="$2"; shift 2;;
     -h|--help) sed -n '2,45p' "$0" >&2; exit 0;;
     *) echo "unknown arg: $1" >&2; exit 2;;
@@ -68,6 +69,15 @@ case "$COND" in
   # Not a shippable condition: qkv alone is invalid (it chains after fc1) and is refused below.
   only:*) N=1; ONLY="${COND#only:}";;
   *) echo "--cond must be one of ref,s2..s8,hf1..hf8,only:<overlay> (got '$COND')" >&2; exit 2;;
+esac
+# A condition installed on the wrong stack does not fail: Megatron targets may not resolve under HF,
+# but HF targets (transformers.*) DO resolve inside the Megatron image and are simply never called,
+# so the leg runs the original code under a stack's name. Callers that know the stack pass --stack.
+case "${STACK_ARG}" in
+  "") ;;
+  megatron) [ -z "${HFSTACK:-}" ] || { echo "!!! --cond $COND is an HF TRL condition; refusing it on --stack megatron" >&2; exit 2; };;
+  hf_trl) [ -n "${HFSTACK:-}" ] || { echo "!!! --cond $COND is a Megatron condition; refusing it on --stack hf_trl" >&2; exit 2; };;
+  *) echo "!!! unknown --stack '$STACK_ARG' (megatron|hf_trl)" >&2; exit 2;;
 esac
 [ -n "$OUT_HOST" ] || { echo "--out <leg dir on the host> is required" >&2; exit 2; }
 case "$OUT_HOST" in "$WORK_HOST"/*) ;; *) echo "--out must live under $WORK_HOST (mounted at /work)" >&2; exit 2;; esac

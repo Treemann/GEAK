@@ -25,7 +25,17 @@ import statistics
 
 YARDSTICK = 0.0206
 MARGIN = 0.25 * YARDSTICK
-T_CRIT = 2.776
+T_CRIT = 2.776   # two-sided 95% t, df 4: the pre-registered 5-seed protocol
+# The critical value for OTHER seed counts (review 2026-10-20). It was a constant: a 3-seed run judged
+# with 2.776 instead of 4.303 is anti-conservative, and nothing checked the count. df -> t(0.975, df).
+_T975 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262,
+         10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110,
+         18: 2.101, 19: 2.093, 20: 2.086}
+
+
+def t_crit(n):
+    """Two-sided 95% critical t for n paired seeds (df = n - 1); the normal 1.96 past the table."""
+    return _T975.get(n - 1, 1.96)
 SEVERE, CATASTROPHIC, AFTER, WIN = 0.25, 1.0, 150, 10
 VAL_RE = re.compile(r"validation loss at .*? lm loss value: ([0-9.Ee+-]+)")
 
@@ -54,6 +64,14 @@ def main():
     a = ap.parse_args()
     P = a.prefix.rstrip("/")
     seeds = sorted({int(m.group(1)) for f in glob.glob(P + f"_{a.base}_seed*") for m in [re.search(r"seed(\d+)$", f)] if m})
+    if len(seeds) < 3:
+        # An empty glob used to crash in statistics.fmean; one or two seeds cannot carry a t-test.
+        print(f"INCOMPLETE: {len(seeds)} seed(s) found for {P}_{a.base}_seed* -- the protocol needs >= 3 "
+              f"(pre-registered: 5)")
+        return
+    tc = t_crit(len(seeds))
+    if len(seeds) != 5:
+        print(f"NOTE: {len(seeds)} seeds, not the pre-registered 5 -- t critical = {tc} (df {len(seeds) - 1})")
     rows, d, sev = [], [], []
     for s in seeds:
         r, c = f"{P}_{a.base}_seed{s}", f"{P}_{a.cand}_seed{s}"
@@ -81,7 +99,7 @@ def main():
         cm, csd = statistics.fmean(cd), statistics.stdev(cd)
         ct = cm / (csd / math.sqrt(len(cd))) if csd > 0 else math.copysign(math.inf, cm)
         print(f"control {a.ctrl} - {a.base}: d {[round(x, 5) for x in cd]} mean {cm:+.5f} t {ct:.2f}")
-        if not (cm > 0 and ct >= T_CRIT):
+        if not (cm > 0 and ct >= tc):
             print("QUALITY:   INCONCLUSIVE-quality: the positive control was not detected")
             print("OVERALL:   NOT CLEARED")
             return
@@ -89,9 +107,9 @@ def main():
     margin = 0.25 * yard
     m, sd = statistics.fmean(d), statistics.stdev(d)
     t = m / (sd / math.sqrt(len(d))) if sd > 0 else math.copysign(math.inf, m)
-    if m > margin and t >= T_CRIT:
+    if m > margin and t >= tc:
         qual = f"FAIL-quality: mean {m:+.5f} > margin {margin:.5f}, t {t:.2f}"
-    elif abs(m) <= margin and not (m > 0 and t >= T_CRIT):
+    elif abs(m) <= margin and not (m > 0 and t >= tc):
         qual = f"PASS-quality: |mean {m:+.5f}| <= {margin:.5f} (0.25 x yardstick {yard:.5f}, {ctrl_note}), t {t:.2f}"
     else:
         qual = f"INCONCLUSIVE-quality: mean {m:+.5f}, t {t:.2f}, margin {margin:.5f} ({ctrl_note})"

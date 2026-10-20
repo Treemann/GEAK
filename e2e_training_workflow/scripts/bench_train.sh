@@ -185,7 +185,10 @@ done
 # Matches EVERY capture entry point, not just the generic one: the LM-head composite capture
 # (GEAK_LMHEAD_CAPTURE_DIR) writes a multi-GB record from a backward hook and would otherwise have
 # produced a throughput number that looks like a measurement and is not.
-if printf '%s' "${EXTRA_ENV:-}" | grep -qE 'GEAK_CAPTURE_TARGET|GEAK_LMHEAD_CAPTURE_DIR|GEAK_MLP_CAPTURE_DIR|GEAK_ROPE_CAPTURE_DIR|GEAK_RMSN_CAPTURE_DIR|GEAK_HFRMSN_CAPTURE_DIR|GEAK_HFMLP_CAPTURE_DIR|GEAK_HFDOWN_CAPTURE_DIR|GEAK_HFATTN_CAPTURE_DIR|GEAK_HFLMCE_CAPTURE_DIR|GEAK_HFROPE_CAPTURE_DIR|GEAK_GRADTAIL_CAPTURE_DIR|GEAK_HFFLAT_CAPTURE_DIR'; then
+# Matched by PATTERN, not a hand-kept list (2026-10-20): every capture entry point is enabled by a
+# GEAK_*CAPTURE_DIR or GEAK_CAPTURE_TARGET variable, and the list had to be extended by hand for each
+# of the 13 capture scripts so far -- one missed name would make a captured run count as a measurement.
+if printf '%s' "${EXTRA_ENV:-}" | grep -qE '(^|[[:space:]])GEAK_[A-Z0-9_]*CAPTURE_(DIR|TARGET)='; then
   echo ">>> NOTE: shape/oracle capture was active; this run's throughput is NOT a valid measurement." \
     | tee -a "$OUT_DIR/train.log"
   echo '{"captured_run": true}' > "$OUT_DIR/captured.json"
@@ -226,8 +229,15 @@ for name in ("occupancy_verdict", "capabilities"):
 # The stack's own number, kept beside ours and never substituted for it.
 s["stack_reported"] = {"tflop_s_per_gpu_median": float(stack_tput) if stack_tput else None,
                        "note": "cross-check only; the gate uses useful_tok_s_per_gpu from the probe"}
+# An overlay that did not install means the leg ran the ORIGINAL code under the candidate's
+# impl_digest. Both launchers now exit on it; this is the net for any path that does not.
+_log = os.path.join(out_dir, "train.log")
+_txt = open(_log, errors="ignore").read() if os.path.exists(_log) else ""
+s["overlay_install_failed"] = any(m in _txt for m in (
+    "[geak-overlay] STACK INCOMPLETE", "[geak-overlay] REFUSING to install", "[geak-overlay] not installed",
+    "[geak-overlay] INSTALL FAILED", "[geak-overlay] OVERLAY FILE UNREADABLE"))
 # A profiled run can never be a gate leg: the window it traced is not the workload's real timing.
-ok = (rc == 0 and not s["hang_detected"] and not s["profiled_run"] and not s["captured_run"]
+ok = (rc == 0 and not s["overlay_install_failed"] and not s["hang_detected"] and not s["profiled_run"] and not s["captured_run"]
       and not s["contamination_exhausted"] and "error" not in s
       and s.get("occupancy_verdict", {}).get("verdict") != "contaminated")
 s["status"] = "ok" if ok else "unusable"

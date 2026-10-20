@@ -211,13 +211,21 @@ if _os.environ.get("GEAK_PROBE_DIR"):
         print(f"[geak-gradtail] not installed: {_e!r}", flush=True)
 
     # Reversible rebind + engagement proof. No-op unless GEAK_OVERLAY points at a manifest.
+    # A failed or partial install EXITS, as hf_sft.py does: until 2026-10-20 it only printed "STACK
+    # INCOMPLETE" and the leg trained on, measuring the original code under the candidate's
+    # GEAK_OVERLAY_SHA (impl_digest is taken from the env, not from what installed).
+    _ovl_ok = True
     try:
         import overlay_train as _ovl
 
         if _ovl.ENABLED:
-            _ovl.install()
+            _ovl_ok = bool(_ovl.install())
     except Exception as _e:
         print(f"[geak-overlay] not installed: {_e!r}", flush=True)
+        _ovl_ok = not _os.environ.get("GEAK_OVERLAY", "").strip()
+    if not _ovl_ok:
+        raise SystemExit("[rocm_compat] GEAK_OVERLAY is set but the overlay stack did not install "
+                         "completely; refusing to run a leg that would measure the original implementation")
 
 if len(sys.argv) < 2:
     raise SystemExit("usage: rocm_compat_launch.py <script.py> [args...]")

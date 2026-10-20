@@ -26,7 +26,13 @@ const log0 = (m) => log(`[training] ${m}`);
 // is the reference implementation: "<wf>/scripts/stack_overlay_env.sh --cond s7"). It becomes part of
 // EVERY leg of the run -- baseline, profile, gate ref AND cand, finalize, validate -- so the reference
 // the whole run measures against is the accepted stack, not the bare workload.
-const BASE_OVERLAY_CMD = String(A.baseline_overlay || '').trim() || null;
+// `--stack` is appended (unless the caller gave one) so stack_overlay_env.sh refuses a condition of
+// the OTHER stack: HF targets resolve inside the Megatron image and are never called, so a mismatched
+// baseline would run the original code under the stack's name (review 2026-10-20).
+const _BASE_RAW = String(A.baseline_overlay || '').trim();
+const BASE_OVERLAY_CMD = !_BASE_RAW ? null
+  : (/stack_overlay_env\.sh/.test(_BASE_RAW) && !/--stack\b/.test(_BASE_RAW)
+     ? `${_BASE_RAW} --stack ${A.stack || 'megatron'}` : _BASE_RAW);
 // THE OUTCOME GATE (added 2026-10-16). Every per-kernel gate here judges 30 steps. P0-4b showed that a
 // stack of individually gated kernels can still make a training run blow up hundreds of steps later
 // (late catastrophic episodes on 4/5 seeds) -- an event no 30-step instrument can see. So a stack

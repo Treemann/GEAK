@@ -234,9 +234,13 @@ async function dryRun(args) {
   // ---- 2026-10-14: stacked baseline, carried overlay on re-profile, queue ranking ----------------
   const phasePrompts = (calls, ph) => calls.prompts.filter((p) => p.includes(`PHASE=${ph}`));
   try {
-    const CMD = '/repo/e2e_training_workflow/scripts/stack_overlay_env.sh --cond s7';
-    const { result, calls } = await dryRun({ ...base, baseline_overlay: CMD });
-    ok(result.baseline_overlay === CMD, 'the result names the reference every delta is relative to');
+    const RAW = '/repo/e2e_training_workflow/scripts/stack_overlay_env.sh --cond s8';
+    // --stack is appended so stack_overlay_env.sh refuses a condition of the other stack (2026-10-20).
+    const CMD = `${RAW} --stack ${base.stack || 'megatron'}`;
+    const { result, calls } = await dryRun({ ...base, baseline_overlay: RAW });
+    ok(result.baseline_overlay === CMD, 'the result names the reference every delta is relative to, with --stack appended');
+    const { result: rx } = await dryRun({ ...base, baseline_overlay: `${RAW} --stack megatron` });
+    ok(rx.baseline_overlay === `${RAW} --stack megatron`, 'an explicit --stack is kept, not doubled');
     for (const ph of ['setup', 'reprofile', 'integrate', 'finalize', 'validate']) {
       const ps = phasePrompts(calls, ph);
       ok(ps.length > 0 && ps.every((p) => p.includes(`"BASE_OVERLAY_CMD": "${CMD}"`) &&
