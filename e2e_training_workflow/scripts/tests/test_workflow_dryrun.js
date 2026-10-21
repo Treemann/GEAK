@@ -319,10 +319,26 @@ async function dryRun(args) {
     const { result: r2, calls: c2 } = await dryRun({ ...base, quality_gate: 'true' });
     ok(!c2.phases.includes('QualityGate') && /nothing accepted/.test(r2.quality_gate.quality),
       'with nothing accepted the stack is unchanged, so the gate is skipped and says why');
+    // Deep run, no kernel task, one Class-A lever accepted: the stack DID change. Before 2026-10-21
+    // the gate counted kernels only and skipped this as "nothing accepted".
+    const { result: r3, calls: c3 } = await dryRun({ ...base, deep_mode: 'true', budget: 0, quality_gate: 'true' });
+    const qp3 = c3.prompts.filter((p) => p.includes('PHASE=quality'));
+    ok(r3.accepted.length === 0 && r3.accepted_config && c3.phases.includes('QualityGate'),
+      'a run whose only accepted change is a config lever still runs the outcome test');
+    ok(qp3.length === 1 && qp3[0].includes('"ACCEPTED_CONFIG"') && qp3[0].includes('--overlap-grad-reduce'),
+      'the quality phase is told the accepted lever, so the cand arm carries its flags');
+    // A packing lever alone: both protocol arms already train packed, so ref == cand.
+    CONFIG_OVERRIDE = { lever: 'packing', flags_added: ['--train-data-path', '/work/data/x_packed.jsonl', 'packing'],
+                        comparison_tokens: { delta_pct: 265.9 }, packing_gate: { pass: true, verdict: 'PASS' } };
+    const { result: r4, calls: c4 } = await dryRun({ ...base, deep_mode: 'true', budget: 0, quality_gate: 'true' });
+    CONFIG_OVERRIDE = null;
+    ok(r4.accepted_config && !c4.phases.includes('QualityGate') && /packing/.test(r4.quality_gate.quality),
+      'a packing-only change skips the outcome test and says why (pack_gate.py is its gate)');
   } catch (e) {
     ok(false, `quality gate threw: ${e && e.message}`);
   }
   STRAT_HEADS = null;
+  CONFIG_OVERRIDE = null;
 
   // An opts.phase that is not a meta.phases title opens an ad-hoc group in /workflows and leaves the
   // declared phase reading "not started" though its agent ran (run wf_becee9a0-c6f, 2026-10-20).

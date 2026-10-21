@@ -125,9 +125,15 @@ pass before it is called safe to train with.
      directory and verified against the bundle's SHA256SUMS. Their manifests are APPENDED after the
      base's, with `engagement_out` under the leg dir. The bundle's `launch.sh` does exactly this;
      reuse its logic.
-   * Write the command as a small script under `EXP_ROOT`, not in the repo.
+   * Write the command as a small script under `EXP_ROOT`, not in the repo. If no overlay was
+     accepted (only a config lever), the command is `BASE_OVERLAY_CMD` if set, else `true` (prints
+     nothing, so the cand leg runs without `--extra-env`). `quality_ab.sh` refuses a cand arm with
+     no `--cand-cmd`, so never omit it.
+   * If `ACCEPTED_CONFIG` is set, its `flags_added` go on the cand arm ONLY, via
+     `--cand-train-args "<flags_added>"`. Without them the cand arm is not the stack this run
+     accepted, and a CLEARED verdict would clear something else.
 2. **Run** `QUALITY_SCRIPT --workload QUALITY_WORKLOAD --seeds QUALITY_SEEDS --arms ref,cand
-   --cand-cmd "<your script>" --name qgate`. That is one epoch per leg on the train19k pack, with
+   --cand-cmd "<your script>" [--cand-train-args "<flags_added>"] --name qgate`. That is one epoch per leg on the train19k pack, with
    the held-out evaluation at the end. Do not change iterations, data or seeds: the verdict rules
    were pre-registered for exactly this protocol (knowledge/gate_convergence.md, P0-4e).
 3. **Verify engagement** on every cand leg: per overlay, the training buckets show fallback 0. The

@@ -37,8 +37,8 @@ const BASE_OVERLAY_CMD = !_BASE_RAW ? null
 // stack of individually gated kernels can still make a training run blow up hundreds of steps later
 // (late catastrophic episodes on 4/5 seeds) -- an event no 30-step instrument can see. So a stack
 // is not "safe to train with" until it passes a one-epoch, multi-seed outcome test. It costs ~2 legs
-// x 20 min per seed, so it is opt-in: `quality_gate: true`. It runs only when this run accepted
-// something (otherwise the stack is unchanged and was judged before).
+// x 20 min per seed, so it is opt-in: `quality_gate: true`. It runs only when this run accepted a
+// kernel or a non-packing config lever (otherwise the stack is unchanged and was judged before).
 const QUALITY_GATE = String(A.quality_gate || '').toLowerCase() === 'true' || A.quality_gate === true;
 const QUALITY_SEEDS = String(A.quality_seeds || '5567,6678,7789,8890,9901');
 // Default = the RECOMMENDED Megatron recipe (warmup + cosine + --ddp-average-in-collective, DECISIONS
@@ -1347,11 +1347,18 @@ if (val && typeof val.delta_pct === 'number' && wfReturn.accepted.length) {
 // ---------------------------------------------------------------------------
 // QualityGate -- optional outcome test of the FINAL stack (see QUALITY_GATE above).
 // ---------------------------------------------------------------------------
-if (QUALITY_GATE && wfReturn.accepted.length) {
+// The stack changed if a kernel OR a config lever was accepted. Counting kernels only skipped the
+// gate as "nothing accepted" on a deep run whose only change was a config lever (review 2026-10-21).
+// A Class-B packing lever is the exception: the protocol trains BOTH arms on the packed pack, so ref
+// and cand would be the same recipe -- its correctness gate is pack_gate.py, not this test.
+const qConfig = wfReturn.accepted_config &&
+  !String(wfReturn.accepted_config.class || '').startsWith('B') ? wfReturn.accepted_config : null;
+const stackChanged = wfReturn.accepted.length > 0 || !!qConfig;
+if (QUALITY_GATE && stackChanged) {
   phase('QualityGate');
   const q = await safeAgentStub('training_director', 'quality',
     { ...benchInputs(curConfig, 'quality'), FINAL: fin, OVERLAY: curOverlay,
-      QUALITY_SEEDS, QUALITY_WORKLOAD,
+      ACCEPTED_CONFIG: qConfig, QUALITY_SEEDS, QUALITY_WORKLOAD,
       QUALITY_SCRIPT: `${WORKFLOW_DIR}/scripts/quality_ab.sh`,
       QUALITY_VERDICT: `${WORKFLOW_DIR}/scripts/quality_ab_final.py` },
     'Run the one-epoch outcome test of the final stack against REF and return the verdict of ' +
@@ -1363,7 +1370,11 @@ if (QUALITY_GATE && wfReturn.accepted.length) {
       `(${wfReturn.quality_gate.quality}; ${wfReturn.quality_gate.stability})`);
 } else {
   wfReturn.quality_gate = QUALITY_GATE
-    ? { cleared: null, quality: 'skipped: nothing accepted this run', stability: 'skipped' }
+    ? { cleared: null, stability: 'skipped',
+        quality: wfReturn.accepted_config
+          ? 'skipped: the only accepted change is a Class-B packing lever; the protocol already ' +
+            'trains both arms packed, so ref and cand would be identical (gated by pack_gate.py)'
+          : 'skipped: nothing accepted this run' }
     : { cleared: null, quality: 'not requested (quality_gate off)', stability: 'not requested',
         note: 'per-kernel gates judge 30 steps only; the stack is NOT cleared for long training ' +
               'until it passes the outcome test (DECISIONS 4.22)' };
