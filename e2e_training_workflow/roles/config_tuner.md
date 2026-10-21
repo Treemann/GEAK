@@ -121,7 +121,7 @@ Return JSON:
 {"lever": "comm_overlap|recompute|attention_backend",
  "flags_added": ["--overlap-grad-reduce"],
  "ceiling_pct": 2.27, "ceiling_source": "config_diagnosis.exposed_comm_pct",
- "ref": {"...bench_summary..."}, "cand": {"...bench_summary..."},
+ "ref": {"...bench_summary..."}, "cand": {"...bench_summary..."},   // keep each leg's `implementation` dict VERBATIM
  "comparison": {"...compare_legs.py stdout verbatim, MUST contain a numeric delta_pct..."},
  "config_digest_delta": {"key": "overlap-grad-reduce", "ref": null, "cand": "true"},
  "peak_reserved_mb": {"ref": 80578, "cand": 80578},

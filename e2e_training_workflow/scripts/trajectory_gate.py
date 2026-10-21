@@ -417,10 +417,20 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
     # belongs to neither half (a v2-vs-v3 pair is caught by digest_schema, with a remedy that says
     # RE-MEASURE rather than the impossible re-summarise).
     from probe_summarize import IMPL_KEYS          # the single definition; never copy it here again
+    from probe_summarize import snapshot_schema    # likewise the one snapshot-version parser
     IMPL = set(IMPL_KEYS)
     META = {"snapshot_keys"}
     ident = lambda c: {k: v for k, v in (c or {}).items()
                        if k not in IMPL and k not in META and not k.startswith("NVTE_")}
+    # A v4-vs-v5 pair differs in identity only because v5 captures more (lr-decay-iters), which
+    # would read as "a different WORKLOAD" -- true of the record, false of the run, and the wrong
+    # remedy. Say what is actually wrong. v3 vs v4 stays comparable HERE because every key v4 added
+    # or moved is in IMPL_KEYS, which ident() excludes (v4 did move impl_digest, DECISIONS 4.10b).
+    rk, ck = snapshot_schema(rs.get("config")), snapshot_schema(cs.get("config"))
+    if rk != ck and max(rk, ck) >= 5:
+        return {"pass": False, "reason": f"identity snapshot v{rk} vs v{ck}: v5 captures keys the older "
+                                         "sidecar never recorded; RE-MEASURE the older leg, "
+                                         "re-summarising cannot recover them", "checks": {}}
     if ident(rs.get("config")) != ident(cs.get("config")):
         return {"pass": False, "reason": "legs trained a different WORKLOAD (batch/seq/mapping/data "
                                          "differ); step-aligned trajectories are not comparable",

@@ -221,7 +221,25 @@ IMPL_KEYS = ("attention-backend", "GEAK_OVERLAY", "GEAK_OVERLAY_SHA",
              # flag is absent from every leg on disk.
              "recompute-granularity", "recompute-method",
              # HF's parallel strategy: HOW the step is computed, like the distributed optimizer.
-             "hf-fsdp")
+             "hf-fsdp",
+             # v5: the gradient-reduction path. HOW gradients are reduced, not what is trained;
+             # --ddp-average-in-collective was accepted as a Class-A lever (DECISIONS 4.25) and
+             # was captured nowhere until v5 (train_probe.py).
+             # (--grad-reduce-in-bf16 is NOT here: it also turns off fp32 main-grad accumulation,
+             # a precision-recipe change like --master-weights, so it is workload identity.)
+             "ddp-average-in-collective", "ddp-bucket-size", "use-distributed-optimizer")
+
+
+def snapshot_schema(cfg):
+    """digest_schema of a captured config: 'vN' -> N, absent -> 2. The ONE parser; trajectory_gate
+    imports it. A fixed {'v5': 5, ...} lookup silently read any newer value as 2."""
+    v = (cfg or {}).get("snapshot_keys")
+    if v is None:
+        return 2
+    try:
+        return int(str(v).lstrip("vV"))
+    except ValueError:
+        return 2
 
 
 def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
@@ -347,7 +365,7 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         # re-summarising: hardcoding 3 here would stamp v3 on a v2 header and produce a digest that
         # CLAIMS to cover dropout and does not -- precisely the fiction the guard exists to prevent.
         # A v2-vs-v3 pair must be RE-MEASURED, not re-summarised.
-        "digest_schema": {"v4": 4, "v3": 3}.get(cfg.get("snapshot_keys"), 2),
+        "digest_schema": snapshot_schema(cfg),
         "config_digest": cfg_digest,      # identity only: what is being trained
         "impl_digest": impl_digest,       # how it is computed: a candidate is EXPECTED to differ here
         # Ranks running different argv would silently mix two configurations inside ONE leg.

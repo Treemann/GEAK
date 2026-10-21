@@ -347,6 +347,12 @@ async function dryRun(args) {
   const strays = [...AGENT_GROUPS].filter((g) => !metaTitles.has(g));
   ok(strays.length === 0,
     `every agent, in every mode, groups under a meta.phases title (strays: ${strays.join(', ') || 'none'})`);
+  // Gate legs must keep bench_summary's `implementation` dict, or comparable()'s check that ref and
+  // cand differ only in what is under test is skipped silently (wf_becee9a0-c6f's Integrator dropped it).
+  const wfSrc = fs.readFileSync(WF, 'utf8');
+  ok(/const LEG = obj\(\{ implementation:[^\n]*\['implementation'\]\)/.test(wfSrc) &&
+     /INTEGRATE_SCHEMA = obj\(\{ ref: LEG, cand: LEG/.test(wfSrc) && /ref: LEG, cand: LEG,\n/.test(wfSrc.split('CONFIG_SCHEMA')[1] || ''),
+    'integrate and config schemas REQUIRE an implementation dict on both gate legs');
   ok(AGENT_GROUPS.has('ConfigSweep') && AGENT_GROUPS.has('QualityGate'),
     'the optional phases were exercised by this check, not just the fast path');
 

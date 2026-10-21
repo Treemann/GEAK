@@ -101,7 +101,9 @@ def main():
     # cannot be told apart from the reference it beat. This is the defect the run found, pinned so
     # it cannot come back by someone trimming a list.
     for lever in ("overlap-grad-reduce", "overlap-param-gather", "attention-backend",
-                  "recompute-granularity", "recompute-method", "hf-fsdp"):
+                  "recompute-granularity", "recompute-method", "hf-fsdp",
+                  # v5: the accepted DECISIONS 4.25 lever that no list captured, and its neighbours
+                  "ddp-average-in-collective", "ddp-bucket-size", "use-distributed-optimizer"):
         ok(lever in captured and lever in set(impl),
            f"Class-A lever `{lever}` is captured AND classed as implementation")
 
@@ -109,10 +111,19 @@ def main():
     # covering different keys -- the exact confusion `snapshot_keys` exists to prevent.
     src = open(probe).read()
     m = re.search(r'out\["snapshot_keys"\]\s*=\s*"(v\d+)"', src)
-    ok(m is not None and m.group(1) == "v4",
-       f"snapshot_keys is stamped v4 at the capture site (found {m.group(1) if m else 'nothing'})")
+    ok(m is not None and m.group(1) == "v5",
+       f"snapshot_keys is stamped v5 at the capture site (found {m.group(1) if m else 'nothing'})")
     summ = open(os.path.join(SCRIPTS, "probe_summarize.py")).read()
-    ok('"v4": 4' in summ, "probe_summarize maps v4 to digest_schema 4")
+    sys.path.insert(0, SCRIPTS)
+    from probe_summarize import snapshot_schema
+    ok([snapshot_schema(c) for c in ({"snapshot_keys": "v5"}, {"snapshot_keys": "v4"}, {},
+                                     {"snapshot_keys": "v6"})] == [5, 4, 2, 6],
+       "snapshot_schema parses vN generically (v5->5, absent->2, a future v6->6, not 2)")
+    # The schedule length is WORKLOAD identity (what is trained), never implementation.
+    # So are a precision-recipe change and the loss normalization.
+    for k in ("lr-decay-iters", "lr-decay-samples", "lr-warmup-fraction",
+              "grad-reduce-in-bf16", "calculate-per-token-loss"):
+        ok(k in captured and k not in set(impl), f"`{k}` is captured as workload identity")
 
     # ARGPARSE SEMANTICS. Identity must record the value that RAN: the last occurrence of a flag,
     # and `--flag=value` as well as `--flag value`. It took the first occurrence, so every

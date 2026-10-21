@@ -1,4 +1,4 @@
-# Resume notes — updated 2026-10-14
+# Resume notes — updated 2026-10-21
 
 ## State (2026-10-10, after run wf_cc06b402-312 completed)
 Run `wf_cc06b402-312` finished: `rope_fused_qk` +3.89% and `swiglu_bwd_fwd_bw` +3.15% ACCEPTED,
@@ -180,6 +180,18 @@ allowed), kept fixed during optimisation, not constant LR.
 * RUN.md manual-test section; QualityGate default `_cosine_avg`.
 Still open below: P1-A (bundle on `_cosine_avg`), lr-decay-iters identity, Megatron `sources`, ConfigSweep merge, docs, P2.
 
+**Done 2026-10-20/21: manual test M1 PASSED** (`wf_becee9a0-c6f`, base commit e771d3c7, fast mode, bare
+`_cosine_avg` reference, budget 1). Setup 3 baseline legs 2,894 useful tok/s/GPU, across-job 0.022%;
+profile `kernel_work_can_pay`; `attn_fmha_ck_varlen` 1020 ACCEPTED: gate +3.80% (band 1.61%), bundle
+re-check +3.73/+3.89%, Director +4.08% (band 0.55%); L0 pass (paired dq scale_bias -1.5e-5), L1 pass
+(`--kind kernel_swap`, step-1 loss +0.0117%; step-1 grad_norm -5..-6% reported only). Bundle
+`runs/finalize_bundle_1020_attn_ck_varlen`, report `runs/architect_report_1020_attn_ck_varlen_cosine.md`.
+NOT exercised: QualityGate, ConfigSweep, baseline_overlay stacking, more than one head. The 1020 kernel is
+gated against the BARE reference only; s8 still carries the 1013 attention overlay.
+Commits since: be6c7f6c (agents group under meta.phases titles; per-lever ConfigSweep label kept),
+9fbf1b33 (QualityGate also runs when only a non-packing config lever was accepted), 372fdf43 (L1 `--kind`
+documented for auditor/tuner; DECISIONS 3.2b paired-dq red line), and snapshot v5 (DECISIONS 1.10b).
+
 **MEGATRON REVIEW 2026-10-20** (two read-only audits plus spot checks). None of the HF-era fixes (4.33
 warmup, 410207cb signature, 4.37, 4.39) changes a Megatron number. The fixed-shape detector path was
 re-verified on the headline legs, and 3,504 / 4.18x stands. Open TODO, in priority order:
@@ -189,18 +201,25 @@ re-verified on the headline legs, and 3,504 / 4.18x stands. Open TODO, in priori
   * Re-finalize an s8 bundle on `_cosine_avg`, with two cold runs.
   * The pinned stack_overlay_env sha is stale: 67a6959e vs 87193aa3. Only a warning, but re-verify.
 * **P1-B, measurement integrity (code).**
-  * (1) A failed overlay install prints "STACK INCOMPLETE" but the leg stays `status ok`, and
-    GEAK_OVERLAY_SHA comes from the env, not from what installed. Make bench_train mark the leg unusable.
-    Refuse s-conditions with `--stack hf_trl` and hf-conditions with megatron.
-  * (2) `--lr-decay-iters` is not in train_probe identity keys (needs snapshot v5).
+  * (1) DONE e5468c9f: a failed overlay install makes the leg unusable; s-/hf-conditions refuse the
+    wrong `--stack`.
+  * (2) DONE 2026-10-21, snapshot v5 (DECISIONS 1.10b): `--lr-decay-iters` captured, and the review's NEW
+    finding fixed with it: `--ddp-average-in-collective` was captured nowhere, so `_cosine` and
+    `_cosine_avg` legs shared both digests; the gate now also refuses a ref/cand whose implementation
+    differs beyond the change under test. Pairs across a capture boundary must be re-measured; most
+    bundle post-checks will report a digest mismatch on a new leg until re-finalized (P1-A, 1.10b).
+    Audit still owed: any past comparison that paired a `_cosine` (pcos_*/hl_*) leg against a
+    `_cosine_avg` leg carried a silent ~0.9%.
   * (3) The Megatron overlays' impl hash covers impl.py only. Add `sources` (a deliberate impl_digest break).
-  * (4) The bench_train capture check is a hand-kept list. Match `GEAK_[A-Z]*CAPTURE`.
+  * (4) DONE e5468c9f: capture detection by pattern.
 * **P1-C, workflow paths never run on Megatron.**
-  * QualityGate default workload is `packed_cosine` (should be the run's WORKLOAD / `_cosine_avg`).
-    The director command lacks `--stack`.
+  * QualityGate: default is `_cosine_avg` (cd75d661) and it now fires on an accepted config lever
+    (9fbf1b33), but it has never run inside a workflow, and its default is not the run's WORKLOAD
+    (matters for HF; the missing `--stack` is HF-only too).
   * quality_ab hardcodes ITERS=358 and nproc 8. quality_ab_final's T_CRIT 2.776 assumes n=5 unchecked.
-  * ConfigSweep overwrites `config_flags` instead of merging (training_workflow.js:1002/1054),
-    reports the first lever, and never refreshes the digest.
+  * ConfigSweep overwrites `config_flags` instead of merging (`curConfig = { ...curConfig, config_flags: sweep.flags_added }`, twice),
+    reports the first lever, and never refreshes the digest. NEW (2026-10-21 audit): no role card reads
+    `CONFIG.config_flags`, so an accepted lever is not carried into later gate/Finalize/Validate legs.
   * measure_packed_stack / quality_ab default to `packed.env`.
 * **P1-D, docs.** README "no HF kernel" / `ref,s2..s7` / `--cond s7`, and the deployable-bundle line. RUN.md
   workload and skip_heads (missing rmsnorm_bwd_fc1_fused, grad_tail). ROADMAP P2-3 not marked done, gate table

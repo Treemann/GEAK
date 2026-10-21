@@ -294,9 +294,14 @@ _IDENTITY_PAIR_KEYS = (
     "--master-weights",
     # HF parallel strategy (implementation half, see probe_summarize.IMPL_KEYS).
     "--hf-fsdp",
+    # v5, implementation half: DDP bucketing (a ConfigSweep lever, measured -0.42% at 2e8).
+    "--ddp-bucket-size",
     # regularization + optimizer: these move the loss/grad-norm trajectory L1 gates on
     "--attention-dropout", "--hidden-dropout", "--weight-decay", "--clip-grad",
     "--lr", "--min-lr", "--lr-decay-style", "--lr-warmup-iters",
+    # v5. The schedule LENGTH is recipe too: _cosine and _cosine_avg decay over 358 iterations, and
+    # a leg decaying over a different length trains a different run with every other key equal.
+    "--lr-decay-iters", "--lr-decay-samples", "--lr-warmup-fraction",
     "--adam-beta1", "--adam-beta2", "--adam-eps", "--seed",
     # what is trained, on what
     "--load", "--tokenizer-model", "--train-data-path",
@@ -311,6 +316,18 @@ _IDENTITY_FLAG_KEYS = (
     "--group-query-attention", "--sequence-parallel", "--use-flash-attn",
     # comm overlap: implementation, see the note above
     "--overlap-grad-reduce", "--overlap-param-gather",
+    # v5, implementation half. --ddp-average-in-collective is an ACCEPTED lever (DECISIONS 4.25)
+    # that no list captured: a _cosine leg (off) and a _cosine_avg leg (on) carried the SAME
+    # config_digest 2e296ee3c3e6aba2 AND impl_digest 49d9009f46b82686 (pcos_1016_170258_ref1 vs
+    # baseline_td1020_1425_leg1), so a reused reference could carry its ~0.9% into a gate silently.
+    # The same defect class v4 fixed for overlap-*. --use-distributed-optimizer is its neighbour in
+    # the reduction path.
+    "--ddp-average-in-collective", "--use-distributed-optimizer",
+    # v5, WORKLOAD identity. --grad-reduce-in-bf16 also turns off fp32 main-grad accumulation
+    # (Megatron arguments.py: accumulate_allreduce_grads_in_fp32 = False): a precision-recipe
+    # change, like --master-weights. --calculate-per-token-loss changes the loss normalization
+    # (pack_gate.py passes it).
+    "--grad-reduce-in-bf16", "--calculate-per-token-loss",
 )
 
 
@@ -350,7 +367,14 @@ def _config_snapshot():
     # no key, so a v3 leg and a v4 leg of the same run produce byte-identical identity and impl
     # dicts, hence identical digests. Only legs that actually USE one of these levers become
     # distinguishable -- which is the entire point of adding them.
-    out["snapshot_keys"] = "v4"
+    #
+    # v5 (2026-10-21) is NOT free (nor was v4: it moved impl_digest on every Megatron leg, DECISIONS
+    # 4.10b): --lr-decay-iters and --use-distributed-optimizer are
+    # PRESENT on current legs (every _cosine* leg, every Megatron leg), so a v4 and a v5 summary of
+    # the same run digest differently. The header keeps argv_hash, not argv, so a v4 sidecar cannot
+    # be re-captured: a v4-vs-v5 pair must be RE-MEASURED, exactly like v2-vs-v3. The gate and L1
+    # both refuse such a pair and say so (training_workflow.js comparable, trajectory_gate verdict).
+    out["snapshot_keys"] = "v5"
     out["world_size"] = os.environ.get("WORLD_SIZE", "1")
     for e in ("NVTE_FLASH_ATTN", "NVTE_FUSED_ATTN", "NVTE_USE_HIPBLASLT"):
         if e in os.environ:

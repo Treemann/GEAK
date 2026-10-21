@@ -276,6 +276,28 @@ def main():
         v_bad = tg.verdict(legs[0], bad, b5, candidate_kind="overlay")
         ok(v_bad["pass"] is False and "step-1 loss" in v_bad["reason"],
            "demoting the envelope did NOT disarm L1: a changed forward path is still rejected")
+
+        # ---------------------------------------------------------------- 7. snapshot v5 boundary
+        # v5 captures --lr-decay-iters, which a v4 sidecar never recorded: the pair must be refused
+        # as RE-MEASURE, not mislabelled "a different WORKLOAD". v3 vs v4 stays comparable.
+        lo, gn = synth(1, cross_at=11)
+        cfg4 = {"micro-batch-size": "1", "seq-length": "4096", "snapshot_keys": "v4"}
+        cfg5 = dict(cfg4, **{"snapshot_keys": "v5", "lr-decay-iters": "358",
+                             "ddp-average-in-collective": "true"})
+        r4, c5 = make_leg(root, "ref_v4", lo, gn, cfg4), make_leg(root, "cand_v5", lo, gn, cfg5)
+        v45 = tg.verdict(r4, c5, b5, candidate_kind="kernel_swap")
+        ok(v45["pass"] is False and "RE-MEASURE" in v45["reason"] and "WORKLOAD" not in v45["reason"],
+           f"a v4-vs-v5 pair is refused with RE-MEASURE, not 'different workload' ({v45['reason'][:60]})")
+        r3 = make_leg(root, "ref_v3", lo, gn, dict(cfg4, snapshot_keys="v3"))
+        v34 = tg.verdict(r3, make_leg(root, "cand_v4", lo, gn, cfg4), b5, candidate_kind="kernel_swap")
+        ok(v34["pass"] is True, "a v3-vs-v4 pair is still comparable in L1 (every key v4 added is "
+                                "implementation, which the identity check excludes)")
+        # ddp-average-in-collective is IMPLEMENTATION: two v5 legs differing only in it are comparable
+        c5b = make_leg(root, "cand_v5_noavg", lo, gn, {k: v for k, v in cfg5.items()
+                                                       if k != "ddp-average-in-collective"})
+        v55 = tg.verdict(c5b, c5, b5, candidate_kind="overlay")
+        ok(v55["pass"] is True and "ddp-average-in-collective" in (v55.get("implementation_delta") or {}),
+           "--ddp-average-in-collective is an implementation delta L1 can gate, not a workload change")
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

@@ -85,7 +85,7 @@ hit the identical trap earlier and both solved it the same way: a fresh director
 
 Return JSON:
 ```json
-{"ref": {...bench_summary...}, "cand": {...bench_summary...},
+{"ref": {...bench_summary...}, "cand": {...bench_summary...},   // keep each leg's `implementation` dict VERBATIM
  "comparison": {...compare_legs.py stdout verbatim — MUST contain a numeric delta_pct; also carries
                  window_artifact_pct, dispersion_reliable, window...},
  "engagement": {"forward": true, "backward": true, "evidence": "..."},

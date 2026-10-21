@@ -98,8 +98,10 @@ head; both are valid results.
 Then run `compare_legs.py <ref>/probe <s8>/probe` per pair. Expected s8 vs ref: about +21%.
 
 **Known, not blocking (RESUME "MEGATRON REVIEW 2026-10-20"):**
-* If an overlay fails to install, the leg is not marked unusable. The engagement checks (8/8 ranks)
-  still catch it.
+* Identity snapshot v5 (2026-10-21, DECISIONS 1.10b): legs and bands recorded before it cannot be paired
+  with new legs (the gate says RE-MEASURE). Existing bundles' `launch.sh` post-checks will report a digest
+  mismatch on a new leg (cosine/HF: config_digest; packed constant-LR: impl_digest; the oldest bundles
+  check nothing that moved). The training itself is unaffected; re-pin when re-finalizing.
 * `finalize_bundle_1015_s8/launch.sh` runs `packed.env`, so do not use it as the recipe.
 * ConfigSweep merges levers wrongly. It is not exercised here.
 

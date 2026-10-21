@@ -266,6 +266,41 @@ const leg = (o = {}) => Object.assign({
     'a schema-2 vs schema-3 pair says RE-MEASURE, not re-summarise: the v2 sidecar never recorded ' +
     'the fields schema 3 digests, so there is nothing on disk to recover them from');
 
+  // Schema 5 is a second re-measure boundary: it captures --lr-decay-iters and the DDP reduction
+  // flags (--ddp-average-in-collective was captured nowhere; a _cosine and a _cosine_avg leg shared
+  // both digests). The probe header keeps argv_hash, not argv, so a v4 leg cannot be re-captured.
+  const v5 = gateVerdict({ ref: leg({ digest_schema: 4 }), cand: leg({ digest_schema: 5 }), mode: 'fast' });
+  ok(v5.klass === 'stale_summary' && /RE-MEASURED/.test(v5.reason) && /lr-decay-iters/.test(v5.reason),
+    'a schema-4 vs schema-5 pair says RE-MEASURE and names what v4 never recorded');
+  // v4 is a capture boundary too (it moved impl_digest on every Megatron leg, DECISIONS 4.10b), and
+  // digest_schema is read from the sidecar, so re-summarising a v3 leg gives 3 again: RE-MEASURE.
+  const v34 = gateVerdict({ ref: leg({ digest_schema: 3 }), cand: leg({ digest_schema: 4 }), mode: 'fast' });
+  ok(v34.klass === 'stale_summary' && /RE-MEASURED/.test(v34.reason),
+    'a schema-3 vs schema-4 pair says RE-MEASURE: re-summarising a v3 sidecar yields schema 3 again');
+
+  // The reference must differ from the candidate ONLY in what is under test. Real implementation
+  // dicts from wf_becee9a0-c6f's accepted gate (ref bare, cand = + the 1020 attention overlay).
+  const IMPL = { 'attention-backend': 'fused', NVTE_FLASH_ATTN: '0', NVTE_FUSED_ATTN: '1',
+                 NVTE_USE_HIPBLASLT: '1', 'use-distributed-optimizer': 'true' };
+  const KERNEL = ['GEAK_OVERLAY', 'GEAK_OVERLAY_SHA'];
+  const okK = gateVerdict({ ref: leg({ implementation: IMPL }), mode: 'fast', allowedImpl: KERNEL,
+    cand: leg({ useful_tok_s_per_gpu: 4900, implementation: Object.assign({}, IMPL,
+      { GEAK_OVERLAY: 'manifest_cand.json', GEAK_OVERLAY_SHA: '541b5ea21d92bd59' }) }) });
+  ok(okK.klass !== 'incomparable', `a kernel gate whose legs differ only by the overlay passes the implementation check (${okK.klass})`);
+  // _cosine reference (no average-in-collective) against a _cosine_avg candidate: same config_digest
+  // since the flag is implementation, but the delta would include the lever's ~0.9%.
+  const bad = gateVerdict({ ref: leg({ implementation: IMPL }), mode: 'fast', allowedImpl: KERNEL,
+    cand: leg({ useful_tok_s_per_gpu: 4900, implementation: Object.assign({}, IMPL,
+      { 'ddp-average-in-collective': 'true', GEAK_OVERLAY: 'm.json', GEAK_OVERLAY_SHA: '541b' }) }) });
+  ok(bad.klass === 'incomparable' && /ddp-average-in-collective/.test(bad.reason),
+    'a reference lacking a lever the candidate carries is refused, naming the key (was a silent ~0.9%)');
+  const lever = gateVerdict({ ref: leg({ implementation: IMPL }), mode: 'deep',
+    allowedImpl: ['ddp-average-in-collective'],
+    cand: leg({ useful_tok_s_per_gpu: 4900, implementation: Object.assign({}, IMPL, { 'ddp-average-in-collective': 'true' }) }) });
+  ok(lever.klass !== 'incomparable', 'a config lever may move exactly its own implementation key');
+  const legacy = gateVerdict({ ref: leg(), cand: leg({ useful_tok_s_per_gpu: 4900 }), mode: 'fast', allowedImpl: KERNEL });
+  ok(legacy.klass !== 'incomparable', 'legs without an implementation dict are not refused by the new check');
+
   // "we measured and it is not there" vs "we could not measure". A real candidate at +1.147% was
   // recorded as no_win against a 2.467% band -- 16.4x the floor -- because the reference leg's IQR
   // was 3.324% where this workload gives 0.05-0.11%. The legs were the problem; the record blamed

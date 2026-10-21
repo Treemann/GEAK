@@ -350,7 +350,15 @@ function alignedDelta(integ) {
   return typeof c.delta_pct === 'number' ? Object.assign({}, c, { estimator: 'per-leg medians' }) : null;
 }
 
-function comparable(ref, cand) {
+// Implementation keys a gate's reference and candidate are ALLOWED to differ in: exactly the thing
+// under test. Anything else differing means the reference is not the run's reference -- e.g. a
+// `_cosine` leg (no --ddp-average-in-collective) reused against a `_cosine_avg` candidate shares the
+// config_digest (the flag is implementation, DECISIONS 1.10b) and would hand the candidate ~0.9%.
+const KERNEL_IMPL_DELTA = ['GEAK_OVERLAY', 'GEAK_OVERLAY_SHA'];
+const leverImplDelta = (flags) => (Array.isArray(flags) ? flags : String(flags || '').split(/\s+/))
+  .filter((t) => typeof t === 'string' && t.startsWith('--')).map((t) => t.replace(/^--/, '').split('=')[0]);
+
+function comparable(ref, cand, allowedImpl) {
   if (!ref.config_digest || !cand.config_digest) return { ok: false, why: 'a leg carries no config digest' };
   // Distinguish "different workload" from "the digest DEFINITION changed between these summaries".
   // The second is not a real incomparability: re-summarise from the probe sidecars, which are on
@@ -363,13 +371,19 @@ function comparable(ref, cand) {
     // attention_dropout 0.0 vs 0.1 digested identically, and a v2 probe sidecar PHYSICALLY DOES NOT
     // CONTAIN those values -- there is nothing on disk to re-summarise them from. Saying
     // "re-summarise" here would send the reader after a fix that cannot work.
-    const across3 = (rs === 3) !== (cs === 3);
+    // Schema 5 is the same kind of boundary: it captures --lr-decay-iters and the DDP reduction
+    // flags, which v4 sidecars never recorded (the header keeps argv_hash, not argv).
+    const RECAPTURE = { 3: 'dropout, lr, seed, architecture',
+                        4: 'attention-backend, comm-overlap and recompute flags',
+                        5: 'lr-decay-iters, per-token loss, bf16 grad reduction and the DDP flags' };
+    const crossed = Object.keys(RECAPTURE).map(Number)
+      .filter((b) => Math.min(rs, cs) < b && b <= Math.max(rs, cs));
     return { ok: false, stale: true,
              why: `digest schema differs (${rs} vs ${cs}) — one summary predates a change in how the ` +
-                  (across3
-                    ? 'digest is computed. Schema 3 captures fields (dropout, lr, seed, architecture) ' +
-                      'that a schema-2 sidecar never recorded, so this pair must be RE-MEASURED; ' +
-                      're-summarising cannot recover them.'
+                  (crossed.length
+                    ? `digest is computed. Schema ${crossed.join(' and ')} captures fields ` +
+                      `(${crossed.map((b) => RECAPTURE[b]).join('; ')}) that the older sidecar never ` +
+                      'recorded, so this pair must be RE-MEASURED; re-summarising cannot recover them.'
                     : 'digest is computed. Re-summarise both from their probe dirs, then compare.') };
   }
   if (ref.config_digest !== cand.config_digest) {
@@ -379,19 +393,31 @@ function comparable(ref, cand) {
   if (ref.ranks_agree_on_argv === false || cand.ranks_agree_on_argv === false) {
     return { ok: false, why: 'ranks within one leg ran different argv' };
   }
+  // Checked only when the caller names what may differ AND both legs carry their implementation
+  // dict (bench_summary.json does); a leg shape without it cannot be checked and is not refused.
+  if (allowedImpl && ref.implementation && cand.implementation) {
+    const ri = ref.implementation, ci = cand.implementation;
+    const extra = [...new Set([...Object.keys(ri), ...Object.keys(ci)])]
+      .filter((k) => ri[k] !== ci[k] && !allowedImpl.includes(k)).sort();
+    if (extra.length) {
+      return { ok: false, why: `implementation differs beyond the change under test (${extra.map((k) =>
+        `${k}: ${ri[k] === undefined ? '-' : ri[k]} vs ${ci[k] === undefined ? '-' : ci[k]}`).join('; ')}): ` +
+        'the reference is not this run\'s reference, so the delta would include that difference' };
+    }
+  }
   return { ok: true };
 }
 
 /** The gate. Throughput is the only thing that can ACCEPT in fast mode; memory is banked (there is
  *  no config knob to convert it with until ConfigSweep exists). L0/L1 can only ever REJECT. */
 function gateVerdict(spec) {
-  const { ref, cand, l0, l1, mode } = spec;
+  const { ref, cand, l0, l1, mode, allowedImpl } = spec;
   const ru = legUsable(ref), cu = legUsable(cand);
   if (!ru.ok) return { accepted: false, klass: ru.fatal ? 'blocked' : 'unusable_ref',
                        fatal: !!ru.fatal, reason: `reference leg unusable: ${ru.why}` };
   if (!cu.ok) return { accepted: false, klass: cu.fatal ? 'blocked' : 'unusable_cand',
                        fatal: !!cu.fatal, reason: `candidate leg unusable: ${cu.why}` };
-  const cmp = comparable(ref, cand);
+  const cmp = comparable(ref, cand, allowedImpl);
   if (!cmp.ok) return { accepted: false, klass: cmp.stale ? 'stale_summary' : 'incomparable',
                         reason: cmp.why };
   if (l0 && l0.pass === false) return { accepted: false, klass: 'numerics', reason: `L0 failed: ${l0.reason || 'op-level numerics'}` };
@@ -700,7 +726,11 @@ const EXTRACT_SCHEMA = obj({ task_dir: { type: 'string' }, op: { type: 'string' 
 // `comparison` is REQUIRED, not optional: without it the gate cannot accept at all (see
 // no_aligned_delta), so a return value that lacks it has wasted two job launches. Requiring it makes
 // the model layer retry for it instead of the orchestrator discovering the omission after the A/B.
-const INTEGRATE_SCHEMA = obj({ ref: { type: 'object' }, cand: { type: 'object' },
+// A gate leg must carry bench_summary's `implementation` dict, or comparable() cannot check that the
+// reference differs from the candidate only in what is under test (DECISIONS 1.10b). The first real
+// run's Integrator trimmed it away (kept impl_digest only), which would have skipped the check silently.
+const LEG = obj({ implementation: { type: 'object' }, config_digest: { type: 'string' } }, ['implementation']);
+const INTEGRATE_SCHEMA = obj({ ref: LEG, cand: LEG,
   comparison: { type: 'object' }, engagement: { type: 'object' },
   overlay_path: { type: 'string' } }, ['ref', 'cand', 'comparison']);
 const AUDIT_SCHEMA = obj({ l0: { type: 'object' }, l1: { type: 'object' },
@@ -712,7 +742,7 @@ const FINALIZE_SCHEMA = obj({ overlay: { type: 'string' }, patch: { type: 'strin
   launch: { type: 'string' }, engagement_recheck: { type: 'object' } }, []);
 const CONFIG_SCHEMA = obj({ lever: { type: 'string' }, flags_added: { type: 'array' },
   l1: { type: 'object' }, packing_gate: { type: 'object' }, comparison_tokens: { type: 'object' },
-  ceiling_pct: { type: 'number' }, ref: { type: 'object' }, cand: { type: 'object' },
+  ceiling_pct: { type: 'number' }, ref: LEG, cand: LEG,
   comparison: { type: 'object' }, config_digest_delta: { type: 'object' },
   peak_reserved_mb: { type: 'object' }, memory_conversion: { type: 'object' } },
   ['lever', 'ref', 'cand', 'comparison']);
@@ -1035,8 +1065,12 @@ if (want('config')) {
       // (step-1 grad_norm 26.7 vs 68.0 in the production recipe). Had flash measured faster, it would
       // have been accepted.
       const l1 = sweep.l1 && typeof sweep.l1.pass === 'boolean' ? sweep.l1 : null;
+      // A lever may move exactly its own implementation keys (and NVTE_* backend env), nothing else.
+      const leverImpl = [...leverImplDelta(sweep.flags_added),
+        ...Object.keys({ ...((sweep.ref || {}).implementation || {}), ...((sweep.cand || {}).implementation || {}) })
+          .filter((k) => k.startsWith('NVTE_'))];
       const cv = gateVerdict({ ref: sweep.ref, cand: sweep.cand, comparison: sweep.comparison,
-                               l1, mode: 'deep' });
+                               l1, mode: 'deep', allowedImpl: leverImpl });
       if (!l1 && cv.accepted) {
         cv.accepted = false;
         cv.klass = 'no_correctness_gate';
@@ -1200,7 +1234,7 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
   // exercised the aligned path while production never did, and the 7B run gated on a raw ratio.
   const v = gateVerdict({ ref: integ.ref, cand: integ.cand, comparison: integ.comparison,
                           l0: audit && audit.l0, l1: audit && audit.l1,
-                          mode: DEEP_MODE ? 'deep' : 'fast' });
+                          mode: DEEP_MODE ? 'deep' : 'fast', allowedImpl: KERNEL_IMPL_DELTA });
   // An unusable leg has a CAUSE, and the Integrator is the only thing that saw it. Flattening that
   // to "leg status != ok" threw away the actual finding once already: the mlp_fc1_swiglu candidate
   // died at iteration #2 with an inf gradient (reproduced twice, Megatron's rerun_state_machine
