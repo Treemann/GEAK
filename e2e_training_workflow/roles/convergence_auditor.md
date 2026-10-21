@@ -17,24 +17,45 @@ Report magnitude AND sign distribution. A pass with a one-sided error distributi
 a pass: say so.
 
 ### L1 — trajectory level
-`python3 scripts/trajectory_gate.py compare <ref_probe> <cand_probe> --band <band.json>`
+`python3 scripts/trajectory_gate.py compare <ref_probe> <cand_probe> --band <band.json> --kind <overlay|kernel_swap> [--l0-strictly-better]`
+
+**Always pass `--kind`, and choose it BEFORE you read the result.** Omitted, it defaults to `overlay`,
+whose step-1 floor (0.05%) is 40x tighter than `kernel_swap`'s (2.0%) -- DECISIONS 3.5.
+- `overlay`: the candidate leaves the FORWARD bit-identical (backward-only kernel, a reduction or
+  communication change). Evidence: L0's paired block shows `out` bit-identical to the incumbent.
+- `kernel_swap`: anything else -- the forward numerics changed, however slightly.
+State the kind and its evidence in your `l1` reason. Pass `--l0-strictly-better` only when your own
+L0 run rates the candidate strictly more accurate than the incumbent on EVERY output.
 
 Preconditions you must check yourself, because the tool cannot:
-- both legs ran the SAME seed, data path and config (`config_digest` equal — the tool refuses
-  otherwise, but understand why: step i must be the same batch on both sides);
-- the band came from >= 2 baseline runs **of this workload**. A band from another model or another
-  parallel mapping is not applicable: divergence rates differ.
+- both legs ran the SAME seed, data and config, so step i is the same batch on both sides. The tool
+  compares the workload identity (config minus implementation keys, including `--seed` and
+  `--train-data-path`) and refuses a mismatch. It cannot verify the realized batch order (shuffling,
+  or changed file contents behind the same path);
+- the band came from baseline runs **of this workload** (`band.runs`; Setup takes 3, calibrate
+  accepts 2). A band from another model or parallel mapping is not applicable.
+  `calibrated_argv_hashes` / `band_applicability` scope only the non-voting envelope.
 
-Reading the result:
-- **step-1 loss** is the sharpest signal you have — a pure forward on identical weights, bit-identical
-  in a healthy stack (verified at 0.5B/2GPU and 7B/8GPU). A step-1 failure means the forward path
-  changed before any optimizer update could explain it.
-- **envelope exceedance** fails on a PATTERN, not one step. Training is chaotic; one outlier is
-  chaos, five is a bug.
-- **sign balance** near 0 or 1 is a systematic bias even when every magnitude check passes.
-- Known gap: the step-1 floor (0.05% rel) is a policy guess, not a calibration, because a baseline
-  pair runs identical kernels. On a legitimate kernel swap, treat a marginal step-1 failure as
-  "investigate and report", not as proof of a bug. Say which it is.
+What votes (DECISIONS 3.4b, 3.4e, 3.4h, 3.5) -- only these can make `pass` false:
+- **step-1 loss**: `100*|cand-ref|/|ref|` > `max(floor[kind], safety x band.step1_loss_rel_pct)`.
+  Step 1 is a pure forward on identical weights, bit-identical in a healthy stack, so a failure means
+  the forward changed before any optimizer update could explain it. The 2.0% `kernel_swap` floor is
+  an upper bound (measured on an fp32-reference pair); a real 0.2-2% forward shift passes it.
+- **early-window sign rule**, loss and grad_norm, steps 1-8: >= 5 nonzero diffs, all the same sign.
+  Measured false-reject rate 5.1% / 0.6% on clean pairs. With `--l0-strictly-better`, a one-sided
+  move toward LOWER loss is waived; toward higher loss, or one-sided grad_norm, still blocks.
+- a workload-identity mismatch, or fewer than 3 comparable steps (both return `pass: false` before
+  any detector runs).
+
+Reported, never voting:
+- **step-1 grad_norm** (advisory above 30%): accuracy-neutral GEMM changes move it +44..+64% on the
+  packed 7B workload, overlapping real defects (-61% and worse).
+- **per-step envelope**: retired 2026-09-28; it fired on true-zero-delta pairs harder than on
+  candidates. `envelope_discriminating: false` in the band is expected.
+
+Known blind spot: a multiplicative dq error of about -0.2% to +2.2% passes L0 on a dq whose incumbent
+is already far from fp32 (attention), and L1 has no voting gradient-scale check. Quote L0's paired
+dq `scale_bias` (candidate vs incumbent bf16) in your verdict; beyond ~1e-3 is a reject (DECISIONS 3.2b).
 
 ### L2 — soak: **RETIRED 2026-10-08. Always report `l2_recommended: false`.**
 
@@ -47,12 +68,11 @@ name. Its intended territory is squeezed from both sides by instruments that are
 
 * **op-local numerics is L0's**, decided in 11.5 s (a x1.004 gradient bias: `dgrad scale_bias`
   +3.80e-03 against a 2e-3 tolerance);
-* **cross-step state is L1's**, free, and now demonstrated — the stale-gradient control at
-  alpha = 1.0 is rejected by the grad_norm sign test (0.750 against a measured null range of
-  0.5-0.625);
-* in the only gap left, alpha = 0.25 where L1 goes silent, the soak's own measured effect is 0.00576
-  against an MDE of 0.01587. Closing that needs ~30 legs, about 30 GPU-hours, for a defect class
-  L1 already catches one notch up.
+* **cross-step state is NOT reliably covered by L1.** The strict sign rule (DECISIONS 3.4e) lists
+  staleness as a blind spot, and the earlier claim that L1 caught the alpha = 1.0 stale-gradient
+  control was withdrawn there (0.375-0.75 against matched references, not all-same-sign);
+* the soak does not close that gap either: at alpha = 0.25 its own measured effect is 0.00576
+  against an MDE of 0.01587, and resolving it needs ~30 legs, about 30 GPU-hours.
 
 If you believe you have found a defect class that is genuinely invisible to both L0 and L1, say so
 explicitly and say what makes it so — do not reach for the soak by default. `scripts/l2_soak.sh`

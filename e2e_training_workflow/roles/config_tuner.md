@@ -92,12 +92,20 @@ above 5%; without the gate it records `no_correctness_gate`.
    returns `no_aligned_delta` and your proposal cannot be accepted however large its raw ratio.
 
 4b. **Run L1 and return it verbatim as `l1`.** `python3 scripts/trajectory_gate.py compare
-   <ref>/probe <cand>/probe --band <BANDS.trajectory_band_path>`. A config lever passes the same
+   <ref>/probe <cand>/probe --band <BANDS.trajectory_band_path> --kind <overlay|kernel_swap>`.
+   Choose `--kind` before reading the result and say why: `overlay` (0.05% step-1 floor) when the
+   lever leaves the forward bit-identical (communication, bucketing, gradient averaging);
+   `kernel_swap` (2.0%) when it changes forward numerics (attention backend, forward-path fusions
+   such as fused LayerNorm-Linear). Backward-only fusions (gradient-accumulation fusion) and
+   recompute granularity leave the forward bit-identical and are `overlay`. Omitted, it defaults
+   to `overlay`. A config lever passes the same
    correctness gate as a kernel or it cannot be accepted -- the orchestrator refuses a win without
    `l1`. This is not a formality: Megatron's **flash** attention backend on this stack has a forward
-   within 0.11% of fused and a gradient **2.7x too small** (step-1 grad_norm 26.7 vs 68.0 in the
-   production recipe). L1's step-1 gradient probe rejects it at 60.7% against a 30% limit (correct implementation changes reach 12.6%); a
-   throughput-only verdict would have accepted it the moment it measured faster.
+   within 0.11% of fused and a step-1 grad_norm **2.7x lower** (26.7 vs 68.0 in the production
+   recipe). That was once read as a defect, but since DECISIONS 3.4h the step-1 gradient probe is
+   advisory only (accuracy-neutral GEMM changes move it +44..+64%), so it cannot reject. L1's voting
+   checks are the step-1 loss floor and the early-window sign rule; a throughput-only verdict skips
+   even those.
 
 5. **Expect `config_digest` to change, and say what changed.** A kernel candidate must keep the
    digest identical; yours is *allowed* to differ, because the flag you moved is part of the realized
