@@ -104,11 +104,16 @@ your own.
 - If the measured final delta disagrees with the sum of accepted per-candidate deltas, **say so and
   report yours**. Per-candidate deltas are measured on different references and do not add up; an
   unexplained gap is a finding, not a rounding error.
+- Also report the wall-time delta: `wall_delta_pct` from `compare_legs.py` (same aligned window;
+  never subtract two bench_summary wall rates, whose windows differ), and each leg's `stall_pct`
+  (fixed-shape legs only; None on variable-shape stacks). The headline is a median and excludes the synchronized host stalls a real run
+  pays (DECISIONS 4.41). Report-only: it does not change the verdict, but a candidate whose
+  wall-time delta is far below its median delta (more stalls) is a finding -- name it.
 
 Return JSON:
 ```json
 {"validation_status": "confirmed|disputed|unusable", "baseline_useful_tok_s": 0.0,
- "final_useful_tok_s": 0.0, "delta_pct": 0.0, "band_pct": 0.0, "l1": {"pass": true},
+ "final_useful_tok_s": 0.0, "delta_pct": 0.0, "band_pct": 0.0, "wall_delta_pct": 0.0, "l1": {"pass": true},
  "legs": [...], "reason": "..."}
 ```
 

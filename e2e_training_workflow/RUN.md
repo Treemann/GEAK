@@ -102,7 +102,8 @@ Then run `compare_legs.py <ref>/probe <s8>/probe` per pair. Expected s8 vs ref: 
   with new legs (the gate says RE-MEASURE). Existing bundles' `launch.sh` post-checks will report a digest
   mismatch on a new leg (cosine/HF: config_digest; packed constant-LR: impl_digest; the oldest bundles
   check nothing that moved). The training itself is unaffected; re-pin when re-finalizing.
-* `finalize_bundle_1015_s8/launch.sh` runs `packed.env`, so do not use it as the recipe.
+* The deliverable is `runs/finalize_bundle_1021_s8_cosine_avg` (s8 on `_cosine_avg`, v5 digests pinned).
+  `finalize_bundle_1015_s8` runs `packed.env` (not cleared); do not use it as the recipe.
 * ConfigSweep merges levers wrongly. It is not exercised here.
 
 ## The accepted Megatron stack (s8)

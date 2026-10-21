@@ -294,8 +294,9 @@ _IDENTITY_PAIR_KEYS = (
     "--master-weights",
     # HF parallel strategy (implementation half, see probe_summarize.IMPL_KEYS).
     "--hf-fsdp",
-    # v5, implementation half: DDP bucketing (a ConfigSweep lever, measured -0.42% at 2e8).
-    "--ddp-bucket-size",
+    # v5, implementation half: DDP bucketing (a ConfigSweep lever, measured -0.42% at 2e8), and the
+    # GC schedule (--manual-gc's interval; host-stall lever, 2026-10-21).
+    "--ddp-bucket-size", "--manual-gc-interval",
     # regularization + optimizer: these move the loss/grad-norm trajectory L1 gates on
     "--attention-dropout", "--hidden-dropout", "--weight-decay", "--clip-grad",
     "--lr", "--min-lr", "--lr-decay-style", "--lr-warmup-iters",
@@ -323,6 +324,9 @@ _IDENTITY_FLAG_KEYS = (
     # The same defect class v4 fixed for overlap-*. --use-distributed-optimizer is its neighbour in
     # the reduction path.
     "--ddp-average-in-collective", "--use-distributed-optimizer",
+    # Synchronized Python GC (Megatron: gc.disable() + gc.collect() every --manual-gc-interval steps
+    # on every rank). Host-side only; captured so a GC-lever leg cannot share a digest with its ref.
+    "--manual-gc",
     # v5, WORKLOAD identity. --grad-reduce-in-bf16 also turns off fp32 main-grad accumulation
     # (Megatron arguments.py: accumulate_allreduce_grads_in_fp32 = False): a precision-recipe
     # change, like --master-weights. --calculate-per-token-loss changes the loss normalization

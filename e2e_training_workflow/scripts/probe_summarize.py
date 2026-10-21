@@ -227,7 +227,9 @@ IMPL_KEYS = ("attention-backend", "GEAK_OVERLAY", "GEAK_OVERLAY_SHA",
              # was captured nowhere until v5 (train_probe.py).
              # (--grad-reduce-in-bf16 is NOT here: it also turns off fp32 main-grad accumulation,
              # a precision-recipe change like --master-weights, so it is workload identity.)
-             "ddp-average-in-collective", "ddp-bucket-size", "use-distributed-optimizer")
+             "ddp-average-in-collective", "ddp-bucket-size", "use-distributed-optimizer",
+             # host-side GC schedule: when Python collects, not what is computed
+             "manual-gc", "manual-gc-interval")
 
 
 def snapshot_schema(cfg):
@@ -295,6 +297,15 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
             "pad_fraction_pct": round(100 * (1 - useful / total), 2) if total else None,
             "useful_tok_s_per_gpu": round(useful / (med / 1000.0), 1) if med else None,
             "nominal_tok_s_per_gpu": round(total / (med / 1000.0), 1) if med else None,
+            # WALL-TIME rate over the same steady window: total useful tokens / total time. The median
+            # headline excludes the isolated host stalls that a real run pays (synchronized across
+            # ranks, ~300-1000 ms, 1-2% of wall time on the 7B legs; DECISIONS 4.41). Report-only.
+            "wall_useful_tok_s_per_gpu": round(sum(s.get("useful_tokens", 0) for s in steady)
+                                               / (sum(sd) / 1000.0), 1) if sd and sum(sd) else None,
+            # Fixed-shape legs only: on a dynamically padded stack step time follows content, so
+            # mean - median measures data skew, not stalls.
+            "stall_pct": (round(100 * (statistics.mean(sd) - med) / med, 3)
+                          if sd and med and shape_all == "fixed" else None),
             "peak_reserved_mb": max((s.get("peak_reserved_mb", 0) for s in steady), default=0),
             "peak_alloc_mb": max((s.get("peak_alloc_mb", 0) for s in steady), default=0),
         }
@@ -346,6 +357,12 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         "slowest_rank": slowest,
         "useful_tok_s_per_gpu": round(statistics.median(
             [v["useful_tok_s_per_gpu"] or 0 for v in per_rank.values()]), 1),
+        # Report-only wall-time view (see per_rank): what a production run of this config pays,
+        # stalls included. The gate still decides on the median; this makes the gap visible.
+        # Worst rank for both, like step_median_ms (the step is as slow as its slowest rank).
+        "wall_useful_tok_s_per_gpu": min((v["wall_useful_tok_s_per_gpu"] or 0) for v in per_rank.values()),
+        "stall_pct": (max(v["stall_pct"] for v in per_rank.values())
+                      if all(v["stall_pct"] is not None for v in per_rank.values()) else None),
         "nominal_tok_s_per_gpu": round(statistics.median(
             [v["nominal_tok_s_per_gpu"] or 0 for v in per_rank.values()]), 1),
         "peak_reserved_mb": max(v["peak_reserved_mb"] for v in per_rank.values()),

@@ -79,6 +79,12 @@ def compare(ref_probe, cand_probe, tol=0.02):
         "dispersion_reliable": bool(A.get("dispersion_reliable") and B.get("dispersion_reliable")),
         "min_steady_steps": min(A.get("min_steady_steps", 0), B.get("min_steady_steps", 0)),
     }
+    # REPORT-ONLY wall-time delta on the SAME aligned window (DECISIONS 4.41). Per-leg bench_summary
+    # wall rates use each leg's own window, and with 1-2 stalls per ~20 steps the window start alone
+    # moves them by about the size of the effect, so a wall delta is only quoted from here.
+    wa, wb = A.get("wall_useful_tok_s_per_gpu"), B.get("wall_useful_tok_s_per_gpu")
+    out["wall_delta_pct"] = round(100 * (wb - wa) / wa, 4) if wa and wb else None
+    out["ref"]["stall_pct"], out["cand"]["stall_pct"] = A.get("stall_pct"), B.get("stall_pct")
     # ---- PAIRED estimator (added 2026-10-09, reported alongside; not yet what the gate reads) ----
     # delta_pct above is median(useful)/median(dur) per leg, each median taken independently. That is
     # robust only when every step has the same SHAPE -- true on Megatron, which pads every sample to

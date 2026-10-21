@@ -192,11 +192,28 @@ Commits since: be6c7f6c (agents group under meta.phases titles; per-lever Config
 9fbf1b33 (QualityGate also runs when only a non-packing config lever was accepted), 372fdf43 (L1 `--kind`
 documented for auditor/tuner; DECISIONS 3.2b paired-dq red line), and snapshot v5 (DECISIONS 1.10b).
 
+**Done 2026-10-21 (autonomous, user-approved order):**
+* Snapshot v5 + implementation check in the gate (092d111d, DECISIONS 1.10b).
+* M2 NOT run for kernels: cost-benefit (wf_6d834cc5-cc7, skeptic-checked) priced every head M2 could
+  open on s8 at 0.05-0.5% e2e, at or below the 0.25% floor / 0.39% s8 band; the s8 queue was already
+  exhausted on 10-15. The 1013 -> 1020 attention swap is worth ~+0.12% on s8: fold it in only at the
+  next outcome test that is forced for another reason. M2 remains optional as a pipeline regression.
+* Host stalls (CPU-only survey of 48 legs) -> synchronized-GC A/B -> DECISIONS 4.41: aligned wall-time
+  +0.75 / +1.12% on the A/B pairs but +0.03% on the bundle's cold pair, and some stalls survive with
+  automatic GC off, so GC is a partial, unconfirmed fix (opt-in). L1 step-1 0.0%. Kept: report-only
+  `wall_useful_tok_s_per_gpu` / `stall_pct` in bench_summary and aligned `wall_delta_pct` in compare_legs.
+* **P1-A DONE:** `runs/finalize_bundle_1021_s8_cosine_avg` (default = cleared s8 + `_cosine_avg`;
+  `--gc`; `--bare`). 4 cold runs from /tmp: stack x2 and gc pass at launch; bare passes after pinning its
+  own v5 impl_digest (unknown until it ran). bare -> s8 +20.88 / +21.79% paired (2,881 -> 3,479 / 3,526);
+  the two cold stack medians differ by 1.4% aligned (paired -0.01%). README points to it.
+* Still open: locate the non-GC stalls; full-epoch host-memory check before `--gc` could become default; P1-B(3) sources; P1-C
+  ConfigSweep merge / config_flags carry; QualityGate never run in a workflow; P2; P3 (MoE).
+
 **MEGATRON REVIEW 2026-10-20** (two read-only audits plus spot checks). None of the HF-era fixes (4.33
 warmup, 410207cb signature, 4.37, 4.39) changes a Megatron number. The fixed-shape detector path was
 re-verified on the headline legs, and 3,504 / 4.18x stands. Open TODO, in priority order:
 
-* **P1-A, the deliverable.** `finalize_bundle_1015_s8/launch.sh:51` runs `packed.env`: constant LR, NOT cleared
+* **P1-A, the deliverable. DONE 2026-10-21 (`finalize_bundle_1021_s8_cosine_avg`).** Was: `finalize_bundle_1015_s8/launch.sh:51` runs `packed.env`: constant LR, NOT cleared
   (4.22), and no `--ddp-average-in-collective`. No bundle runs the cleared recipe `_cosine_avg`.
   * Re-finalize an s8 bundle on `_cosine_avg`, with two cold runs.
   * The pinned stack_overlay_env sha is stale: 67a6959e vs 87193aa3. Only a warning, but re-verify.

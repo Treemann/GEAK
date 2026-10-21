@@ -3,7 +3,7 @@
 A second system layer over the **UNCHANGED** single-kernel `kernel_workflow`, aimed at **SFT training
 throughput** instead of serving throughput.
 
-**Where it stands (2026-10-14), Megatron, Qwen2.5-Math-7B, 8x MI308X:**
+**Where it stands (2026-10-21), Megatron, Qwen2.5-Math-7B, 8x MI308X:**
 * Useful throughput went **839 -> 3,504 tok/s/GPU (4.18x)** on the recommended production recipe,
   `workloads/qwen2_5_math_7b_packed_cosine_avg.env`: GBS 16 packs, default dropout, standard LR
   schedule, `--ddp-average-in-collective`.
@@ -28,13 +28,16 @@ came from a warmup detector that over-trimmed variable-shape legs.
 * Recipe: `workloads/qwen2_5_math_7b_hf_cosine_zero2_nm.env` + `stack_overlay_env.sh --cond hf8`.
 
 Training safety: the 8-kernel stack is **cleared for training under a standard LR schedule**
-(warmup + cosine, `workloads/qwen2_5_math_7b_packed_cosine.env`). That rests on a pre-registered
-one-epoch, multi-seed outcome test: held-out loss −0.0023 vs REF, no instability episodes
-(DECISIONS 4.24). It is NOT cleared for constant-LR, no-warmup training (4.22). Deployable bundle:
-`finalize_bundle_1015_s8`.
+(warmup + cosine; production descriptor `workloads/qwen2_5_math_7b_packed_cosine_avg.env`). That rests
+on pre-registered one-epoch, multi-seed outcome tests: held-out loss −0.0023 vs REF, no instability
+episodes (DECISIONS 4.24), and again with `--ddp-average-in-collective` (4.25). It is NOT cleared for
+constant-LR, no-warmup training (4.22). **Deliverable bundle: `finalize_bundle_1021_s8_cosine_avg`**
+(4 cold runs: 3 pass at launch, the bare leg after pinning its own v5 impl_digest; bare -> s8
++20.9/+21.8% paired; opt-in `--gc` mode, 4.41).
+`finalize_bundle_1015_s8` runs the constant-LR `packed.env` and is NOT the deliverable.
 
 What is NOT established yet:
-* Any accepted kernel on the second stack (HF TRL).
+* MoE, TP/PP > 1, multi-node and fp8 (Megatron is validated single-node, TP1 x DP8, dense, bf16).
 
 Priorities: `ROADMAP.md`, "Near-term priorities". Same fractal two-altitude doctrine as `../e2e_workflow/`,
 but the metric, the bottleneck model and the correctness gate are different enough that it is a
@@ -105,7 +108,7 @@ scripts/compare_legs.py       throughput delta: window-aligned + paired per-step
 scripts/calibrate_band.py     across-job floor from null pairs
 scripts/trajectory_gate.py    L1: step-1 forward probe + strict sign rule (envelope advisory)
 scripts/pack_sft.py           packing (pure data transform) / pack_gate.py: its structural gate
-scripts/stack_overlay_env.sh  THE definition of the accepted packed stack (ref, s2..s7): install,
+scripts/stack_overlay_env.sh  THE definition of the accepted stacks (Megatron ref, s2..s8; HF hf1..hf8): install,
                               verify the gated bytes, print a leg's --extra-env
 scripts/measure_packed_stack.sh  interleaved cumulative re-measure of the accepted packed stack
 scripts/capture_train_shapes.py  fwd+bwd capture -> immutable L0 oracle
@@ -138,8 +141,8 @@ python3 scripts/parse_train_profile.py <run>/probe <run>/bench_summary.json
 python3 scripts/trajectory_gate.py calibrate <probeA> <probeB> -o band.json
 python3 scripts/trajectory_gate.py compare <ref_probe> <cand_probe> --band band.json
 
-# the accepted packed stack, interleaved and cumulative (ref, s5, s6 +attn, s7 +qkv)
-bash scripts/measure_packed_stack.sh --conds ref,s5,s6,s7 --reps 3
+# the accepted packed stack vs the bare reference, interleaved, on the production recipe
+bash scripts/measure_packed_stack.sh --workload workloads/qwen2_5_math_7b_packed_cosine_avg.env --conds ref,s8 --reps 2
 
 # tests (no GPU; the .js ones need node)
 node scripts/tests/test_training_gate.js
@@ -153,16 +156,13 @@ runs with `agents_error: 0`): measurement, profiling, extraction, the recursive 
 (stackable, with per-rank engagement proof), L0, L1, the packing gate, ConfigSweep, independent
 validation, and bundle delivery.
 
-The HF TRL adapter measures and profiles, and an overlay engages on it unchanged. No kernel has been
-gated on it yet.
+The HF TRL adapter runs the same workflow and gates unchanged: eight overlays accepted and the final
+configuration cleared for training (DECISIONS 4.27-4.40).
 
-Open, in priority order (`ROADMAP.md`):
-* long-horizon quality of the seven-kernel stack;
-* one deployable bundle;
-* a stacked-baseline option in the workflow;
-* L1's null for implementation-change pairs;
-* GEMM efficiency;
-* the HF exit criterion.
+Open, in priority order (`RESUME.md`, "MEGATRON REVIEW"):
+* ConfigSweep merging accepted levers and carrying them into later legs (P1-C);
+* QualityGate exercised inside a workflow run;
+* MoE / TP > 1 (P3).
 
 ## Launching a full `fast` run from Claude Code
 
@@ -233,8 +233,8 @@ cheaply — a 0.5B leg is ~1 s/step against ~11.6 s at 7B.
 * `skip_heads` excludes heads already accepted; `baseline_dirs` reuses measured null legs.
 * `quality_gate: "true"` adds the one-epoch, multi-seed outcome test of the final stack (DECISIONS
   4.23). Without it the result states that the stack is not cleared for long training.
-* `baseline_overlay: "<REPO>/e2e_training_workflow/scripts/stack_overlay_env.sh --cond s7"` gates
-  every head ON TOP of the accepted seven-kernel stack instead of the bare reference. Every leg of
+* `baseline_overlay: "<REPO>/e2e_training_workflow/scripts/stack_overlay_env.sh --cond s8"` gates
+  every head ON TOP of the accepted eight-kernel stack instead of the bare reference. Every leg of
   the run carries it, and every delta is then an increment on that stack. Without it, re-measure an
   accepted head on the stack with `scripts/measure_packed_stack.sh`, because increments change when
   stacked.

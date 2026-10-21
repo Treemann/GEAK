@@ -103,7 +103,8 @@ def main():
     for lever in ("overlap-grad-reduce", "overlap-param-gather", "attention-backend",
                   "recompute-granularity", "recompute-method", "hf-fsdp",
                   # v5: the accepted DECISIONS 4.25 lever that no list captured, and its neighbours
-                  "ddp-average-in-collective", "ddp-bucket-size", "use-distributed-optimizer"):
+                  "ddp-average-in-collective", "ddp-bucket-size", "use-distributed-optimizer",
+                  "manual-gc", "manual-gc-interval"):
         ok(lever in captured and lever in set(impl),
            f"Class-A lever `{lever}` is captured AND classed as implementation")
 
@@ -120,6 +121,9 @@ def main():
                                      {"snapshot_keys": "v6"})] == [5, 4, 2, 6],
        "snapshot_schema parses vN generically (v5->5, absent->2, a future v6->6, not 2)")
     # The schedule length is WORKLOAD identity (what is trained), never implementation.
+    # The GC interval must keep its VALUE (interval 0 vs 10 are different runs), so it is a pair key.
+    ok("--manual-gc-interval" in pair and "--manual-gc" in flag,
+       "--manual-gc-interval is a value (pair) key and --manual-gc a flag key")
     # So are a precision-recipe change and the loss normalization.
     for k in ("lr-decay-iters", "lr-decay-samples", "lr-warmup-fraction",
               "grad-reduce-in-bf16", "calculate-per-token-loss"):
