@@ -91,13 +91,20 @@ function stubFor(prompt) {
   return {};
 }
 
+// Every opts.phase seen across ALL dry runs (fast, deep, quality); checked once at the end.
+const AGENT_GROUPS = new Set();
+
 async function dryRun(args) {
-  const calls = { agent: 0, workflow: 0, phases: [], prompts: [] };
+  const calls = { agent: 0, workflow: 0, phases: [], prompts: [], agentLabels: [] };
   const globals = {
     args,
     log: () => {},
     phase: (t) => calls.phases.push(t),
-    agent: async (prompt) => { calls.agent++; calls.prompts.push(String(prompt)); return stubFor(prompt); },
+    agent: async (prompt, opts) => {
+      calls.agent++; calls.prompts.push(String(prompt)); calls.agentLabels.push(opts && opts.label);
+      AGENT_GROUPS.add(opts && opts.phase);
+      return stubFor(prompt);
+    },
     workflow: async (ref) => {
       calls.workflow++; calls.lanePaths = (calls.lanePaths || []).concat([ref && ref.scriptPath]);
       return { eval_dir: '/work/exp', final_patch: 'p', final_geomean: 2.0 };
@@ -161,9 +168,12 @@ async function dryRun(args) {
 
   // A sweep that sweeps. Named levers are measured in ONE run so they share a baseline and a band.
   try {
-    const { result } = await dryRun({ ...base, deep_mode: 'true', budget: 0, max_gates: 4,
+    const { result, calls } = await dryRun({ ...base, deep_mode: 'true', budget: 0, max_gates: 4,
                                       config_levers: 'recompute_granularity,attention_backend' });
     const cs = (result && result.config_sweep) || {};
+    ok(calls.agentLabels.includes('config_tuner:recompute_granularity') &&
+       calls.agentLabels.includes('config_tuner:attention_backend'),
+      'each named lever gets its own agent label (the per-lever label used to be silently dropped)');
     ok(Array.isArray(cs.levers) && cs.levers.length === 2,
       `two named levers produce two records (got ${Array.isArray(cs.levers) ? cs.levers.length : typeof cs.levers})`);
     ok(cs.levers[0].requested === 'recompute_granularity' &&
@@ -313,6 +323,16 @@ async function dryRun(args) {
     ok(false, `quality gate threw: ${e && e.message}`);
   }
   STRAT_HEADS = null;
+
+  // An opts.phase that is not a meta.phases title opens an ad-hoc group in /workflows and leaves the
+  // declared phase reading "not started" though its agent ran (run wf_becee9a0-c6f, 2026-10-20).
+  const metaTitles = new Set([...fs.readFileSync(WF, 'utf8').slice(0, metaEnd)
+    .matchAll(/title: '([^']+)'/g)].map((m) => m[1]));
+  const strays = [...AGENT_GROUPS].filter((g) => !metaTitles.has(g));
+  ok(strays.length === 0,
+    `every agent, in every mode, groups under a meta.phases title (strays: ${strays.join(', ') || 'none'})`);
+  ok(AGENT_GROUPS.has('ConfigSweep') && AGENT_GROUPS.has('QualityGate'),
+    'the optional phases were exercised by this check, not just the fast path');
 
   console.log();
   if (failures) { console.error(`${failures} check(s) FAILED`); process.exit(1); }

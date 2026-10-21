@@ -605,9 +605,17 @@ fallback 0) as well as your own: a stacked leg whose base overlays silently fell
 ${JSON.stringify(inputs, null, 2)}`;
 }
 
-async function safeAgentStub(role, phase, inputs, intro = '') {
+// opts.phase must be a meta.phases title, or the agent lands in an ad-hoc group and the declared
+// phase shows "not started" in /workflows. The role PHASE (lower-case) still goes into the prompt.
+const PROGRESS_GROUP = {
+  setup: 'Setup', reprofile: 'Profile', strategize: 'Strategize', config: 'ConfigSweep',
+  extract: 'KernelTrack', integrate: 'KernelTrack', gate: 'KernelTrack',
+  finalize: 'Finalize', report: 'Report', validate: 'Validate', quality: 'QualityGate',
+};
+
+async function safeAgentStub(role, phase, inputs, intro = '', extra = {}) {
   requireRole(role);   // unreachable until roles land; keeps the call sites honest meanwhile
-  const opts = { phase, label: `${role}:${phase}` };
+  const opts = { phase: PROGRESS_GROUP[phase] || phase, label: extra.label || `${role}:${phase}` };
   const schema = PHASE_SCHEMA[phase];
   if (schema) opts.schema = schema;   // absent for 'report', which returns prose by design
   return safeAgent(roleAgent(role, phase, intro, inputs), opts);
