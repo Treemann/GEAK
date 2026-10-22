@@ -147,7 +147,16 @@ STEP1_GN_LIMIT_PCT = 30.0     # see check 1b: correct implementation changes rea
 # `between` spread is not larger than its `within` spread calibrates nothing.
 # NOTE the reference implementation computes internally in fp32, so 1.75% is an UPPER bound for a
 # same-precision (bf16->bf16) swap. Tighten it when such a pair is available.
-STEP1_FLOOR_PCT = {"overlay": 0.05, "kernel_swap": 2.0}
+#
+# TIGHTENED 2026-10-22 (DECISIONS 4.48, audit G7): the bf16->bf16 pair this note asked for now exists 20
+# times over. Across every historical gate pair (13 accepted kernels incl. attention, rope, fc1/fc2/qkv,
+# lmhead, HF attention/rmsnorm), a CORRECT swap moved step-1 loss by at most 0.0442% (median 0.0117%,
+# p95 0.0247%). 2.0% sat 45x above that, so a real 0.25-2% forward shift passed L1. kernel_swap is now
+# 0.25% (5.7x the largest observed correct swap). The 1.75% pair above was a MORE-ACCURATE (fp32)
+# implementation; that case keeps the old 2.0% floor, but only when L0 rates the candidate strictly
+# more accurate than the incumbent on every output (--l0-strictly-better), as in DECISIONS 3.4d.
+STEP1_FLOOR_PCT = {"overlay": 0.05, "kernel_swap": 0.25}
+STEP1_FLOOR_STRICTLY_MORE_ACCURATE_PCT = 2.0
 STEP1_REL_FLOOR_PCT = STEP1_FLOOR_PCT["overlay"]
 
 
@@ -467,9 +476,12 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
     if rs["loss"] and cs["loss"] and rs["loss"][0]:
         rel = 100 * abs(cs["loss"][0] - rs["loss"][0]) / abs(rs["loss"][0])
         floor = STEP1_FLOOR_PCT.get(candidate_kind, STEP1_REL_FLOOR_PCT)
+        if candidate_kind == "kernel_swap" and l0_strictly_better:
+            floor = STEP1_FLOOR_STRICTLY_MORE_ACCURATE_PCT
         lim = max(floor, (band.get("step1_loss_rel_pct") or 0) * safety)
         res["checks"]["step1_loss_rel_pct"] = {"value": round(rel, 6), "limit": round(lim, 6),
-                                               "candidate_kind": candidate_kind}
+                                               "candidate_kind": candidate_kind,
+                                               "l0_strictly_better": bool(l0_strictly_better)}
         if rel > lim:
             failures.append(f"step-1 loss differs by {rel:.4f}% (limit {lim:.4f}%): the forward path "
                             f"changed before any optimizer update could explain it")

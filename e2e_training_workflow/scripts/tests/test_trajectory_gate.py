@@ -308,6 +308,23 @@ def main():
             vn = tg.verdict(legs[0], bad_nan, b5, candidate_kind=kind)
             ok(vn["pass"] is False and "non-finite" in vn["reason"],
                f"a NaN loss/grad_norm trajectory FAILS L1 ({kind}); every NaN comparison is False, so it used to pass")
+
+        # ---------------------------------------------------------------- 9. kernel_swap floor 0.25%
+        # (DECISIONS 4.48): a 0.5% step-1 forward shift is refused for a kernel swap; it passes only
+        # when L0 rates the candidate strictly more accurate (the fp32-reference case, floor 2.0%).
+        lo, gn = synth(1, cross_at=11)
+        b0 = dict(b5, step1_loss_rel_pct=0.0)   # real bands: step 1 is bit-reproducible (0.0 spread)
+        sh = list(lo); sh[0] = lo[0] * 1.005
+        shifted = make_leg(root, "cand_shift05", sh, gn)
+        v05 = tg.verdict(legs[0], shifted, b0, candidate_kind="kernel_swap")
+        ok(v05["pass"] is False and "step-1 loss" in v05["reason"],
+           "kernel_swap: a 0.5% step-1 shift fails (the 2.0% floor let 0.25-2% shifts through)")
+        v05s = tg.verdict(legs[0], shifted, b0, candidate_kind="kernel_swap", l0_strictly_better=True)
+        ok(v05s["checks"]["step1_loss_rel_pct"]["limit"] == 2.0,
+           "kernel_swap + L0 strictly more accurate keeps the 2.0% floor (the fp32-reference case)")
+        sm = list(lo); sm[0] = lo[0] * 1.0004
+        ok(tg.verdict(legs[0], make_leg(root, "cand_shift004", sm, gn), b0, candidate_kind="kernel_swap")["checks"]["step1_loss_rel_pct"]["value"] < 0.25,
+           "a 0.04% shift (the largest correct swap ever measured) is inside the 0.25% floor")
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

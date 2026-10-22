@@ -97,7 +97,7 @@ above 5%; without the gate it records `no_correctness_gate`.
    <ref>/probe <cand>/probe --band <BANDS.trajectory_band_path> --kind <overlay|kernel_swap>`.
    Choose `--kind` before reading the result and say why: `overlay` (0.05% step-1 floor) when the
    lever leaves the forward bit-identical (communication, bucketing, gradient averaging);
-   `kernel_swap` (2.0%) when it changes forward numerics (attention backend, forward-path fusions
+   `kernel_swap` (0.25%) when it changes forward numerics (attention backend, forward-path fusions
    such as fused LayerNorm-Linear). Backward-only fusions (gradient-accumulation fusion) and
    recompute granularity leave the forward bit-identical and are `overlay`. Omitted, it defaults
    to `overlay`. A config lever passes the same

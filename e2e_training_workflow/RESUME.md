@@ -250,7 +250,7 @@ PermissionError). OPEN, by priority:
   holdout on a one-ulp rounding flip (frozen rule = FAIL; not a defect; proposal: ulp floor for ~0-error labels).
   Still open: HF attention oracle has the same dq blind band with no paired
   check (G8); training-path fp32 main_grad wgrad of the GEMM overlays is never exercised by a voting gate (G5);
-  kernel_swap step-1 floor 2.0% is 45x the largest observed delta (G7); the 28 frozen template oracles keep the
+  G7 DONE (4.48: kernel_swap floor 0.25%, 2.0% only with --l0-strictly-better); the 28 frozen template oracles keep the
   missing-output hole (re-generate when a task is reused).
 * DONE 2026-10-22: calibrate_band.py now judges null pairs with the gate itself (scripts/gate_eval.js): 400 pairs ->
   0 false wins, 1 floor-level false regression, and 24 false `banked_memory` -> threshold raised 2% -> 5% (null

@@ -20,7 +20,7 @@ a pass: say so.
 `python3 scripts/trajectory_gate.py compare <ref_probe> <cand_probe> --band <band.json> --kind <overlay|kernel_swap> [--l0-strictly-better]`
 
 **Always pass `--kind`, and choose it BEFORE you read the result.** Omitted, it defaults to `overlay`,
-whose step-1 floor (0.05%) is 40x tighter than `kernel_swap`'s (2.0%) -- DECISIONS 3.5.
+whose step-1 floor (0.05%) is 5x tighter than `kernel_swap`'s (0.25%; 2.0% only with `--l0-strictly-better`) -- DECISIONS 3.5, 4.48.
 - `overlay`: the candidate leaves the FORWARD bit-identical (backward-only kernel, a reduction or
   communication change). Evidence: L0's paired block shows `out` bit-identical to the incumbent.
 - `kernel_swap`: anything else -- the forward numerics changed, however slightly.
@@ -39,7 +39,9 @@ Preconditions you must check yourself, because the tool cannot:
 What votes (DECISIONS 3.4b, 3.4e, 3.4h, 3.5) -- only these can make `pass` false:
 - **step-1 loss**: `100*|cand-ref|/|ref|` > `max(floor[kind], safety x band.step1_loss_rel_pct)`.
   Step 1 is a pure forward on identical weights, bit-identical in a healthy stack, so a failure means
-  the forward changed before any optimizer update could explain it. The 2.0% `kernel_swap` floor is
+  the forward changed before any optimizer update could explain it. The `kernel_swap` floor is 0.25%
+  (5.7x the largest correct swap ever measured, DECISIONS 4.48); the old 2.0% floor applies only with
+  `--l0-strictly-better` (a more-accurate candidate). The old 2.0% floor was
   an upper bound (measured on an fp32-reference pair); a real 0.2-2% forward shift passes it.
 - **early-window sign rule**, loss and grad_norm, steps 1-8: >= 5 nonzero diffs, all the same sign.
   Measured false-reject rate 5.1% / 0.6% on clean pairs. With `--l0-strictly-better`, a one-sided

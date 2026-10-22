@@ -77,7 +77,7 @@ from a same-kernel pair rejects any kernel swap out of hand. Pass `candidate_kin
 | kind | meaning | step-1 floor |
 |---|---|---|
 | `overlay` | should not change numerics at all | 0.05% |
-| `kernel_swap` | different implementation, same mathematics | 2.0% (`STEP1_FLOOR_PCT` in trajectory_gate.py; an UPPER bound — the fp32 reference makes it loose for a bf16→bf16 swap) |
+| `kernel_swap` | different implementation, same mathematics | **0.25%** since 2026-10-22 (DECISIONS 4.48: 5.7x the largest step-1 delta of 20 correct bf16→bf16 gate pairs, 0.044%); 2.0% only with `--l0-strictly-better` (the fp32-reference, more-accurate case) |
 
 **RESOLVED, and the earlier diagnosis here was wrong.** This section used to say the envelope
 "over-rejects a legitimate kernel swap" and needed "a band from a KNOWN-GOOD kernel-swap pair". That
