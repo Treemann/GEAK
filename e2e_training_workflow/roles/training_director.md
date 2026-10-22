@@ -137,6 +137,10 @@ pass before it is called safe to train with.
    * If `ACCEPTED_CONFIG` is set, its `flags_added` go on the cand arm ONLY, via
      `--cand-train-args "<flags_added>"`. Without them the cand arm is not the stack this run
      accepted, and a CLEARED verdict would clear something else.
+   * `QUALITY_WORKLOAD` defaults to this run's WORKLOAD. The protocol needs a SCHEDULED recipe
+     (warmup + decay, DECISIONS 4.22-4.24): if the descriptor has no `LR_DECAY_ITERS` /
+     `LR_DECAY_STYLE` other than constant, do NOT run; return `cleared: null` and say the run must
+     pass a scheduled `quality_workload`.
 2. **Run** `QUALITY_SCRIPT --workload QUALITY_WORKLOAD --seeds QUALITY_SEEDS --arms ref,cand
    --cand-cmd "<your script>" [--cand-train-args "<flags_added>"] --name qgate`. That is one epoch per leg on the train19k pack, with
    the held-out evaluation at the end. Do not change iterations, data or seeds: the verdict rules

@@ -65,11 +65,13 @@ above 5%; without the gate it records `no_correctness_gate`.
    | **comm overlap** | `--overlap-grad-reduce`, `--overlap-param-gather` | the measured `exposed_comm_pct` — 2.27%. `comm_overlap_pct` was **0.0**, so none of it is recovered | **+0.118%** vs band 0.150% → `no_win`, and it **costs 780 MB** |
    | **recompute granularity** | `--recompute-granularity selective\|full`, `--recompute-method` | memory ↔ compute. Also the **memory converter**: the knob that spends banked memory, which is why `fast` banks and never accepts it | **−3.403%** → regression, and it **costs 838 MB** rather than freeing any |
    | **attention backend** | `--attention-backend fused\|flash` | already a proven-comparable pair (step-1 delta 0.2917% between backends) | **−0.728%** vs band **1.978%** → `inconclusive_noise`; a window-immune cross-check puts the direction at −0.729%, so flash is most likely a small regression, but the band cannot resolve it |
+   | **average in collective** (`ddp_average_in_collective`) | `--ddp-average-in-collective` | the separate 1/DP scaling pass over the fp32 grad buffer (~20 ms/step) | **+0.86 / +0.92%** paired on s8 → ACCEPTED (DECISIONS 4.25); already IN `_cosine_avg`, so propose it only on a descriptor without it |
+   | **synchronized GC** (`manual_gc`) | `--manual-gc --manual-gc-interval 0` | the host-stall share (`stall_pct`, 1-3% of wall time) | median **+0.07 / +0.20%** (the gate cannot see it), aligned wall **+0.03..+1.12%** (DECISIONS 4.41). Report `wall_delta_pct`; do not expect a median win |
 
    State the ceiling with the proposal. A lever whose ceiling is below the band cannot pay, and
    proposing it anyway spends two job launches to learn nothing.
 
-   **ALL THREE HAVE NOW BEEN MEASURED ON THIS WORKLOAD AND NONE PAYS** (2026-10-09, one run, one
+   **THE FIRST THREE HAVE BEEN MEASURED ON THIS WORKLOAD AND NONE PAYS** (2026-10-09, one run, one
    baseline, one band, so the three are comparable to each other). Do not re-propose one unless the
    `config_diagnosis` you were handed differs materially from the one those numbers came from —
    `exposed_comm_pct 2.27–5.3`, `idle_pct 2.61`, fused attention active, ~80.6 GB peak of ~192 GB.

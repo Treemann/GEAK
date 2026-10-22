@@ -69,6 +69,7 @@ class _Probe:
         # several micro-batches (grad accumulation), so they accumulate and reset per step.
         self.pending = {"useful_tokens": 0, "total_tokens": 0, "micro_batches": 0}
         self._t0 = None
+        self._host_init()
         self._emit({"record": "header", "rank": self.rank, "world_size": self.world,
                     "local_rank": self.local_rank, "t_wall": time.time(),
                     "device": torch.cuda.get_device_name(self.local_rank)
@@ -77,6 +78,55 @@ class _Probe:
 
     def _emit(self, obj):
         self.fh.write(json.dumps(obj) + "\n")
+
+    # ---- host diagnostics (report-only, 2026-10-22) -----------------------------------
+    # Isolated 300-1000 ms steps cost 1-3% of wall time (DECISIONS 4.41). Step time is synchronized
+    # across ranks, so the step record alone cannot say WHICH rank stalled or WHY. These per-rank,
+    # per-step facts can: Python GC time per generation (gc.callbacks), host time inside the batch
+    # fetch, caching-allocator retries / segment (de)allocations, and host RSS (which also answers
+    # whether --manual-gc-interval 0 grows host memory over an epoch). Never enters a digest.
+    def _host_init(self):
+        self._gc = {"ms": 0.0, "n": [0, 0, 0]}
+        self._gc_t = None
+        self._batch_ms = 0.0
+        self._mem_prev = {}
+        try:
+            import gc as _gc
+
+            def _cb(phase, info):
+                if phase == "start":
+                    self._gc_t = time.perf_counter()
+                elif self._gc_t is not None:
+                    self._gc["ms"] += (time.perf_counter() - self._gc_t) * 1000.0
+                    g = info.get("generation", 0)
+                    if 0 <= g < 3:
+                        self._gc["n"][g] += 1
+                    self._gc_t = None
+            _gc.callbacks.append(_cb)
+        except Exception:
+            pass
+
+    def _host_record(self):
+        h = {"gc_ms": round(self._gc["ms"], 2), "gc_n": list(self._gc["n"]),
+             "batch_ms": round(self._batch_ms, 2)}
+        try:
+            with open("/proc/self/statm") as f:
+                h["rss_mb"] = round(int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 2**20, 1)
+        except Exception:
+            pass
+        try:
+            if torch.cuda.is_available():
+                st = torch.cuda.memory_stats()
+                for k in ("num_alloc_retries", "num_device_alloc", "num_device_free"):
+                    if k in st:
+                        prev = self._mem_prev.get(k)
+                        h[k] = int(st[k]) - prev if prev is not None else 0   # delta this step
+                        self._mem_prev[k] = int(st[k])
+        except Exception:
+            pass
+        self._gc = {"ms": 0.0, "n": [0, 0, 0]}
+        self._batch_ms = 0.0
+        return h
 
     # ---- batch hook -------------------------------------------------------------------
     def note_batch(self, batch):
@@ -169,6 +219,10 @@ class _Probe:
             rec["grad_norm"] = grad_norm
         if skipped is not None:
             rec["skipped"] = skipped
+        try:
+            rec["host"] = self._host_record()
+        except Exception:
+            pass
         self._emit(rec)
         # Heartbeat: step progress, so a hung collective (every rank alive, nobody advancing) is
         # detectable from outside. A liveness check on the processes would report "healthy".
@@ -415,7 +469,9 @@ def install_megatron():
     _orig_get_batch = _tu.get_batch_on_this_tp_rank
 
     def _probed_get_batch(*a, **kw):
+        t = time.perf_counter()
         batch = _orig_get_batch(*a, **kw)
+        PROBE._batch_ms += (time.perf_counter() - t) * 1000.0
         PROBE.note_batch(batch)
         return batch
 

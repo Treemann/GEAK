@@ -41,11 +41,12 @@ const BASE_OVERLAY_CMD = !_BASE_RAW ? null
 // kernel or a non-packing config lever (otherwise the stack is unchanged and was judged before).
 const QUALITY_GATE = String(A.quality_gate || '').toLowerCase() === 'true' || A.quality_gate === true;
 const QUALITY_SEEDS = String(A.quality_seeds || '5567,6678,7789,8890,9901');
-// Default = the RECOMMENDED Megatron recipe (warmup + cosine + --ddp-average-in-collective, DECISIONS
-// 4.25), the one the s8 stack was cleared on. It was `_cosine.env` (no avg lever) until 2026-10-20, so
-// a quality gate cleared a recipe that is not the shipped one. HF runs must pass quality_workload.
-const QUALITY_WORKLOAD = String(A.quality_workload ||
-  `${String(A.workflow_dir || '').replace(/\/+$/, '')}/workloads/qwen2_5_math_7b_packed_cosine_avg.env`);
+// Default = THIS RUN's workload: the outcome test must judge the stack the run built, on the recipe it
+// built it on. A fixed default (`_cosine_avg`, 2026-10-20..22) broke the moment a run's own lever was
+// --ddp-average-in-collective on `_cosine`: the REF arm would already carry the lever and REF == cand.
+// The protocol needs a SCHEDULED recipe (warmup + decay, DECISIONS 4.22-4.24); a constant-LR run must
+// pass quality_workload explicitly, and the Director says so if it is not scheduled.
+const QUALITY_WORKLOAD = String(A.quality_workload || A.workload || "");
 
 // ===========================================================================
 // SKELETON STATUS — read this before trusting a result from this file.
@@ -358,6 +359,27 @@ const KERNEL_IMPL_DELTA = ['GEAK_OVERLAY', 'GEAK_OVERLAY_SHA'];
 const leverImplDelta = (flags) => (Array.isArray(flags) ? flags : String(flags || '').split(/\s+/))
   .filter((t) => typeof t === 'string' && t.startsWith('--')).map((t) => t.replace(/^--/, '').split('=')[0]);
 
+// Accepted config levers ACCUMULATE. `flags` is an argv token list; a later lever that names the
+// same flag replaces its value (argparse: last wins), every other flag is kept. Before 2026-10-22 an
+// accepted lever REPLACED config_flags, so a second accepted lever silently dropped the first.
+function mergeFlags(prev, added) {
+  const parse = (toks) => {
+    const out = []; const t = (Array.isArray(toks) ? toks : String(toks || '').split(/\s+/)).filter(Boolean);
+    for (let i = 0; i < t.length; i++) {
+      if (!String(t[i]).startsWith('--')) continue;
+      const [k, inline] = String(t[i]).split('=');
+      const vals = inline !== undefined ? [inline] : [];
+      while (inline === undefined && i + 1 < t.length && !String(t[i + 1]).startsWith('--')) vals.push(String(t[++i]));
+      out.push([k, vals]);
+    }
+    return out;
+  };
+  const m = new Map(parse(prev));
+  for (const [k, v] of parse(added)) { m.delete(k); m.set(k, v); }
+  return [...m].flatMap(([k, v]) => [k, ...v]);
+}
+const flagsString = (flags) => (flags || []).map((t) => (/\s/.test(t) ? `'${t}'` : t)).join(' ');
+
 function comparable(ref, cand, allowedImpl) {
   if (!ref.config_digest || !cand.config_digest) return { ok: false, why: 'a leg carries no config digest' };
   // Distinguish "different workload" from "the digest DEFINITION changed between these summaries".
@@ -601,10 +623,19 @@ function kbIdentity(config) {                       // hook 6: config hash keys 
 // Agent plumbing (mirrors e2e_workflow.js)
 // ===========================================================================
 function roleAgent(role, phase, intro, inputs) {
+  const cf = inputs && inputs.CONFIG && inputs.CONFIG.config_flags;
+  const carried = cf && cf.length ? `
+
+## CARRIED CONFIG LEVERS (accepted earlier in this run: ${(inputs.CONFIG.accepted_levers || []).join(', ')})
+EVERY leg of the current stack you launch passes them: bench_train.sh ... --extra-train-args "${flagsString(cf)}"
+(append to any other extra args). A reference leg of a gate is a leg of the current stack too, so it
+carries them as well. Only a leg explicitly defined as the run's TRUE/bare baseline (Validate's
+baseline, the QualityGate REF arm) omits them. A leg without them is not this run's configuration:
+check the lever's keys in bench_summary.json (\`config\` / \`implementation\`) before quoting it.` : '';
   return `You are the ${role}. PHASE=${phase}.
 First Read ${WORKFLOW_DIR}/roles/${role}.md and follow its instructions for PHASE=${phase}.
 Read any knowledge files it points you to under ${WORKFLOW_DIR}/knowledge/.
-Do all filesystem/shell work yourself (Bash/Read/Write). ${intro}
+Do all filesystem/shell work yourself (Bash/Read/Write). ${intro}${carried}
 
 ## MEASUREMENT INVARIANT (do not violate — every number in this run must be comparable)
 Take EVERY throughput number through ${WORKFLOW_DIR}/scripts/bench_train.sh with the SAME
@@ -989,6 +1020,15 @@ function classOfLever(flags) {
 // the SAME baseline and the SAME band, so the verdicts are comparable to each other; split across
 // two runs they would carry two baselines and two bands, and the difference between two levers
 // would be confounded with the difference between two days.
+// The carried config after an accepted lever: flags MERGED (not replaced) and the digests taken from
+// the accepted cand leg, which ran exactly this config. curConfig.digest was never refreshed before,
+// so every later leg, report and KB identity carried the pre-lever digest.
+function acceptLever(config, sweep) {
+  const cand = sweep.cand || {};
+  return { ...config, config_flags: mergeFlags(config.config_flags, sweep.flags_added),
+           digest: cand.config_digest || config.digest, impl_digest: cand.impl_digest || config.impl_digest,
+           accepted_levers: [...(config.accepted_levers || []), sweep.lever] };
+}
 const CONFIG_LEVERS = String(A.config_levers || '').split(',').map((x) => x.trim()).filter(Boolean);
 
 if (want('config')) {
@@ -1046,7 +1086,7 @@ if (want('config')) {
         recipe_note: 'global-batch-size now counts packs; divide by conversations_per_pack to keep ' +
                      'samples per optimizer step' });
       log0(`ConfigSweep ${sweep.lever}: ${verdict.klass} (${verdict.reason})`);
-      if (verdict.accepted) curConfig = { ...curConfig, config_flags: sweep.flags_added };
+      if (verdict.accepted) curConfig = acceptLever(curConfig, sweep);
     } else if (kind.cls === 'B') {
       // Refuse, do not silently downgrade: a Class-B result looks exactly like a Class-A one.
       sweepRecords.push({ refused: true, lever: sweep.lever, requested: wantLever, reason:
@@ -1102,7 +1142,7 @@ if (want('config')) {
         memory_conversion: sweep.memory_conversion || null });
       log0(`ConfigSweep ${sweep.lever}: ${cv.klass} (${cv.delta_pct}% vs band ${cv.band_pct}%, ` +
            `ceiling was ${sweep.ceiling_pct}%)`);
-      if (cv.accepted) curConfig = { ...curConfig, config_flags: sweep.flags_added };
+      if (cv.accepted) curConfig = acceptLever(curConfig, sweep);
     }
   }
   }
@@ -1113,14 +1153,22 @@ if (want('config')) {
     // Surfaced at the TOP LEVEL too. `accepted` lists kernels; the first run that accepted a config
     // lever (packing, +258% equal-useful-token) returned `accepted: []` at the top, which reads as
     // "nothing was accepted" to anyone who does not dig into config_sweep.
-    const acc = sweepRecords.find((r) => r.verdict && r.verdict.accepted) || null;
-    wfReturn.accepted_config = acc ? { lever: acc.lever, class: acc.class || 'A',
-                                       delta_pct: acc.verdict.delta_pct,
-                                       delta_source: acc.verdict.delta_source,
-                                       flags_added: acc.flags_added } : null;
+    // ALL accepted levers, merged. Class-B (packing) flags are listed but kept out of flags_added:
+    // they change the data, not the cand arm of a same-data comparison (QualityGate reads this).
+    const accs = sweepRecords.filter((r) => r.verdict && r.verdict.accepted);
+    const accA = accs.filter((r) => !String(r.class || 'A').startsWith('B'));
+    wfReturn.accepted_config = accs.length ? {
+      lever: accs.map((r) => r.lever).join('+'),
+      class: accA.length ? 'A' : accs[0].class,
+      levers: accs.map((r) => ({ lever: r.lever, class: r.class || 'A', flags_added: r.flags_added,
+                                 delta_pct: r.verdict.delta_pct, delta_source: r.verdict.delta_source })),
+      delta_pct: accs.length === 1 ? accs[0].verdict.delta_pct : null,
+      delta_source: accs.length === 1 ? accs[0].verdict.delta_source : 'per lever, see levers[]',
+      flags_added: (accA.length ? accA : accs).reduce((f, r) => mergeFlags(f, r.flags_added), []) } : null;
     wfReturn.config_sweep = {
       levers: sweepRecords,
-      accepted: sweepRecords.find((r) => r.verdict && r.verdict.accepted) || null,
+      accepted: accs[0] || null,          // first accepted (kept for older readers)
+      accepted_all: accs.map((r) => r.lever),
       requested: CONFIG_LEVERS.length ? CONFIG_LEVERS : null,
       not_measured: CONFIG_LEVERS.filter((l) => !sweepRecords.some((r) => r.requested === l)),
     };

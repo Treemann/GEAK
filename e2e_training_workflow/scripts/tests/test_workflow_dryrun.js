@@ -61,6 +61,17 @@ function stubFor(prompt) {
       stop: false };
   }
   if (is('PHASE=config')) {
+    // A named lever gets its own flags, so two accepted levers are distinguishable downstream.
+    const LEVER_FLAGS = { recompute_granularity: ['--recompute-granularity', 'selective'],
+                          attention_backend: ['--attention-backend', 'flash'] };
+    const req = Object.keys(LEVER_FLAGS).find((k) => is(`"REQUESTED_LEVER": "${k}"`));
+    if (req) {
+      return { lever: req, flags_added: LEVER_FLAGS[req], ceiling_pct: 2.0, ref: leg(),
+               cand: leg({ useful_tok_s_per_gpu: 866, config_digest: `after_${req}` }),
+               comparison: { delta_pct: 1.9, window_artifact_pct: 0.05 },
+               config_digest_delta: { key: req, ref: null, cand: LEVER_FLAGS[req][1] },
+               ...(CONFIG_L1 === undefined ? {} : { l1: CONFIG_L1 }), ...(CONFIG_OVERRIDE || {}) };
+    }
     return { lever: 'comm_overlap', flags_added: ['--overlap-grad-reduce'], ceiling_pct: 2.27,
              ref: leg(), cand: leg({ useful_tok_s_per_gpu: 866 }),
              comparison: { delta_pct: 1.9, window_artifact_pct: 0.05 },
@@ -181,6 +192,20 @@ async function dryRun(args) {
       'each record remembers which lever was REQUESTED, not only what the Tuner returned');
     ok(Array.isArray(cs.not_measured) && cs.not_measured.length === 0,
       'nothing silently dropped: not_measured is explicit');
+    // P1-C (2026-10-22): accepted levers ACCUMULATE and are CARRIED into every later leg.
+    const ac = result.accepted_config || {};
+    ok(cs.accepted_all && cs.accepted_all.length === 2 && ac.levers && ac.levers.length === 2,
+      `both accepted levers are reported, not just the first (accepted_all=${JSON.stringify(cs.accepted_all)})`);
+    ok(JSON.stringify(ac.flags_added) === JSON.stringify(['--recompute-granularity', 'selective', '--attention-backend', 'flash']),
+      `accepted flags are MERGED, not replaced (${JSON.stringify(ac.flags_added)})`);
+    const later = calls.prompts.filter((p) => /PHASE=(integrate|validate|finalize)/.test(p));
+    ok(later.length > 0 && later.every((p) => p.includes('--extra-train-args "--recompute-granularity selective --attention-backend flash"')),
+      `every later leg-launching phase is told to carry BOTH levers (${later.length} prompts)`);
+    const second = calls.prompts.filter((p) => p.includes('"REQUESTED_LEVER": "attention_backend"'));
+    ok(second.length === 1 && second[0].includes('--extra-train-args "--recompute-granularity selective"'),
+      'the second lever is measured ON TOP of the first (its legs carry the first lever)');
+    ok(later.some((p) => p.includes('"digest": "after_attention_backend"')),
+      'the carried config digest is refreshed from the last accepted lever\'s cand leg');
   } catch (e) {
     ok(false, `multi-lever sweep threw: ${e && e.message}`);
   }
@@ -313,8 +338,11 @@ async function dryRun(args) {
       'quality_gate=true runs the outcome test after Validate and records its verdict');
     const qp = c1.prompts.filter((p) => p.includes('PHASE=quality'));
     ok(qp.length === 1 && qp[0].includes('quality_ab.sh') && qp[0].includes('quality_ab_final.py')
-       && qp[0].includes('qwen2_5_math_7b_packed_cosine_avg.env'),
-      'the quality phase gets the protocol script, the pre-registered verdict script and the scheduled recipe');
+       && qp[0].includes('"QUALITY_WORKLOAD": "/x/workloads/qwen2_5_math_7b.env"'),
+      'the quality phase gets the protocol script, the pre-registered verdict script and THIS run\'s workload');
+    const { calls: cq } = await dryRun({ ...base, quality_gate: 'true', quality_workload: '/x/workloads/sched.env' });
+    ok(cq.prompts.filter((p) => p.includes('PHASE=quality'))[0].includes('"QUALITY_WORKLOAD": "/x/workloads/sched.env"'),
+      'an explicit quality_workload overrides the default');
     STRAT_HEADS = [];
     const { result: r2, calls: c2 } = await dryRun({ ...base, quality_gate: 'true' });
     ok(!c2.phases.includes('QualityGate') && /nothing accepted/.test(r2.quality_gate.quality),
