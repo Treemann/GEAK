@@ -42,6 +42,19 @@ try:
     ok(b["stall_pct"] > a["stall_pct"] and b["stall_pct"] > 1.5,
        f"stall_pct reports the gap ({a['stall_pct']} -> {b['stall_pct']})")
     ok(a["config_digest"] == b["config_digest"], "report-only fields do not enter any digest")
+    # Host work BETWEEN train_step calls (gc.collect at --manual-gc-interval N) is outside dur_ms; the
+    # wall rate must still pay it, from the step t_wall span (audit TP-3).
+    d = os.path.join(root, "between", "probe"); os.makedirs(d)
+    with open(os.path.join(d, "probe_rank0.jsonl"), "w") as f:
+        f.write(json.dumps({"record": "header", "rank": 0, "world_size": 1, "argv_hash": "x", "config": {}}) + "\n")
+        t = 0.0
+        for i, dur in enumerate(base):
+            t += dur / 1000.0 + (0.4 if i in (12, 22) else 0.001)   # two 400 ms collections between steps
+            f.write(json.dumps({"record": "step", "step": i + 1, "dur_ms": dur, "useful_tokens": 8000,
+                                "total_tokens": 8192, "peak_reserved_mb": 1, "t_wall": t}) + "\n")
+    w = summarize(d)
+    ok(w["useful_tok_s_per_gpu"] == a["useful_tok_s_per_gpu"] and w["wall_useful_tok_s_per_gpu"] < a["wall_useful_tok_s_per_gpu"] * 0.99,
+       f"between-step host time lowers the wall rate ({a['wall_useful_tok_s_per_gpu']} -> {w['wall_useful_tok_s_per_gpu']}) though dur_ms is unchanged")
     # Variable-shape legs: mean - median is data skew there, so stall_pct must not be reported.
     d = os.path.join(root, "var2", "probe"); os.makedirs(d)
     with open(os.path.join(d, "probe_rank0.jsonl"), "w") as f:

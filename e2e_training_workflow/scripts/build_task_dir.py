@@ -499,7 +499,28 @@ def main():
         scale_tol = acc.get("scale_bias_tol", 0.002)
         offset_tol = acc.get("offset_bias_tol", 0.01)
         ok, report = True, {}
-        for label, actual in zip(META["signature"]["outputs"], got):
+        # EVERY output must be scored (audit 2026-10-22). make_call drops None gradients, so a
+        # candidate that omits a trailing gradient (e.g. "accumulated into main_grad") returned a
+        # SHORTER tuple, zip() truncated it, that label was never compared and L0 said correct=true.
+        # A None in the middle shifted every later label. Count, coverage and shape are now gated.
+        _labels = list(META["signature"]["outputs"])
+        if len(got) != len(_labels) or len(ref_outs) != len(_labels):
+            print(f"  [L0{tag}] output count: candidate {len(got)}, reference {len(ref_outs)}, "
+                  f"labels {len(_labels)} {_labels} -> FAIL (a missing output is never 'not scored')")
+            return False, {"count": {"candidate": len(got), "reference": len(ref_outs), "labels": _labels}}
+        _unscored = [l for l in base if l not in _labels or ref_by_label.get(l) is None]
+        if _unscored:
+            print(f"  [L0{tag}] labels with a base error but no reference output: {_unscored} -> FAIL")
+            return False, {"unscored": _unscored}
+        for label, actual in zip(_labels, got):
+            r = ref_by_label.get(label)
+            if actual is None or (r is not None and tuple(actual.shape) != tuple(r.shape)):
+                print(f"  [L0{tag}] {label}: candidate output "
+                      f"{'missing' if actual is None else tuple(actual.shape)} vs reference "
+                      f"{None if r is None else tuple(r.shape)} -> FAIL")
+                return False, {"shape": {label: [None if actual is None else list(actual.shape),
+                                                 None if r is None else list(r.shape)]}}
+        for label, actual in zip(_labels, got):
             r = ref_by_label.get(label)
             if r is None or label not in base:
                 continue

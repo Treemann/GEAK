@@ -229,7 +229,31 @@ IMPL_KEYS = ("attention-backend", "GEAK_OVERLAY", "GEAK_OVERLAY_SHA",
              # a precision-recipe change like --master-weights, so it is workload identity.)
              "ddp-average-in-collective", "ddp-bucket-size", "use-distributed-optimizer",
              # host-side GC schedule: when Python collects, not what is computed
-             "manual-gc", "manual-gc-interval")
+             "manual-gc", "manual-gc-interval",
+             # HF: TRL's per-micro-batch metric gathers (logging work, not training math)
+             "hf-train-metrics")
+
+
+def _wall_span_ms(steps, i0, steady):
+    """Wall time covering exactly the steady steps: t_wall(last) - t_wall(step before the window).
+    None when it cannot be formed (window starts at step 0, or t_wall missing); callers fall back to
+    sum(dur_ms), which excludes between-step host work."""
+    if not steady or i0 < 1:
+        return None
+    t_prev, t_last = steps[i0 - 1].get("t_wall"), steady[-1].get("t_wall")
+    if t_prev is None or t_last is None or t_last <= t_prev:
+        return None
+    return (t_last - t_prev) * 1000.0
+
+
+def _wall_rate(steps, i0, steady):
+    span = _wall_span_ms(steps, i0, steady) or sum(s["dur_ms"] for s in steady)
+    return round(sum(s.get("useful_tokens", 0) for s in steady) / (span / 1000.0), 1) if span else None
+
+
+def is_impl_key(k):
+    """The ONE classifier: listed, an NVTE_* backend env, or a captured overlay knob `env:<NAME>`."""
+    return k in IMPL_KEYS or k.startswith("NVTE_") or k.startswith("env:")
 
 
 def snapshot_schema(cfg):
@@ -300,11 +324,13 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
             # WALL-TIME rate over the same steady window: total useful tokens / total time. The median
             # headline excludes the isolated host stalls that a real run pays (synchronized across
             # ranks, ~300-1000 ms, 1-2% of wall time on the 7B legs; DECISIONS 4.41). Report-only.
-            "wall_useful_tok_s_per_gpu": round(sum(s.get("useful_tokens", 0) for s in steady)
-                                               / (sum(sd) / 1000.0), 1) if sd and sum(sd) else None,
+            # The span is END of the step before the window -> END of its last step, from t_wall, so
+            # host work BETWEEN train_step calls (gc.collect at --manual-gc-interval N, logging) is
+            # paid too; sum(dur_ms) excluded it and credited a GC-interval lever ~1 pp (audit TP-3).
+            "wall_useful_tok_s_per_gpu": _wall_rate(steps, i0, steady),
             # Fixed-shape legs only: on a dynamically padded stack step time follows content, so
             # mean - median measures data skew, not stalls.
-            "stall_pct": (round(100 * (statistics.mean(sd) - med) / med, 3)
+            "stall_pct": (round(100 * ((_wall_span_ms(steps, i0, steady) or sum(sd)) / len(sd) - med) / med, 3)
                           if sd and med and shape_all == "fixed" else None),
             "peak_reserved_mb": max((s.get("peak_reserved_mb", 0) for s in steady), default=0),
             "peak_alloc_mb": max((s.get("peak_alloc_mb", 0) for s in steady), default=0),
@@ -329,7 +355,7 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
     # Snapshot-format metadata is NEITHER half: it describes the record, not the run. It is excluded
     # from both digests and surfaces as digest_schema below.
     META_KEYS = ("snapshot_keys",)
-    impl = {k: v for k, v in cfg.items() if k in IMPL_KEYS or k.startswith("NVTE_")}
+    impl = {k: v for k, v in cfg.items() if is_impl_key(k)}
     identity = {k: v for k, v in cfg.items() if k not in impl and k not in META_KEYS}
     cfg_digest = hashlib.sha256(
         json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]
@@ -359,9 +385,12 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
             [v["useful_tok_s_per_gpu"] or 0 for v in per_rank.values()]), 1),
         # Report-only wall-time view (see per_rank): what a production run of this config pays,
         # stalls included. The gate still decides on the median; this makes the gap visible.
-        # Worst rank for both, like step_median_ms (the step is as slow as its slowest rank).
-        "wall_useful_tok_s_per_gpu": min((v["wall_useful_tok_s_per_gpu"] or 0) for v in per_rank.values()),
-        "stall_pct": (max(v["stall_pct"] for v in per_rank.values())
+        # Median over ranks, exactly like the headline: the step boundary is shared, so the span is
+        # the same on every rank and the rates differ only by each rank's tokens. The worst rank
+        # (2026-10-21) measured DP data imbalance, not stalls (audit TP-4: 781.7 vs 830.4 unpacked).
+        "wall_useful_tok_s_per_gpu": round(statistics.median(
+            [v["wall_useful_tok_s_per_gpu"] or 0 for v in per_rank.values()]), 1),
+        "stall_pct": (round(statistics.median(v["stall_pct"] for v in per_rank.values()), 3)
                       if all(v["stall_pct"] is not None for v in per_rank.values()) else None),
         "nominal_tok_s_per_gpu": round(statistics.median(
             [v["nominal_tok_s_per_gpu"] or 0 for v in per_rank.values()]), 1),

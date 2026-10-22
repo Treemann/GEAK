@@ -18,7 +18,8 @@ You reintegrate an optimized kernel REVERSIBLY and take the A/B that decides its
    bare baseline). Candidate leg = reference + this overlay.
    * **Stack order.** With `BASE_OVERLAY_CMD` set, the order is:
      1. the base stack's manifests, from running the command per leg;
-     2. then any `CARRIED_OVERLAY`;
+     2. then every `CARRIED_OVERLAY` entry, IN LIST ORDER (it is a list: each accepted overlay composes
+        on the previous one; dropping one gates this head against the wrong reference);
      3. then, on the candidate leg only, this overlay.
    * **Rebinding a symbol the stack already binds.** Example: a second TE `_LayerNormLinear` overlay.
      It must CHAIN. Capture the binding current at import and delegate the calls it does not handle,
@@ -85,10 +86,14 @@ hit the identical trap earlier and both solved it the same way: a fresh director
 
 Return JSON:
 ```json
-{"ref": {...bench_summary...}, "cand": {...bench_summary...},   // keep each leg's `implementation` dict VERBATIM
+{"ref": {...bench_summary...}, "cand": {...bench_summary...},   // bench_summary.json VERBATIM, plus "probe_dir"
+ // The orchestrator FAILS CLOSED on a trimmed leg: implementation, workload_identity, occupancy_verdict,
+ // hang_detected, dispersion_reliable, worst_iqr_spread_pct, min_steady_steps, step_shape,
+ // ranks_agree_on_argv and probe_dir (host path of <leg>/probe, for the Auditor) are all required.
+ // The ref's GEAK_OVERLAY_SHA must equal REF_EXPECTED's; the cand's must extend it with this overlay.
  "comparison": {...compare_legs.py stdout verbatim — MUST contain a numeric delta_pct; also carries
                  window_artifact_pct, dispersion_reliable, window...},
- "engagement": {"forward": true, "backward": true, "evidence": "..."},
+ "engagement": {"forward": true, "backward": true, "evidence": "..."},   // booleans; anything else is 'not proven'
  "overlay_path": "...", "notes": "..."}
 ```
 
@@ -100,3 +105,12 @@ the base stack PLUS this run's accepted overlays: the launch script runs the sam
 appends to its `GEAK_OVERLAY`. Its `--ref` mode is the base stack, not the bare workload. Then **re-check engagement on the assembled
 bundle** — a bundle that silently drops one accepted overlay must be reported as broken, not shipped
 as complete.
+
+Return JSON (PHASE=finalize):
+```json
+{"overlay": "<bundle overlay dir>", "patch": "<final_patch.diff>", "launch": "<launch.sh>",
+ "engagement_recheck": {"forward": true, "backward": true, "ranks": 8, "evidence": "..."}}
+```
+`engagement_recheck.forward` / `.backward` are booleans, measured on a leg launched from the ASSEMBLED
+bundle. Anything other than `true` marks the run `bundle_not_engaged` (the orchestrator fails closed).
+When this run accepted NO kernel overlay there is nothing to re-check: return `null` for both.

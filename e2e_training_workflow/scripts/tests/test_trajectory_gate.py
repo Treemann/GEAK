@@ -298,6 +298,16 @@ def main():
         v55 = tg.verdict(c5b, c5, b5, candidate_kind="overlay")
         ok(v55["pass"] is True and "ddp-average-in-collective" in (v55.get("implementation_delta") or {}),
            "--ddp-average-in-collective is an implementation delta L1 can gate, not a workload change")
+
+        # ---------------------------------------------------------------- 8. non-finite candidate
+        lo, gn = synth(1, cross_at=11)
+        nan_lo = [lo[0]] + [float("nan")] * (len(lo) - 1)
+        nan_gn = [float("nan")] * len(gn)
+        bad_nan = make_leg(root, "cand_nan", nan_lo, nan_gn)
+        for kind in ("overlay", "kernel_swap"):
+            vn = tg.verdict(legs[0], bad_nan, b5, candidate_kind=kind)
+            ok(vn["pass"] is False and "non-finite" in vn["reason"],
+               f"a NaN loss/grad_norm trajectory FAILS L1 ({kind}); every NaN comparison is False, so it used to pass")
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

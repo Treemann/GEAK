@@ -418,10 +418,10 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
     # RE-MEASURE rather than the impossible re-summarise).
     from probe_summarize import IMPL_KEYS          # the single definition; never copy it here again
     from probe_summarize import snapshot_schema    # likewise the one snapshot-version parser
+    from probe_summarize import is_impl_key        # and the one implementation classifier
     IMPL = set(IMPL_KEYS)
     META = {"snapshot_keys"}
-    ident = lambda c: {k: v for k, v in (c or {}).items()
-                       if k not in IMPL and k not in META and not k.startswith("NVTE_")}
+    ident = lambda c: {k: v for k, v in (c or {}).items() if not is_impl_key(k) and k not in META}
     # A v4-vs-v5 pair differs in identity only because v5 captures more (lr-decay-iters), which
     # would read as "a different WORKLOAD" -- true of the record, false of the run, and the wrong
     # remedy. Say what is actually wrong. v3 vs v4 stays comparable HERE because every key v4 added
@@ -439,10 +439,22 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
     # is absent from the reference, and iterating the reference alone reported an empty delta for it.
     rc, cc = rs.get("config") or {}, cs.get("config") or {}
     impl_delta = {k: (rc.get(k), cc.get(k)) for k in sorted(set(rc) | set(cc))
-                  if (k in IMPL or k.startswith("NVTE_")) and rc.get(k) != cc.get(k)}
+                  if is_impl_key(k) and rc.get(k) != cc.get(k)}
     n = min(len(rs["loss"]), len(cs["loss"]))
     if n < 3:
         return {"pass": False, "reason": "fewer than 3 comparable steps", "checks": {}}
+    # A non-finite loss or grad_norm on the candidate where the reference is finite is a divergence,
+    # and it must fail HERE: every later detector compares with < / >, and every comparison with NaN
+    # is False, so a NaN trajectory used to PASS as 'within the envelope' (audit 2026-10-22, G2).
+    import math
+    fin = lambda v: v is not None and isinstance(v, (int, float)) and math.isfinite(v)
+    for key in ("loss", "grad_norm"):
+        bad = [i + 1 for i in range(min(len(rs[key]), len(cs[key])))
+               if rs[key][i] is not None and fin(rs[key][i]) and not fin(cs[key][i])]
+        if bad:
+            return {"pass": False, "reason": f"candidate {key} is non-finite (or missing) on step(s) "
+                                             f"{bad[:5]} where the reference is finite: divergence",
+                    "checks": {"nonfinite_" + key: bad}}
 
     safety = float(band.get("safety", 3.0))
     env = band.get("envelope", {})

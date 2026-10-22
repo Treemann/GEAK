@@ -351,6 +351,9 @@ _IDENTITY_PAIR_KEYS = (
     # v5, implementation half: DDP bucketing (a ConfigSweep lever, measured -0.42% at 2e8), and the
     # GC schedule (--manual-gc's interval; host-stall lever, 2026-10-21).
     "--ddp-bucket-size", "--manual-gc-interval",
+    # HF only: TRL's per-micro-batch metric gathers (on/off moved throughput 21-24% with both digests
+    # equal; audit 2026-10-22 TP-2). Implementation: logging work, not training math.
+    "--hf-train-metrics",
     # regularization + optimizer: these move the loss/grad-norm trajectory L1 gates on
     "--attention-dropout", "--hidden-dropout", "--weight-decay", "--clip-grad",
     "--lr", "--min-lr", "--lr-decay-style", "--lr-warmup-iters",
@@ -386,6 +389,26 @@ _IDENTITY_FLAG_KEYS = (
     # change, like --master-weights. --calculate-per-token-loss changes the loss normalization
     # (pack_gate.py passes it).
     "--grad-reduce-in-bf16", "--calculate-per-token-loss",
+)
+
+
+# An explicit ALLOWLIST (from grepping every shipped overlay for os.environ reads), not prefixes: the
+# first version used "ROPE_", which also matched ROPE_BASE -- a workload variable bench_train.sh
+# exports to every rank -- and would have moved every leg's impl_digest. Paths, build parallelism,
+# capture tooling and debug output are left out: they select no kernel, and a path would make the
+# digest install-dependent. The three *_LT_TABLE knobs select a GEMM table by PATH: their basename is
+# recorded (the table name), not the path.
+_KNOBS = (
+    "KCK_AITER_BWD", "KCK_ASM_VARIANT", "KCK_BF16_RND", "KCK_BWD", "KCK_CACHE_WS", "KCK_CK_AUX", "KCK_DQACC",
+    "KCK_FAST_EXT", "KCK_FWD", "KCK_MODE_DKV", "KCK_MODE_DQ", "KCK_PRELAUNCH",
+    "FC1_BWD_MODE", "FC1_WGRAD_CHUNKS", "FC1_WGRAD_IMPL", "FC1_LT_TABLE", "FC2OP_LT_FORCE", "FC2OP_LT_TABLE",
+    "LMHEAD_CE_DGRAD", "LMHEAD_CE_FWD", "LMHEAD_CE_TWO_STREAM",
+    "QKV_BWD_MODE", "QKV_BWD_ORDER", "QKV_DBIAS_IMPL", "QKV_LT_FORCE", "QKV_LT_TABLE", "QKV_RN", "QKV_RN_BWD",
+    "QKV_RN_FWD", "QKV_WGRAD_MODE",
+    "RMSN_BWD_GRID", "RMSN_DEFS", "GEAK_RMSN_BWD_GROUP", "GEAK_RMSN_BWD_MODE", "GEAK_RMSN_BWD_NWG",
+    "GEAK_RMSN_BWD_ROWS", "GEAK_RMSN_BWD_RPWG", "GEAK_RMSN_FWD_CFG", "GEAK_RMSN_XFLAGS", "GEAK_RMSN_XNAME",
+    "ROPE_BT", "ROPE_CPP", "ROPE_FAST", "ROPE_FAST_LAUNCH", "ROPE_HC", "ROPE_NW",
+    "SWIGLU_EXTRA_FLAGS", "GEAK_ATTN_AMAX",
 )
 
 
@@ -433,6 +456,14 @@ def _config_snapshot():
     # be re-captured: a v4-vs-v5 pair must be RE-MEASURED, exactly like v2-vs-v3. The gate and L1
     # both refuse such a pair and say so (training_workflow.js comparable, trajectory_gate verdict).
     out["snapshot_keys"] = "v5"
+    # Kernel-selecting env knobs the overlays read (FC1_BWD_MODE, QKV_*, KCK_*, ...): legs running
+    # serial vs overlap schedules shared BOTH digests with a 0.64% throughput gap (audit OVL-2).
+    # Captured only when SET, as `env:<NAME>` (implementation half), so default legs -- every gated
+    # and bundled leg, whose launchers refuse these overrides -- digest exactly as before.
+    for k in _KNOBS:
+        if k in os.environ:
+            v = os.environ[k]
+            out["env:" + k] = os.path.basename(v) if k.endswith("_LT_TABLE") else v
     out["world_size"] = os.environ.get("WORLD_SIZE", "1")
     for e in ("NVTE_FLASH_ATTN", "NVTE_FUSED_ATTN", "NVTE_USE_HIPBLASLT"):
         if e in os.environ:

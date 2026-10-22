@@ -85,6 +85,8 @@ Read `knowledge/sft_measurement.md` before doing anything.
 Return JSON:
 ```json
 {"baseline_legs": [ {...bench_summary...}, {...} ], "across_job_band_pct": 0.118,
+ // each leg = its bench_summary.json VERBATIM plus "probe_dir" (= <dir>/probe, host path). The run
+ // REFUSES to start on trimmed legs: no usable baseline -> no reference (fail closed, DECISIONS 4.42).
  "trajectory_band_path": "...", "config_digest": "...", "peak_reserved_mb": 80578,
  "pad_fraction_pct": 69.8, "warmup_steps": 11, "notes": "..."}
 ```

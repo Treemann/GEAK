@@ -3,15 +3,18 @@
 A second system layer over the **UNCHANGED** single-kernel `kernel_workflow`, aimed at **SFT training
 throughput** instead of serving throughput.
 
-**Where it stands (2026-10-21), Megatron, Qwen2.5-Math-7B, 8x MI308X:**
+**Where it stands (2026-10-22), Megatron, Qwen2.5-Math-7B, 8x MI308X:**
 * Useful throughput went **839 -> 3,504 tok/s/GPU (4.18x)** on the recommended production recipe,
   `workloads/qwen2_5_math_7b_packed_cosine_avg.env`: GBS 16 packs, default dropout, standard LR
-  schedule, `--ddp-average-in-collective`.
+  schedule, `--ddp-average-in-collective`. These are 30-step MEDIANS. **Production wall time over a full
+  epoch is 3,396 tok/s/GPU (~4.12x)**: host stalls the median excludes cost ~1.5-3%, more on overlay
+  legs (DECISIONS 4.41, 4.42).
 * Packing gives 3.42x. It was accepted by `deep` mode through a structural gate.
-* Eight kernels stacked on top give **+21.6%**, and one DP-comm lever +0.9%
-  (`knowledge/sft_measurement.md`).
+* Eight kernels stacked on top give **+21.6%** median (**~+19.5% wall**, 19 one-epoch pairs), and one
+  DP-comm lever +0.9% (`knowledge/sft_measurement.md`).
 
-Every number is useful (non-pad, loss-unmasked) tokens, paired against an interleaved reference.
+Every number is useful (non-pad, loss-unmasked) tokens. Per-change deltas are paired against an interleaved
+reference; the cumulative multipliers (4.18x, 2.42x) are cross-session medians (audit 2026-10-22, F7).
 
 Second stack (HF TRL, 7B, unpacked): **1,083 -> 2,618 useful tok/s/GPU (2.42x)**, cleared for
 training (DECISIONS 4.40). These are corrected figures (4.33): an earlier "2,269 / 2.07x" for hf3

@@ -123,7 +123,11 @@ Return JSON:
 {"lever": "comm_overlap|recompute|attention_backend",
  "flags_added": ["--overlap-grad-reduce"],
  "ceiling_pct": 2.27, "ceiling_source": "config_diagnosis.exposed_comm_pct",
- "ref": {"...bench_summary..."}, "cand": {"...bench_summary..."},   // keep each leg's `implementation` dict VERBATIM
+ "ref": {"...bench_summary..."}, "cand": {"...bench_summary..."},   // bench_summary.json VERBATIM, plus "probe_dir"
+ // Required by the orchestrator (it fails closed on a trimmed leg): implementation, workload_identity,
+ // occupancy_verdict, hang_detected, dispersion_reliable, worst_iqr_spread_pct, min_steady_steps,
+ // step_shape, ranks_agree_on_argv, probe_dir (host path of <leg>/probe). A lever whose flags move
+ // workload_identity (not just implementation) is refused as `recipe_change`.
  "comparison": {"...compare_legs.py stdout verbatim, MUST contain a numeric delta_pct..."},
  "config_digest_delta": {"key": "overlap-grad-reduce", "ref": null, "cand": "true"},
  "peak_reserved_mb": {"ref": 80578, "cand": 80578},

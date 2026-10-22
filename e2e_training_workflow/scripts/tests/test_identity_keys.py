@@ -137,7 +137,7 @@ def main():
     tree = ast.parse(open(probe).read())
     for n in tree.body:
         if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in (
-                "_IDENTITY_PAIR_KEYS", "_IDENTITY_FLAG_KEYS"):
+                "_IDENTITY_PAIR_KEYS", "_IDENTITY_FLAG_KEYS", "_KNOBS"):
             g[n.targets[0].id] = ast.literal_eval(n.value)
         if isinstance(n, ast.FunctionDef) and n.name in ("_config_snapshot", "_overlay_content_hash"):
             exec(compile(ast.Module(body=[n], type_ignores=[]), probe, "exec"), g)
@@ -149,6 +149,31 @@ def main():
         sys.argv = saved
     ok(snap.get("lr") == "0.0", f"a repeated flag records the LAST value, as argparse uses (got {snap.get('lr')})")
     ok(snap.get("hf-fsdp") == "full_shard", f"`--flag=value` is captured too (got {snap.get('hf-fsdp')})")
+    # Kernel-selecting env knobs: captured as implementation when SET, absent otherwise (audit OVL-2).
+    saved_env = dict(os.environ)
+    try:
+        for k in [k for k in os.environ if k.startswith(("KCK_", "FC1_", "QKV_", "ROPE_"))]:
+            del os.environ[k]
+        sys.argv = ["x"]
+        # ROPE_BASE / ARCH_ARGS are workload variables bench_train.sh exports to EVERY rank: they must
+        # never become knobs (the prefix version captured ROPE_BASE and moved every impl_digest).
+        os.environ.update({"ROPE_BASE": "10000", "ARCH_ARGS": "--x", "GEAK_RMSN_CAPTURE_DIR": "/c"})
+        base_snap = g["_config_snapshot"]()
+        os.environ.update({"FC1_BWD_MODE": "serial", "KCK_BUILD_DIR": "/tmp/b", "GEAK_QKV_ENGAGEMENT": "/x",
+                           "QKV_LT_TABLE": "/some/install/qkv_table.csv"})
+        knob_snap = g["_config_snapshot"]()
+    finally:
+        os.environ.clear(); os.environ.update(saved_env); sys.argv = saved
+    ok(not any(k.startswith("env:") for k in base_snap),
+       f"no knob set -> no env key, even with ROPE_BASE/ARCH_ARGS exported ({[k for k in base_snap if k.startswith('env:')]})")
+    ok(knob_snap.get("env:QKV_LT_TABLE") == "qkv_table.csv", "a table knob records the table NAME, not the install path")
+    ok(knob_snap.get("env:FC1_BWD_MODE") == "serial", "a set kernel knob (FC1_BWD_MODE=serial) is captured")
+    ok("env:KCK_BUILD_DIR" not in knob_snap and "env:GEAK_QKV_ENGAGEMENT" not in knob_snap,
+       "paths / engagement outputs are not captured (they would make the digest install-dependent)")
+    sys.path.insert(0, SCRIPTS)
+    from probe_summarize import is_impl_key
+    ok(is_impl_key("env:FC1_BWD_MODE") and is_impl_key("hf-train-metrics"),
+       "knobs and --hf-train-metrics classify as implementation")
 
     # NO SECOND COPY. trajectory_gate.py kept its own literal implementation set and missed v4's keys,
     # so L1 refused every overlap/recompute lever as "a different workload". It must import the one

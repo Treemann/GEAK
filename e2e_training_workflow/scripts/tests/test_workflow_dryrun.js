@@ -34,7 +34,20 @@ const leg = (o = {}) => Object.assign({
   useful_tok_s_per_gpu: 850, worst_iqr_spread_pct: 0.08, peak_reserved_mb: 80578,
   config_digest: 'd1548a7a764bdada', digest_schema: 3, impl_digest: 'aaa', ranks_agree_on_argv: true,
   dispersion_reliable: true, min_steady_steps: 25, probe_dir: '/work/runs/x/probe',
+  step_shape: 'fixed', workload_identity: { 'seq-length': '4096' },
+  implementation: { 'attention-backend': 'fused' },
 }, o);
+// The carried overlay stack, read back from the REF_EXPECTED leg the orchestrator hands the
+// Integrator: the stub's ref IS that stack and its cand extends it by one component, as a real
+// Integrator's legs do (the gate now checks this, audit G3).
+const refShaFrom = (prompt) => {
+  const i = prompt.indexOf('"REF_EXPECTED"');
+  const m = i >= 0 ? /"GEAK_OVERLAY_SHA": "([^"]*)"/.exec(prompt.slice(i, prompt.indexOf('## ', i + 1) > 0 ? prompt.indexOf('## ', i + 1) : undefined)) : null;
+  return m ? m[1] : '';
+};
+let INTEG_N = 0;
+let AUDIT_OVERRIDE;                        // undefined = normal stub; null = the Auditor failed
+let ENG_OVERRIDE;
 
 // One stub per role phase, returning the minimum shape its call site reads.
 let CONFIG_L1 = { pass: true, checks: {} };   // overridden per test below
@@ -67,9 +80,11 @@ function stubFor(prompt) {
     const req = Object.keys(LEVER_FLAGS).find((k) => is(`"REQUESTED_LEVER": "${k}"`));
     if (req) {
       return { lever: req, flags_added: LEVER_FLAGS[req], ceiling_pct: 2.0, ref: leg(),
-               cand: leg({ useful_tok_s_per_gpu: 866, config_digest: `after_${req}` }),
+               // An implementation lever: config_digest unchanged, the lever's own key in `implementation`.
+               cand: leg({ useful_tok_s_per_gpu: 866, impl_digest: `after_${req}`,
+                           implementation: Object.assign({}, leg().implementation,
+                             { [LEVER_FLAGS[req][0].slice(2)]: LEVER_FLAGS[req][1] }) }),
                comparison: { delta_pct: 1.9, window_artifact_pct: 0.05 },
-               config_digest_delta: { key: req, ref: null, cand: LEVER_FLAGS[req][1] },
                ...(CONFIG_L1 === undefined ? {} : { l1: CONFIG_L1 }), ...(CONFIG_OVERRIDE || {}) };
     }
     return { lever: 'comm_overlap', flags_added: ['--overlap-grad-reduce'], ceiling_pct: 2.27,
@@ -83,15 +98,22 @@ function stubFor(prompt) {
   if (is('PHASE=extract')) return { task_dir: '/work/tasks/t', op: 'o', has_backward: true, engagement: {},
                                     ...(EXTRACT_OVERRIDE || {}) };
   if (is('PHASE=integrate')) {
-    return { ref: leg(), cand: leg({ useful_tok_s_per_gpu: 900, impl_digest: 'bbb' }),
+    const rs = refShaFrom(prompt), add = `k${++INTEG_N}`;
+    const impl = (sha) => (sha ? { 'attention-backend': 'fused', GEAK_OVERLAY: 'm.json', GEAK_OVERLAY_SHA: sha }
+                               : { 'attention-backend': 'fused' });
+    return { ref: leg({ implementation: impl(rs) }),
+             cand: leg({ useful_tok_s_per_gpu: 900, impl_digest: 'bbb', implementation: impl(rs ? `${rs}+${add}` : add) }),
              comparison: { delta_pct: 5.8, window_artifact_pct: 0.1 },
-             engagement: { forward: true, backward: true }, overlay_path: '/work/ovl', notes: 'n' };
+             engagement: ENG_OVERRIDE !== undefined ? ENG_OVERRIDE : { forward: true, backward: true },
+             overlay_path: '/work/ovl', notes: 'n' };
   }
   if (is('PHASE=gate')) {
+    if (AUDIT_OVERRIDE !== undefined) return AUDIT_OVERRIDE;
     return { l0: { pass: true }, l1: { pass: true }, l2_recommended: false, risk_class: 'low',
              kb_rejection_card: null };
   }
-  if (is('PHASE=finalize')) return { overlay: '/work/ovl', patch: 'p', launch: 'l', engagement_recheck: {} };
+  if (is('PHASE=finalize')) return { overlay: '/work/ovl', patch: 'p', launch: 'l',
+                                     engagement_recheck: { forward: true, backward: true } };
   if (is('PHASE=report')) return 'report text';
   if (is('PHASE=quality')) return { cleared: true, quality: 'PASS-quality: stub', stability: 'PASS-stability: stub' };
   if (is('PHASE=validate')) {
@@ -106,6 +128,7 @@ function stubFor(prompt) {
 const AGENT_GROUPS = new Set();
 
 async function dryRun(args) {
+  INTEG_N = 0;
   const calls = { agent: 0, workflow: 0, phases: [], prompts: [], agentLabels: [] };
   const globals = {
     args,
@@ -204,8 +227,8 @@ async function dryRun(args) {
     const second = calls.prompts.filter((p) => p.includes('"REQUESTED_LEVER": "attention_backend"'));
     ok(second.length === 1 && second[0].includes('--extra-train-args "--recompute-granularity selective"'),
       'the second lever is measured ON TOP of the first (its legs carry the first lever)');
-    ok(later.some((p) => p.includes('"digest": "after_attention_backend"')),
-      'the carried config digest is refreshed from the last accepted lever\'s cand leg');
+    ok(later.some((p) => p.includes('"impl_digest": "after_attention_backend"')),
+      'the carried impl digest is refreshed from the last accepted lever\'s cand leg');
   } catch (e) {
     ok(false, `multi-lever sweep threw: ${e && e.message}`);
   }
@@ -293,7 +316,7 @@ async function dryRun(args) {
     const rp = phasePrompts(calls, 'reprofile');
     ok(result.accepted.length > 0 && rp.length >= 2, `an acceptance triggers a re-profile (${rp.length} profiles)`);
     ok(!rp[0].includes('CARRIED_OVERLAY'), 'the first profile is of the reference: no carried overlay');
-    ok(rp.slice(1).every((p) => p.includes('"CARRIED_OVERLAY": "/work/ovl"')),
+    ok(rp.slice(1).every((p) => /"CARRIED_OVERLAY": \[\s*"\/work\/ovl"/.test(p)),
       'the re-profile AFTER an acceptance carries the accepted overlay (it used to profile the bare stack)');
   } catch (e) {
     ok(false, `carried re-profile threw: ${e && e.message}`);
@@ -327,6 +350,38 @@ async function dryRun(args) {
     }
   }
   EXTRACT_OVERRIDE = null;
+
+  // ---- 2026-10-22: a lever that moves WORKLOAD identity is a recipe change, never accepted --------
+  try {
+    CONFIG_OVERRIDE = { lever: 'lr_decay', flags_added: ['--lr-decay-iters', '500'],
+      cand: leg({ useful_tok_s_per_gpu: 900, config_digest: 'moved',
+                  workload_identity: { 'seq-length': '4096', 'lr-decay-iters': '500' } }) };
+    const { result } = await dryRun({ ...base, deep_mode: 'true', budget: 0 });
+    const lv = (((result || {}).config_sweep || {}).levers || [])[0] || {};
+    ok(lv.verdict && lv.verdict.klass === 'recipe_change' && lv.verdict.accepted === false &&
+       JSON.stringify(lv.verdict.identity_moved) === '["lr-decay-iters"]',
+      `an identity-moving lever is refused as recipe_change, named from the legs (${lv.verdict && lv.verdict.klass})`);
+  } catch (e) {
+    ok(false, `recipe_change case threw: ${e && e.message}`);
+  }
+  CONFIG_OVERRIDE = null;
+
+  // ---- 2026-10-22 audit: fail closed on missing correctness / engagement evidence -------------
+  try {
+    AUDIT_OVERRIDE = null;   // what safeAgent returns after three failed attempts
+    const { result: ra } = await dryRun(base);
+    ok(ra.accepted.length === 0, `an Auditor that returned nothing cannot let a kernel through (accepted=${ra.accepted.length})`);
+    AUDIT_OVERRIDE = { l0: { pass: true }, l1: { pass: null } };   // trajectory_gate's initial value
+    const { result: rb } = await dryRun(base);
+    ok(rb.accepted.length === 0, 'l1.pass=null is not a pass');
+    AUDIT_OVERRIDE = undefined;
+    ENG_OVERRIDE = {};
+    const { result: rc } = await dryRun(base);
+    ok(rc.accepted.length === 0, 'an empty engagement object is not a proof');
+  } catch (e) {
+    ok(false, `fail-closed cases threw: ${e && e.message}`);
+  }
+  AUDIT_OVERRIDE = undefined; ENG_OVERRIDE = undefined;
 
   // ---- 2026-10-16: the optional outcome gate ---------------------------------------------------
   try {
@@ -378,8 +433,8 @@ async function dryRun(args) {
   // Gate legs must keep bench_summary's `implementation` dict, or comparable()'s check that ref and
   // cand differ only in what is under test is skipped silently (wf_becee9a0-c6f's Integrator dropped it).
   const wfSrc = fs.readFileSync(WF, 'utf8');
-  ok(/const LEG = obj\(\{ implementation:[^\n]*\['implementation'\]\)/.test(wfSrc) &&
-     /INTEGRATE_SCHEMA = obj\(\{ ref: LEG, cand: LEG/.test(wfSrc) && /ref: LEG, cand: LEG,\n/.test(wfSrc.split('CONFIG_SCHEMA')[1] || ''),
+  ok(/const LEG = obj\(\{ implementation:/.test(wfSrc) && /\['implementation', 'workload_identity'/.test(wfSrc) &&
+     /INTEGRATE_SCHEMA = obj\(\{ ref: LEG, cand: LEG/.test(wfSrc) && /ref: LEG, cand: LEG, l1: VERDICT/.test(wfSrc),
     'integrate and config schemas REQUIRE an implementation dict on both gate legs');
   ok(AGENT_GROUPS.has('ConfigSweep') && AGENT_GROUPS.has('QualityGate'),
     'the optional phases were exercised by this check, not just the fast path');

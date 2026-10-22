@@ -312,6 +312,21 @@ function legUsable(leg) {
   if (occ === 'contaminated') return { ok: false, why: 'another process held a GPU during this leg' };
   if (occ === 'unknown') return { ok: false, why: 'isolation could not be established (rocm-smi unavailable)' };
   if (!(Number(leg.useful_tok_s_per_gpu) > 0)) return { ok: false, why: 'no useful-token throughput' };
+  // FAIL CLOSED on missing evidence (audit 2026-10-22, G4). Every check above fired only on a field
+  // that was PRESENT and bad, so a leg an agent trimmed down to {status, useful_tok_s_per_gpu} was
+  // "clean": no occupancy sample, no hang check, no dispersion, and -- without step_shape -- an HF leg
+  // treated as fixed-shape so per-leg medians could accept. Absence of a check is not a pass.
+  const missing = [];
+  if (occ !== 'clean') missing.push('occupancy_verdict.verdict=clean');
+  if (leg.hang_detected !== false) missing.push('hang_detected=false');
+  if (leg.dispersion_reliable !== true) missing.push('dispersion_reliable=true');
+  if (!isFinite(Number(leg.worst_iqr_spread_pct)) || leg.worst_iqr_spread_pct === null) missing.push('worst_iqr_spread_pct');
+  if (!(Number(leg.min_steady_steps) > 0)) missing.push('min_steady_steps');
+  if (leg.step_shape !== 'fixed' && leg.step_shape !== 'variable') missing.push('step_shape');
+  if (missing.length) {
+    return { ok: false, why: `leg summary lacks the evidence a measurement needs (${missing.join(', ')}); ` +
+                             'pass bench_summary.json through unmodified' };
+  }
   return { ok: true };
 }
 
@@ -380,6 +395,23 @@ function mergeFlags(prev, added) {
 }
 const flagsString = (flags) => (flags || []).map((t) => (/\s/.test(t) ? `'${t}'` : t)).join(' ');
 
+// ref.GEAK_OVERLAY_SHA must equal the carried reference's, and cand's must EXTEND it by >= 1 component
+// ('+'-joined, one per manifest; rmsnorm ships two). Skipped only when refLeg carries no implementation.
+function overlayShaCheck(expectedRef, ref, cand) {
+  const sha = (l) => String(((l || {}).implementation || {}).GEAK_OVERLAY_SHA || '');
+  if (!expectedRef || !expectedRef.implementation) {
+    return { ok: false, why: 'the carried reference leg has no implementation dict, so the gate cannot check ' +
+                             'that ref IS the carried stack (schemas require it; fail closed)' };
+  }
+  const e = sha(expectedRef), r = sha(ref), c = sha(cand);
+  const ep = e ? e.split('+') : [], cp = c ? c.split('+') : [];
+  if (r !== e) return { ok: false, why: `reference overlay stack ${r || '(none)'} is not the carried stack ${e || '(none)'}` };
+  if (!(cp.length > ep.length && ep.every((p, i) => cp[i] === p))) {
+    return { ok: false, why: `candidate overlay stack ${c || '(none)'} does not extend the carried stack ${e || '(none)'}` };
+  }
+  return { ok: true };
+}
+
 function comparable(ref, cand, allowedImpl) {
   if (!ref.config_digest || !cand.config_digest) return { ok: false, why: 'a leg carries no config digest' };
   // Distinguish "different workload" from "the digest DEFINITION changed between these summaries".
@@ -408,16 +440,16 @@ function comparable(ref, cand, allowedImpl) {
                       'recorded, so this pair must be RE-MEASURED; re-summarising cannot recover them.'
                     : 'digest is computed. Re-summarise both from their probe dirs, then compare.') };
   }
-  if (ref.config_digest !== cand.config_digest) {
-    return { ok: false, why: `config digest differs (${ref.config_digest} vs ${cand.config_digest}): ` +
-      `these legs did not measure the same workload` };
+  if (ref.ranks_agree_on_argv !== true || cand.ranks_agree_on_argv !== true) {
+    return { ok: false, why: 'ranks within one leg ran different argv (or the leg does not say they agree)' };
   }
-  if (ref.ranks_agree_on_argv === false || cand.ranks_agree_on_argv === false) {
-    return { ok: false, why: 'ranks within one leg ran different argv' };
+  // Checked whenever the caller names what may differ. FAIL CLOSED: a leg without its implementation
+  // dict cannot be checked, and the gate schemas require it (an Integrator once trimmed it away).
+  if (allowedImpl && !(ref.implementation && cand.implementation)) {
+    return { ok: false, why: 'a gate leg carries no implementation dict, so the gate cannot check that ' +
+                             'ref and cand differ only in the change under test' };
   }
-  // Checked only when the caller names what may differ AND both legs carry their implementation
-  // dict (bench_summary.json does); a leg shape without it cannot be checked and is not refused.
-  if (allowedImpl && ref.implementation && cand.implementation) {
+  if (allowedImpl) {
     const ri = ref.implementation, ci = cand.implementation;
     const extra = [...new Set([...Object.keys(ri), ...Object.keys(ci)])]
       .filter((k) => ri[k] !== ci[k] && !allowedImpl.includes(k)).sort();
@@ -426,6 +458,13 @@ function comparable(ref, cand, allowedImpl) {
         `${k}: ${ri[k] === undefined ? '-' : ri[k]} vs ${ci[k] === undefined ? '-' : ci[k]}`).join('; ')}): ` +
         'the reference is not this run\'s reference, so the delta would include that difference' };
     }
+  }
+  // The digest check runs LAST and says so (`digestOnly`), so ConfigSweep can re-gate a lever that is
+  // supposed to move identity WITHOUT skipping the rank and implementation checks above. Before
+  // 2026-10-22 it ran first and ConfigSweep re-gated on any 'incomparable' (audit G2/ORCH-6).
+  if (ref.config_digest !== cand.config_digest) {
+    return { ok: false, digestOnly: true, why: `config digest differs (${ref.config_digest} vs ${cand.config_digest}): ` +
+      `these legs did not measure the same workload` };
   }
   return { ok: true };
 }
@@ -441,7 +480,7 @@ function gateVerdict(spec) {
                        fatal: !!cu.fatal, reason: `candidate leg unusable: ${cu.why}` };
   const cmp = comparable(ref, cand, allowedImpl);
   if (!cmp.ok) return { accepted: false, klass: cmp.stale ? 'stale_summary' : 'incomparable',
-                        reason: cmp.why };
+                        digestOnly: !!cmp.digestOnly, reason: cmp.why };
   if (l0 && l0.pass === false) return { accepted: false, klass: 'numerics', reason: `L0 failed: ${l0.reason || 'op-level numerics'}` };
   if (l1 && l1.pass === false) return { accepted: false, klass: 'trajectory', reason: `L1 failed: ${l1.reason || 'loss/grad-norm trajectory'}` };
 
@@ -590,7 +629,7 @@ let curConfig = null;                 // hook 1: carried config IR; constant in 
 // Declared HERE, with the other carried state, not inside KernelTrack. ConfigSweep runs BEFORE
 // that block and passes it to the Tuner, and a `let` read above its declaration is a temporal
 // dead zone error that costs a launch -- this one cost 3 agents and 24 minutes.
-let curOverlay = null;                // the carried accepted overlay, or null
+let curOverlay = [];                  // the carried accepted overlays, IN ORDER (each composes on the previous)
 const bankedMemory = [];              // hook 5 input
 
 function benchInputs(config, tag) {   // hook 2: config is ALWAYS an explicit argument
@@ -605,7 +644,7 @@ async function reprofile(config, round, overlay) { // hook 3: independently call
   // BARE stack again, so the re-ranked queue never reflected the shares the accepted kernel moved
   // (found 2026-10-14: the 10-13 Architect report said "measured here at their bare-reference shares").
   return safeAgentStub('profiler', 'reprofile', { ...benchInputs(config, `reprofile_${round}`),
-                                                  ...(overlay ? { CARRIED_OVERLAY: overlay } : {}) });
+                                                  ...(overlay && overlay.length ? { CARRIED_OVERLAY: overlay } : {}) });
 }
 async function restrategize(config, profile) {      // hook 3
   requireRole('system_architect');
@@ -744,7 +783,27 @@ log0(`phases: ${['setup', 'profile', 'strategize', want('config') ? 'config' : n
 // ---------------------------------------------------------------------------
 const obj = (props, req) => ({ type: 'object', properties: props, required: req || [], additionalProperties: true });
 const arrObj = { type: 'array', items: { type: 'object', additionalProperties: true } };
-const SETUP_SCHEMA = obj({ baseline_legs: arrObj, across_job_band_pct: { type: 'number' },
+// Every field legUsable/comparable read is REQUIRED (audit 2026-10-22: they failed open on absence).
+// Setup's baseline legs too: the review found real Directors returned trimmed legs (occupancy as a
+// string, no step_shape, no implementation), so the reference selection and the carried-stack check
+// silently degraded on the first gate.
+const LEG_REQUIRED = ['implementation', 'workload_identity', 'config_digest', 'digest_schema', 'status',
+  'useful_tok_s_per_gpu', 'occupancy_verdict', 'hang_detected', 'dispersion_reliable', 'worst_iqr_spread_pct',
+  'min_steady_steps', 'step_shape', 'ranks_agree_on_argv', 'probe_dir'];
+const LEG = obj({ implementation: { type: 'object' }, workload_identity: { type: 'object' },
+  config_digest: { type: 'string' }, digest_schema: { type: 'number' }, status: { type: 'string' },
+  useful_tok_s_per_gpu: { type: 'number' }, occupancy_verdict: { type: 'object' },
+  hang_detected: { type: 'boolean' }, dispersion_reliable: { type: 'boolean' },
+  worst_iqr_spread_pct: { type: 'number' }, min_steady_steps: { type: 'number' },
+  step_shape: { type: 'string', enum: ['fixed', 'variable'] }, ranks_agree_on_argv: { type: 'boolean' },
+  probe_dir: { type: 'string' } },
+  LEG_REQUIRED);
+const PROOF = obj({ forward: { type: 'boolean' }, backward: { type: 'boolean' } }, ['forward', 'backward']);
+// Finalize runs even when no kernel was accepted; then there is nothing to re-check and null is honest.
+const PROOF_OR_NULL = obj({ forward: { type: ['boolean', 'null'] }, backward: { type: ['boolean', 'null'] } },
+                          ['forward', 'backward']);
+const VERDICT = obj({ pass: { type: 'boolean' }, reason: { type: 'string' } }, ['pass']);
+const SETUP_SCHEMA = obj({ baseline_legs: { type: 'array', items: LEG, minItems: 1 }, across_job_band_pct: { type: 'number' },
   trajectory_band_path: { type: 'string' }, config_digest: { type: 'string' },
   warmup_steps: { type: 'number' }, pad_fraction_pct: { type: 'number' } }, ['baseline_legs']);
 const PROFILE_SCHEMA = obj({ buckets: { type: 'object' }, top_n: arrObj,
@@ -760,20 +819,19 @@ const EXTRACT_SCHEMA = obj({ task_dir: { type: 'string' }, op: { type: 'string' 
 // A gate leg must carry bench_summary's `implementation` dict, or comparable() cannot check that the
 // reference differs from the candidate only in what is under test (DECISIONS 1.10b). The first real
 // run's Integrator trimmed it away (kept impl_digest only), which would have skipped the check silently.
-const LEG = obj({ implementation: { type: 'object' }, config_digest: { type: 'string' } }, ['implementation']);
 const INTEGRATE_SCHEMA = obj({ ref: LEG, cand: LEG,
-  comparison: { type: 'object' }, engagement: { type: 'object' },
-  overlay_path: { type: 'string' } }, ['ref', 'cand', 'comparison']);
-const AUDIT_SCHEMA = obj({ l0: { type: 'object' }, l1: { type: 'object' },
+  comparison: { type: 'object' }, engagement: PROOF,
+  overlay_path: { type: 'string' } }, ['ref', 'cand', 'comparison', 'engagement', 'overlay_path']);
+const AUDIT_SCHEMA = obj({ l0: VERDICT, l1: VERDICT,
   l2_recommended: { type: 'boolean' }, risk_class: { type: 'string' },
   // Path of the KB card written back to the kernel layer on a reject, or null on a pass. Declared so
   // the Auditor is asked for it; a rejection the KB never hears about is re-derived from zero next run.
   kb_rejection_card: { type: ['string', 'null'] } }, ['l0', 'l1']);
 const FINALIZE_SCHEMA = obj({ overlay: { type: 'string' }, patch: { type: 'string' },
-  launch: { type: 'string' }, engagement_recheck: { type: 'object' } }, []);
+  launch: { type: 'string' }, engagement_recheck: PROOF_OR_NULL }, ['engagement_recheck']);
 const CONFIG_SCHEMA = obj({ lever: { type: 'string' }, flags_added: { type: 'array' },
-  l1: { type: 'object' }, packing_gate: { type: 'object' }, comparison_tokens: { type: 'object' },
-  ceiling_pct: { type: 'number' }, ref: LEG, cand: LEG,
+  packing_gate: { type: 'object' }, comparison_tokens: { type: 'object' },
+  ceiling_pct: { type: 'number' }, ref: LEG, cand: LEG, l1: VERDICT,
   comparison: { type: 'object' }, config_digest_delta: { type: 'object' },
   peak_reserved_mb: { type: 'object' }, memory_conversion: { type: 'object' } },
   ['lever', 'ref', 'cand', 'comparison']);
@@ -890,7 +948,13 @@ const byQuiet = baselineLegs
   .filter((l) => legUsable(l).ok)
   .sort((a, b) => (Number(a.worst_iqr_spread_pct) || Infinity) - (Number(b.worst_iqr_spread_pct) || Infinity)
                   || (Number(b.min_steady_steps) || 0) - (Number(a.min_steady_steps) || 0));
-const baseline = byQuiet[0] || baselineLegs[0];
+if (!byQuiet.length) {
+  // FAIL CLOSED: falling back to baselineLegs[0] silently disabled the quietest-leg selection AND the
+  // carried-stack check on the first gate (review 2026-10-22). No usable baseline -> no reference.
+  throw new Error('Setup returned no USABLE baseline leg: ' + baselineLegs.map((l) =>
+    `${(l.dir || l.probe_dir || '?').split('/').slice(-2).join('/')}: ${legUsable(l).why}`).join('; '));
+}
+const baseline = byQuiet[0];
 if (baselineLegs.length > 1) {
   log0('baseline legs by dispersion: ' + baselineLegs
     .map((l) => `${(l.dir || l.leg || '?').split('/').pop()}=${l.worst_iqr_spread_pct}%`).join(' ') +
@@ -1121,20 +1185,19 @@ if (want('config')) {
       // comparable() refuses that as "different workload", correctly, for a KERNEL candidate. Here
       // the identity difference is the subject of the experiment, so the digest check is reported
       // rather than enforced, and the Tuner must have named exactly which key moved.
-      if (cv.klass === 'incomparable' && sweep.config_digest_delta) {
-        log0(`ConfigSweep: digest moved as expected (${JSON.stringify(sweep.config_digest_delta)}) — ` +
-             're-gating on the delta alone, since identity difference IS the experiment');
-        const wmC = windowMatchedLegs({ comparison: sweep.comparison });
-        const band = noiseBandPct(wmC ? wmC.ref : sweep.ref, wmC ? wmC.cand : sweep.cand, true);
-        const d = alignedDelta({ comparison: sweep.comparison });
-        cv.klass = d && d.delta_pct > band ? 'win' : 'no_win';
-        cv.accepted = cv.klass === 'win' && !!l1 && l1.pass === true;
-        if (cv.klass === 'win' && !(l1 && l1.pass === true)) {
-          cv.klass = l1 ? 'trajectory' : 'no_correctness_gate';
-        }
-        cv.delta_pct = d ? d.delta_pct : null;
-        cv.band_pct = +band.toFixed(3);
-        cv.delta_source = d ? 'window-aligned' : 'raw ratio (NOT window-aligned)';
+      if (cv.klass === 'incomparable' && cv.digestOnly) {
+        // A lever that moves WORKLOAD identity (lr schedule, precision recipe, loss normalization...) is
+        // a recipe change, not an implementation lever: L1 refuses such a pair by design (different
+        // workload, step i is not the same computation), and the fixed-recipe rule forbids tuning it.
+        // Before 2026-10-22 this path re-gated ANY 'incomparable' on a Tuner-supplied digest delta,
+        // skipping the rank and implementation checks (audit G2/ORCH-6); the review then showed the
+        // re-gate could never pass L1 anyway. So: say what it is, from the legs, and do not accept.
+        const wr = (sweep.ref || {}).workload_identity, wc = (sweep.cand || {}).workload_identity;
+        const moved = wr && wc ? [...new Set([...Object.keys(wr), ...Object.keys(wc)])].filter((k) => wr[k] !== wc[k]) : null;
+        Object.assign(cv, { accepted: false, klass: 'recipe_change', digestOnly: false, identity_moved: moved,
+          reason: `the lever moves workload identity${moved ? ` [${moved.join(', ')}]` : ''}: a recipe change, ` +
+                  'not an implementation lever -- not gateable by step-aligned L1 and not tunable under the ' +
+                  'fixed-recipe rule' });
       }
       sweepRecords.push({ lever: sweep.lever, requested: wantLever, flags_added: sweep.flags_added,
         ceiling_pct: sweep.ceiling_pct, verdict: cv,
@@ -1254,9 +1317,12 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
       'Overlay reversibly, prove engagement for forward AND backward, take a paired same-session A/B.');
   });
   if (!integ || !integ.ref || !integ.cand) { noImprove += 1; continue; }
-  if (integ.engagement && (integ.engagement.forward === false || integ.engagement.backward === false)) {
-    log0('  engagement NOT proven on both paths — refusing the result (an overlay bound to only one ' +
-         'half is the exact failure L1 exists to catch, and it is cheaper to catch here)');
+  // FAIL CLOSED (audit OVL-1): engagement must be PROVEN true on both paths, not merely not-false.
+  const eng = integ.engagement || {};
+  if (eng.forward !== true || eng.backward !== true) {
+    log0(`  engagement NOT proven on both paths (forward=${eng.forward}, backward=${eng.backward}) — ` +
+         'refusing the result (an overlay bound to only one half, or not at all, is the exact failure ' +
+         'L1 exists to catch, and it is cheaper to catch here)');
     noImprove += 1; continue;
   }
 
@@ -1283,6 +1349,25 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
   const v = gateVerdict({ ref: integ.ref, cand: integ.cand, comparison: integ.comparison,
                           l0: audit && audit.l0, l1: audit && audit.l1,
                           mode: DEEP_MODE ? 'deep' : 'fast', allowedImpl: KERNEL_IMPL_DELTA });
+  // The reference must BE the carried stack, and the candidate that stack plus this head's overlay
+  // (audit G3): comparable() only checks that they differ in GEAK_OVERLAY*, not HOW. A bare ref
+  // against a stacked cand would credit this head with the whole stack. SHA components, not names
+  // (byte-identical overlays get different manifest names).
+  const carried = overlayShaCheck(refLeg, integ.ref, integ.cand);
+  if (v.accepted && !integ.overlay_path) {
+    Object.assign(v, { accepted: false, klass: 'incomparable',
+      reason: 'no overlay_path: an accepted overlay must be carried into every later gate and the bundle' });
+  }
+  if (v.accepted && !carried.ok) {
+    Object.assign(v, { accepted: false, klass: 'incomparable', reason: carried.why });
+  }
+  // L0/L1 can only reject -- but ABSENT is not a pass (audit G1: an Auditor that failed three times
+  // returned null, and the kernel path accepted on throughput alone; the config path never did).
+  if (v.accepted && !(audit && audit.l0 && audit.l0.pass === true && audit.l1 && audit.l1.pass === true)) {
+    Object.assign(v, { accepted: false, klass: 'no_correctness_gate',
+      reason: `L0/L1 not proven (l0.pass=${audit && audit.l0 && audit.l0.pass}, ` +
+              `l1.pass=${audit && audit.l1 && audit.l1.pass}): a kernel may not be accepted on throughput alone` });
+  }
   // An unusable leg has a CAUSE, and the Integrator is the only thing that saw it. Flattening that
   // to "leg status != ok" threw away the actual finding once already: the mlp_fc1_swiglu candidate
   // died at iteration #2 with an inf gradient (reproduced twice, Megatron's rerun_state_machine
@@ -1304,7 +1389,9 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
                    overlay: integ.overlay_path || null, task_dir: optimized.ext.task_dir };
 
   if (v.accepted) {
-    curOverlay = integ.overlay_path || curOverlay;
+    // COMPOSE, do not replace: the next head is gated on top of ALL accepted overlays (audit: the
+    // single-path carry dropped the first accepted overlay as soon as a second was accepted).
+    if (integ.overlay_path) curOverlay = [...curOverlay, integ.overlay_path];
     refLeg = integ.cand;                     // later candidates are gated ON TOP of this
     wfReturn.accepted.push(record);
     noImprove = 0;
@@ -1368,9 +1455,9 @@ wfReturn.final = fin || null;
 // that were never passed to agent(): the agent does the work and the orchestrator discards it.
 // This does not re-open the gate (the win was already measured); it refuses to present an artifact
 // as validated when its own re-check says the overlay is no longer bound.
-if (fin && fin.engagement_recheck && wfReturn.accepted.length) {
-  const er = fin.engagement_recheck;
-  if (er.forward === false || er.backward === false) {
+if (wfReturn.accepted.length) {
+  const er = (fin && fin.engagement_recheck) || {};
+  if (er.forward !== true || er.backward !== true) {
     wfReturn.finalize_engagement_failed = true;
     log0('FINALIZE RE-CHECK FAILED: the assembled bundle does not engage on ' +
          `${er.forward === false ? 'forward' : ''}${er.forward === false && er.backward === false ? ' and ' : ''}` +
@@ -1467,6 +1554,9 @@ wfReturn.tasks_used = tasksUsed;
 wfReturn.kb_identity = kbIdentity(curConfig);
 wfReturn.status = val && val.validation_status === 'confirmed' ? 'ok'
   : (wfReturn.accepted.length ? 'unconfirmed' : 'no_gain');
+// A bundle whose own re-check failed, or a stack the outcome test did NOT clear, is not 'ok' (audit G9).
+if (wfReturn.status === 'ok' && wfReturn.finalize_engagement_failed) wfReturn.status = 'bundle_not_engaged';
+if (wfReturn.status === 'ok' && wfReturn.quality_gate && wfReturn.quality_gate.cleared === false) wfReturn.status = 'not_cleared';
 log0(`done: status=${wfReturn.status} accepted=${wfReturn.accepted.length} ` +
      `gates=${gatesUsed}/${MAX_GATES} tasks=${tasksUsed}/${BUDGET}`);
 

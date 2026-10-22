@@ -127,7 +127,7 @@ Two rules, because a wrong card is worse than none:
 
 Return JSON:
 ```json
-{"l0": {"pass": true, "reason": "...", "sign_balance": 0.0},
+{"l0": {"pass": true, "reason": "...", "sign_balance": 0.0},   // pass MUST be a boolean; absent = no accept
  "l1": {"pass": true, "reason": "...", "checks": {...}},
  "l2_recommended": false, "risk_class": "low|backward|optimizer|reduction|precision",
  "kb_rejection_card": "<path written, or null when the candidate passed>"}

@@ -60,7 +60,7 @@ const leg = (o = {}) => Object.assign({
   useful_tok_s_per_gpu: 4760, worst_iqr_spread_pct: 0.13, peak_reserved_mb: 14394,
   config_digest: 'abc123def456', ranks_agree_on_argv: true, dispersion_reliable: true,
   digest_schema: 2,
-  min_steady_steps: 20,
+  min_steady_steps: 20, step_shape: 'fixed',
 }, o);
 
 // ---------------------------------------------------------------- 1. noise band
@@ -132,7 +132,7 @@ const leg = (o = {}) => Object.assign({
 
 // ---------------------------------------------------------------- 3./4. the gate
 {
-  const { gateVerdict, legUsable } = load(['gateVerdict', 'legUsable', 'noiseBandPct', 'windowMatchedLegs', 'comparable', 'alignedDelta']);
+  const { gateVerdict, legUsable, comparable } = load(['gateVerdict', 'legUsable', 'noiseBandPct', 'windowMatchedLegs', 'comparable', 'alignedDelta']);
   const v = (o) => gateVerdict(Object.assign({ ref: leg(), cand: leg(), mode: 'fast' }, o));
 
   // An ACCEPT now requires an aligned comparison, so every accept-asserting case must supply one.
@@ -299,7 +299,31 @@ const leg = (o = {}) => Object.assign({
     cand: leg({ useful_tok_s_per_gpu: 4900, implementation: Object.assign({}, IMPL, { 'ddp-average-in-collective': 'true' }) }) });
   ok(lever.klass !== 'incomparable', 'a config lever may move exactly its own implementation key');
   const legacy = gateVerdict({ ref: leg(), cand: leg({ useful_tok_s_per_gpu: 4900 }), mode: 'fast', allowedImpl: KERNEL });
-  ok(legacy.klass !== 'incomparable', 'legs without an implementation dict are not refused by the new check');
+  ok(legacy.klass === 'incomparable' && /no implementation dict/.test(legacy.reason),
+    'FAIL CLOSED: legs without an implementation dict are refused when the gate must check implementation');
+  {
+    const { overlayShaCheck } = load(['overlayShaCheck']);
+    const L = (sha) => ({ implementation: sha ? { GEAK_OVERLAY_SHA: sha } : {} });
+    ok(overlayShaCheck(L('a'), L('a'), L('a+b')).ok, 'cand = carried stack + one overlay passes');
+    ok(overlayShaCheck(L('a'), L('a'), L('a+b+c')).ok, 'a two-manifest overlay (rmsnorm) adds two components and passes');
+    ok(!overlayShaCheck(L('a+b'), L('a'), L('a+b+c')).ok, 'a BARE/older ref against the carried stack is refused (audit G3)');
+    ok(!overlayShaCheck(L('a'), L('a'), L('x+b')).ok, 'a cand that does not extend the carried stack is refused');
+    ok(!overlayShaCheck(L('a'), L('a'), L('a')).ok, 'a cand carrying no new overlay is refused');
+    ok(overlayShaCheck(L(''), L(''), L('b')).ok, 'bare reference + first overlay passes');
+  }
+  // Audit 2026-10-22 G4: a leg trimmed to {status, throughput} used to be "clean".
+  const trimmed = { status: 'ok', useful_tok_s_per_gpu: 1, config_digest: 'D', digest_schema: 5, implementation: {} };
+  ok(!legUsable(trimmed).ok && /lacks the evidence/.test(legUsable(trimmed).why),
+    `FAIL CLOSED: a leg missing occupancy/hang/dispersion/step_shape is unusable (${legUsable(trimmed).why.slice(0, 80)})`);
+  // ranks_agree_on_argv must be TRUE, not merely not-false.
+  ok(!comparable(leg({ ranks_agree_on_argv: undefined }), leg()).ok, 'a leg that does not say its ranks agree is not comparable');
+  // The digest check runs last and is flagged, so ConfigSweep can re-gate only that case.
+  const dOnly = comparable(leg(), leg({ config_digest: 'other' }));
+  ok(!dOnly.ok && dOnly.digestOnly === true, 'a pair differing only in config_digest is flagged digestOnly');
+  const notOnly = comparable(leg({ implementation: IMPL }), leg({ config_digest: 'other',
+    implementation: Object.assign({}, IMPL, { 'manual-gc': 'true' }) }), ['ddp-average-in-collective']);
+  ok(!notOnly.ok && !notOnly.digestOnly && /implementation differs/.test(notOnly.why),
+    'an implementation mismatch is refused BEFORE the digest check, so a digest-moving lever cannot bypass it');
 
   // "we measured and it is not there" vs "we could not measure". A real candidate at +1.147% was
   // recorded as no_win against a 2.467% band -- 16.4x the floor -- because the reference leg's IQR
@@ -412,8 +436,12 @@ const leg = (o = {}) => Object.assign({
   ok(/wfReturn\.skipped_heads/.test(src),
     'a filtered queue is recorded in the result — a silently shortened queue is indistinguishable ' +
     'from one that legitimately had nothing else in it');
-    ok(/engagement\.forward === false \|\| integ\.engagement\.backward === false/.test(src),
-      'engagement must be proven for forward AND backward separately, or the result is refused');
+    ok(/eng\.forward !== true \|\| eng\.backward !== true/.test(src),
+      'engagement must be PROVEN true for forward AND backward (absent or malformed is refused)');
+    ok(/audit\.l0\.pass === true && audit\.l1 && audit\.l1\.pass === true/.test(src),
+      'a kernel needs L0 AND L1 explicitly passed; an absent Auditor result is not a pass');
+    ok(/overlayShaCheck\(refLeg, integ\.ref, integ\.cand\)/.test(src),
+      'the kernel gate checks the ref IS the carried stack and the cand extends it');
     ok(/has_backward === false/.test(src),
       'a task with no backward is refused: a forward-only task can call a slower kernel a win');
     // ConfigSweep now exists. What must be pinned is the line it may not cross: a CLASS B lever
@@ -443,9 +471,9 @@ const leg = (o = {}) => Object.assign({
       'packing classifies as B even when the flag is spelled differently');
     ok(classOfLever(['--sft-packing']).gateable === true && classOfLever(['--global-batch-size', '128']).gateable === false,
       'packing is the ONE gateable Class-B lever; GBS stays ungateable (it changes the optimizer trajectory by design)');
-    ok(/identity difference IS the experiment/.test(src),
-      'a config change is EXPECTED to move config_digest, so the digest check is reported rather ' +
-      'than enforced — the opposite of the rule for a kernel candidate');
+    ok(/klass: 'recipe_change'/.test(src),
+      'a lever that moves WORKLOAD identity is a recipe change and is refused (L1 cannot gate it, the ' +
+      'fixed-recipe rule forbids tuning it); implementation levers keep config_digest and gate normally');
     ok(/noImprove >= 2/.test(src), 'two consecutive non-wins stop the kernel track');
     ok(/if \(v\.fatal\)/.test(src) && /STOPPING: the box is not quiet enough/.test(src),
       'a fatal verdict STOPS the run rather than spending the rest of the gate budget on a busy node');
