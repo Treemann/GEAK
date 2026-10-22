@@ -459,6 +459,9 @@ async function dryRun(args) {
     ok(qp.length === 1 && qp[0].includes('quality_ab.sh') && qp[0].includes('quality_ab_final.py')
        && qp[0].includes('"QUALITY_WORKLOAD": "/x/workloads/qwen2_5_math_7b.env"'),
       'the quality phase gets the protocol script, the pre-registered verdict script and THIS run\'s workload');
+    const { calls: cc } = await dryRun({ ...base, quality_gate: 'true', quality_ctrl: 'ctrl70' });
+    ok(cc.prompts.filter((p) => p.includes('PHASE=quality'))[0].includes('"QUALITY_CTRL": "ctrl70"'),
+      'quality_ctrl passes an in-run positive-control arm to the outcome test');
     const { calls: cq } = await dryRun({ ...base, quality_gate: 'true', quality_workload: '/x/workloads/sched.env' });
     ok(cq.prompts.filter((p) => p.includes('PHASE=quality'))[0].includes('"QUALITY_WORKLOAD": "/x/workloads/sched.env"'),
       'an explicit quality_workload overrides the default');

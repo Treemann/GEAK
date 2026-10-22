@@ -45,6 +45,9 @@ const QUALITY_SEEDS = String(A.quality_seeds || '5567,6678,7789,8890,9901');
 // the non-inferiority rule, these 5 fresh seeds are added and the combined verdict is FINAL -- fixed
 // here, before any result, so it is not open-ended optional stopping. 'none' disables it.
 const QUALITY_EXTEND_SEEDS = String(A.quality_extend_seeds || '7013,8124,9235,1346,2457');
+// Optional IN-RUN positive control arm (audit G4): e.g. 'ctrl70' (the schedule scaled x0.7). The yardstick
+// is then measured in this run instead of the fixed P0-4d value, at +50% legs. Off by default.
+const QUALITY_CTRL = A.quality_ctrl ? String(A.quality_ctrl) : null;
 // Default = THIS RUN's workload: the outcome test must judge the stack the run built, on the recipe it
 // built it on. A fixed default (`_cosine_avg`, 2026-10-20..22) broke the moment a run's own lever was
 // --ddp-average-in-collective on `_cosine`: the REF arm would already carry the lever and REF == cand.
@@ -1619,7 +1622,7 @@ if (QUALITY_GATE && stackChanged) {
   phase('QualityGate');
   const q = await safeAgentStub('training_director', 'quality',
     { ...benchInputs(curConfig, 'quality'), FINAL: fin, OVERLAY: curOverlay,
-      ACCEPTED_CONFIG: qConfig, QUALITY_SEEDS, QUALITY_WORKLOAD,
+      ACCEPTED_CONFIG: qConfig, QUALITY_SEEDS, QUALITY_WORKLOAD, QUALITY_CTRL,
       QUALITY_SCRIPT: `${WORKFLOW_DIR}/scripts/quality_ab.sh`,
       QUALITY_VERDICT: `${WORKFLOW_DIR}/scripts/quality_ab_final.py` },
     'Run the one-epoch outcome test of the final stack against REF and return the verdict of ' +
@@ -1630,7 +1633,7 @@ if (QUALITY_GATE && stackChanged) {
     log0(`quality gate INCONCLUSIVE (${q.quality}) -- running the ONE pre-registered extension: seeds ${QUALITY_EXTEND_SEEDS}`);
     const qx = await safeAgentStub('training_director', 'quality',
       { ...benchInputs(curConfig, 'quality_ext'), FINAL: fin, OVERLAY: curOverlay,
-        ACCEPTED_CONFIG: qConfig, QUALITY_SEEDS: QUALITY_EXTEND_SEEDS, QUALITY_WORKLOAD,
+        ACCEPTED_CONFIG: qConfig, QUALITY_SEEDS: QUALITY_EXTEND_SEEDS, QUALITY_WORKLOAD, QUALITY_CTRL,
         EXTENSION_OF: q.legs_prefix,
         QUALITY_SCRIPT: `${WORKFLOW_DIR}/scripts/quality_ab.sh`,
         QUALITY_VERDICT: `${WORKFLOW_DIR}/scripts/quality_ab_final.py` },

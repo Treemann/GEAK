@@ -237,7 +237,7 @@ PermissionError). OPEN, by priority:
   stall_pct 2-7%) -- re-measure its wall delta with the warm cache before folding it into s8.
 * DONE 2026-10-22 (4.44): outcome tests default to a non-inferiority rule; every historical clearance also passes it.
   DONE: quality_ab defaults to the cleared recipe and the descriptor's LR_DECAY_ITERS; the workflow runs the one
-  pre-registered seed extension itself. Open: no in-run positive control on Megatron (fixed P0-4d yardstick).
+  pre-registered seed extension itself; `quality_ctrl: ctrl70` adds an in-run positive control (opt-in, +50% legs).
 * Agent trust: the orchestrator sees only the Integrator's chosen pair (ORCH-1); Validate's estimator and band are
   agent-chosen (ORCH-2: DONE, the card now fixes the estimator and band formula); probe paths (ORCH-3: DONE, schema);
   Validate as a bare string (ORCH-7: DONE, schema requires numbers + L1 + legs, status needs l1.pass); leg-dir
