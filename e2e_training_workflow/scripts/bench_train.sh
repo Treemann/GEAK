@@ -36,8 +36,9 @@ if [ ! -d "${MLM_DIR:-/workspace/Primus/third_party/Megatron-LM}" ] && [ -z "${G
   # caller's shell resolves to nothing inside. (Observed: `--workload workloads/x.env` run from the
   # workflow directory re-executed fine and then died on a missing file.) Anything that names an
   # existing file or directory becomes absolute before the mount translation.
-  _ARGS=()
+  _ARGS=(); _GPUS=""; _TAGH=""; _prev=""
   for _a in "$@"; do
+    [ "$_prev" = "--gpus" ] && _GPUS="$_a"; [ "$_prev" = "--tag" ] && _TAGH="$_a"; _prev="$_a"
     if [ -e "$_a" ]; then _a="$(cd "$(dirname "$_a")" && pwd)/$(basename "$_a")"; fi
     case "$_a" in
       "$REPO"*|"$WORK"*|"$MODELS"*) ;;
@@ -52,14 +53,22 @@ if [ ! -d "${MLM_DIR:-/workspace/Primus/third_party/Megatron-LM}" ] && [ -z "${G
     _a="${_a//$MODELS//models}"
     _ARGS+=("$_a")
   done
-  echo ">>> not inside the training image; re-executing in $IMAGE"
-  exec docker run --rm --network host \
+  # --gpus maps the workflow's gpu_ids onto the container (audit OVL-7: it was never applied, so every
+  # leg used GPUs 0-7 whatever the run asked for). An explicit HIP_VISIBLE_DEVICES still wins.
+  _VIS="${HIP_VISIBLE_DEVICES:-${_GPUS:-0,1,2,3,4,5,6,7}}"
+  # A NAMED, LABELLED container with an init: the shared-node rule is "stop only your own containers,
+  # by ID, after docker inspect" -- a name/label makes them identifiable; --init reaps the ranks.
+  _CNAME="geak_bench_$(printf '%s' "${_TAGH:-leg}" | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-40)_$$"
+  echo ">>> not inside the training image; re-executing in $IMAGE (container $_CNAME, GPUs $_VIS)"
+  exec docker run --rm --init --name "$_CNAME" --label geak=1 --label geak_owner="$(id -un)" --network host \
     --device=/dev/kfd --device=/dev/dri --group-add video \
     --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
     --ipc=host --shm-size 32G \
     -v "$MODELS":/models:ro -v "$WORK":/work -v "$REPO":/repo \
     -e GEAK_IN_CONTAINER=1 -e GEAK_HOST_WORK="$WORK" \
-    -e HIP_VISIBLE_DEVICES="${HIP_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}" \
+    -e HIP_VISIBLE_DEVICES="$_VIS" \
+    ${MASTER_PORT:+-e MASTER_PORT="$MASTER_PORT"} ${HANG_TIMEOUT:+-e HANG_TIMEOUT="$HANG_TIMEOUT"} \
+    ${TRITON_CACHE_DIR:+-e TRITON_CACHE_DIR="$TRITON_CACHE_DIR"} \
     ${ATTENTION_BACKEND:+-e ATTENTION_BACKEND="$ATTENTION_BACKEND"} \
     ${RETRY_CONTAMINATED:+-e RETRY_CONTAMINATED="$RETRY_CONTAMINATED"} \
     --entrypoint bash "$IMAGE" \
@@ -97,6 +106,7 @@ while [ $# -gt 0 ]; do
     --retry-contaminated) RETRY_CONTAMINATED="$2"; shift 2 ;;
     --profile-steps) PROFILE_STEPS="$2"; shift 2 ;;
     --profile-ranks) PROFILE_RANKS="$2"; shift 2 ;;
+    --gpus) shift 2 ;;     # applied as HIP_VISIBLE_DEVICES by the host-side re-exec above
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -108,6 +118,13 @@ source "$WORKLOAD"
 [ -n "$MBS_OVR" ] && MBS="$MBS_OVR"; [ -n "$GBS_OVR" ] && GBS="$GBS_OVR"; [ -n "$SEQ_OVR" ] && SEQ="$SEQ_OVR"
 OUT_DIR="${OUT_DIR:-/work/runs/bench_${WORKLOAD_NAME}${TAG:+_$TAG}_$(date +%m%d_%H%M%S)}"
 PROBE_DIR="$OUT_DIR/probe"
+# One --out is one leg (audit ORCH-8): leg names are agent-chosen and collided across sessions, and a
+# second run into the same dir used to overwrite the first leg's bench_summary.json after the probe
+# refused to append. Refuse before anything runs.
+if [ -s "$PROBE_DIR/probe_rank0.jsonl" ] || [ -e "$OUT_DIR/bench_summary.json" ]; then
+  echo "!!! $OUT_DIR already holds a measured leg; one --out is one leg. Use a fresh --out/--tag." >&2
+  exit 3
+fi
 mkdir -p "$PROBE_DIR"
 # PERSISTENT Triton cache (DECISIONS 4.43). Each leg is a fresh --rm container, so the default
 # $HOME/.triton cache was empty every run, and rope_fused_qk's Triton kernel -- specialised on the

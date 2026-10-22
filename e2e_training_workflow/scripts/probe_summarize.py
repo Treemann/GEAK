@@ -378,6 +378,8 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         # (compare_legs' per-step ratio, 0.26% on an identical pair) separates noise from signal.
         "step_shape": _step_shape(per_rank_tokens),
         "identity_vs_realized": identity_vs_realized(dirpath, cfg),
+        # Report-only: which harness code ran inside the leg (rocm_compat/overlay_train/train_probe).
+        "harness": headers[0].get("harness"),
         "total_tokens_cv_pct": _cv_pct(per_rank_tokens),
         "rank_skew_pct": round(100 * (max(meds) - min(meds)) / statistics.median(meds), 3),
         "slowest_rank": slowest,

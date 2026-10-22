@@ -230,25 +230,28 @@ PermissionError). OPEN, by priority:
   TRITON_CACHE_DIR. Remaining overlay-induced stall: extra Python GC churn on overlay legs (synchronized GC,
   `--gc`, removes it). Still open: the 1020 attention's higher stall rate in its 30-step gate legs (cand
   stall_pct 2-7%) -- re-measure its wall delta with the warm cache before folding it into s8.
-* Outcome-test rule is a point estimate: pre-register an equivalence (TOST) rule before the next outcome test.
-  Workflow QualityGate hard-codes the Megatron protocol (no in-run control, fixed yardstick, 358 iters, no --stack).
+* DONE 2026-10-22 (4.44): outcome tests default to a non-inferiority rule; every historical clearance also passes it.
+  Still open: the workflow QualityGate hard-codes the Megatron protocol (fixed yardstick, 358 iters).
 * Agent trust: the orchestrator sees only the Integrator's chosen pair (ORCH-1); Validate's estimator and band are
-  agent-chosen (ORCH-2, claims M1); the Auditor's probe paths come from a field the Integrator card never asked for
-  (ORCH-3; now schema-required `probe_dir`); Validate accepted as a bare string (ORCH-7); leg dir names collide
-  across sessions and bench_train does not refuse an existing --out (ORCH-8). A fixed-script verifier agent that
-  recomputes delta/band/engagement from the leg dirs would close most of these.
+  agent-chosen (ORCH-2: DONE, the card now fixes the estimator and band formula); probe paths (ORCH-3: DONE, schema);
+  Validate as a bare string (ORCH-7: DONE, schema requires numbers + L1 + legs, status needs l1.pass); leg-dir
+  collisions (ORCH-8: DONE, bench_train refuses an --out that holds a leg). Open: ORCH-1 (one pair seen); a
+  fixed-script verifier that recomputes delta/band/engagement from the leg dirs (scripts/gate_eval.js is the core).
 * Oracles: Megatron s8 oracles have zero holdouts (G6); HF attention oracle has the same dq blind band with no paired
   check (G8); training-path fp32 main_grad wgrad of the GEMM overlays is never exercised by a voting gate (G5);
   kernel_swap step-1 floor 2.0% is 45x the largest observed delta (G7); the 28 frozen template oracles keep the
   missing-output hole (re-generate when a task is reused).
-* Measurement hygiene: calibrate_band.py no longer mirrors the gate (TP-6: 6/219 false wins); the unpacked-workload
+* DONE 2026-10-22: calibrate_band.py now judges null pairs with the gate itself (scripts/gate_eval.js): 400 pairs ->
+  0 false wins, 1 floor-level false regression, and 24 false `banked_memory` -> threshold raised 2% -> 5% (null
+  peak-memory spread: p99 4.0%). Open measurement hygiene: the unpacked-workload
   floor is breached by a true null pair; 30-step window sits ~1.2% above the full-epoch median (TP-5) and within-leg
   drift over an epoch is -3.4% (M3); packing's GBS-in-packs changes samples per update (TP-7); HF 4.33 correction
   left two HF lever deltas on 12/4-step windows (F2); HF "step-1 loss 0.0" claims are at 4-decimal resolution (F6).
 * Reproducibility: rocm_compat changes the loss on packed data and is not in leg identity (OVL-6); kernels depend on
-  the unpinned image (OVL-5); bundles run live repo code (OVL-4); docker re-exec without --init/name, env dropped,
-  gpu_ids never mapped to HIP_VISIBLE_DEVICES (OVL-7).
-* Low: stop_reason labels, classOfLever substring matching, impl_digest includes manifest names (F8), stale records (F10).
+  the unpinned image (OVL-5); bundles run live repo code (OVL-4). DONE: OVL-6 (harness shas recorded per leg,
+  report-only), OVL-7 (--gpus -> HIP_VISIBLE_DEVICES, named/labelled container with --init, knobs forwarded).
+* Low: DONE stop_reason labels, classOfLever by flag name. Open: impl_digest includes manifest names (F8: a digest
+  break, do it with the next schema bump), stale records (F10).
 
 **MEGATRON REVIEW 2026-10-20** (two read-only audits plus spot checks). None of the HF-era fixes (4.33
 warmup, 410207cb signature, 4.37, 4.39) changes a Megatron number. The fixed-shape detector path was

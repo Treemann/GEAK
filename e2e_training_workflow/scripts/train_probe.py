@@ -74,7 +74,7 @@ class _Probe:
                     "local_rank": self.local_rank, "t_wall": time.time(),
                     "device": torch.cuda.get_device_name(self.local_rank)
                     if torch.cuda.is_available() else "cpu",
-                    "argv_hash": _argv_hash(), "config": _config_snapshot()})
+                    "argv_hash": _argv_hash(), "config": _config_snapshot(), "harness": _harness_shas()})
 
     def _emit(self, obj):
         self.fh.write(json.dumps(obj) + "\n")
@@ -255,6 +255,22 @@ def _profile_ranks():
         if part.isdigit():
             out.add(int(part))
     return out or {0}
+
+
+def _harness_shas():
+    """sha256[:16] of the harness code that runs INSIDE every leg (audit OVL-6): rocm_compat patches
+    Megatron at runtime (it changes the loss on packed data) and overlay_train rebinds symbols, yet
+    neither was part of any leg's record. REPORT-ONLY provenance, outside `config`, so no digest moves;
+    two legs whose harness differs can be told apart after the fact."""
+    import hashlib
+    here, out = os.path.dirname(os.path.abspath(__file__)), {}
+    for f in ("rocm_compat.py", "overlay_train.py", "train_probe.py"):
+        try:
+            with open(os.path.join(here, f), "rb") as fh:
+                out[f] = hashlib.sha256(fh.read()).hexdigest()[:16]
+        except OSError:
+            out[f] = None
+    return out
 
 
 def _argv_hash():

@@ -17,9 +17,19 @@ positive half -- that a real win still clears the band -- is not reconstructible
 legs and lives in the measured accepted candidates (+1.147%, +7.4348%, +12.36%). Read the two
 together or neither means anything.
 
-  calibrate_band.py                      # nearest-rank quartiles, as shipped
-  calibrate_band.py --quantile interp    # linear-interpolated quartiles, the proposed change
+  calibrate_band.py                      # judge every null pair with THE GATE ITSELF (default)
+  calibrate_band.py --floor 0.25         # the run's across_job_floor_pct (default 0.25)
+  calibrate_band.py --legacy             # the old re-implemented per-leg band (kept for comparison)
+  calibrate_band.py --quantile interp    # (legacy only) linear-interpolated quartiles
   calibrate_band.py --max-pairs 200      # bound the work
+  runs dir: $GEAK_WORK_DIR/runs (default /home/treemann/geak_train/runs); node: $NODE or `node`.
+
+THE GATE ITSELF (2026-10-22, audit TP-6). This script used to re-implement the band and drifted from
+the gate: a different floor, per-leg medians where the gate quotes the PAIRED per-step ratio, and no
+identity/implementation rules -- it reported 6/219 false wins the gate would not have produced. The
+default now runs compare_legs.compare() on each null pair and hands it to scripts/gate_eval.js, which
+executes gateVerdict() sliced from training_workflow.js. A false win is any pair the gate calls
+`win` or `regression`. It can no longer disagree with the gate it certifies.
 """
 from __future__ import annotations
 
@@ -29,6 +39,8 @@ import json
 import math
 import os
 import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from probe_summarize import detect_warmup_end, load_rank  # noqa: E402
@@ -179,7 +191,92 @@ def _pair(a, b, mode):
             "n": n, "iqr_ref": sa[0], "iqr_cand": sb[0]}
 
 
+def _node():
+    import shutil
+    n = os.environ.get("NODE") or shutil.which("node")
+    if n:
+        return n
+    c = sorted(glob.glob(os.path.expanduser("~/.cursor-server/bin/*/node")) +
+               glob.glob(os.path.expanduser("~/.cursor-server/bin/*/*/node")))
+    if not c:
+        sys.exit("no node found: set NODE=/path/to/node (the gate is JavaScript)")
+    return c[0]
+
+
+def _gate_pair(a_probe, b_probe, floor, node):
+    """compare_legs + the workflow's own gateVerdict on one pair. Returns the verdict dict or None."""
+    import subprocess
+    from compare_legs import compare
+    from probe_summarize import summarize
+    cmp = compare(a_probe, b_probe)
+    if not isinstance(cmp, dict) or cmp.get("error"):
+        return None
+    legs = []
+    for pd in (a_probe, b_probe):
+        s = summarize(pd)
+        try:
+            bs = json.load(open(os.path.join(os.path.dirname(pd), "bench_summary.json")))
+        except Exception:
+            bs = {}
+        # dispatcher-added fields (occupancy, hang) come from bench_summary; the rest from a fresh summary
+        for k in ("occupancy_verdict", "hang_detected", "status", "contamination_exhausted", "attempts"):
+            if k in bs:
+                s[k] = bs[k]
+        s.setdefault("status", "ok")
+        legs.append(s)
+    spec = {"ref": legs[0], "cand": legs[1], "comparison": cmp, "mode": "fast",
+            "args": {"across_job_floor_pct": floor}}
+    r = subprocess.run([node, os.path.join(HERE, "gate_eval.js")], input=json.dumps(spec),
+                       capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        raise SystemExit(f"gate_eval.js failed: {r.stderr[:400]}")
+    return json.loads(r.stdout)
+
+
+def main_gate(max_pairs, floor):
+    node = _node()
+    runs = os.path.join(os.environ.get("GEAK_WORK_DIR", "/home/treemann/geak_train"), "runs")
+    groups, rejected = collections.defaultdict(list), collections.Counter()
+    for pd in sorted(glob.glob(os.path.join(runs, "*", "probe"))):
+        ok, why = _usable(pd)
+        if not ok:
+            rejected[why] += 1
+            continue
+        leg = _leg(pd)
+        if not leg or (leg.get("digest_schema") or 0) < 3 or not leg.get("impl_digest"):
+            rejected["unreadable, short, or identity schema < v3"] += 1
+            continue
+        groups[_identity(leg)].append(pd)
+    pairs = [(m[i], m[j]) for m in groups.values() for i in range(len(m)) for j in range(i + 1, len(m))]
+    print(f"gate-based null control: {len(pairs)} same-identity pairs in {len(groups)} groups "
+          f"(evaluating up to {max_pairs}); floor {floor}%")
+    counts, false_ = collections.Counter(), []
+    for a, b in pairs[:max_pairs]:
+        v = _gate_pair(a, b, floor, node)
+        if v is None:
+            counts["no common window"] += 1
+            continue
+        counts[v.get("klass")] += 1
+        if v.get("klass") in ("win", "regression"):
+            false_.append((a, b, v))
+    print("  verdicts: " + ", ".join(f"{k}={n}" for k, n in counts.most_common()))
+    judged = sum(n for k, n in counts.items() if k != "no common window")
+    print(f"\nFALSE WINS/REGRESSIONS (gate): {len(false_)} / {judged}")
+    for a, b, v in false_[:10]:
+        print(f"    {a.split('/')[-2]} vs {b.split('/')[-2]}: {v.get('klass')} {v.get('delta_pct')}% "
+              f"vs band {v.get('band_pct')}% ({v.get('estimator')})")
+    return 0
+
+
 def main():
+    if "--legacy" not in sys.argv:
+        for tok in sys.argv[1:]:
+            if tok.startswith("--") and tok not in ("--max-pairs", "--floor"):
+                sys.exit(f"unknown flag {tok!r}; known: --floor, --max-pairs, --legacy")
+        mp = int(sys.argv[sys.argv.index("--max-pairs") + 1]) if "--max-pairs" in sys.argv else 400
+        fl = float(sys.argv[sys.argv.index("--floor") + 1]) if "--floor" in sys.argv else 0.25
+        return main_gate(mp, fl)
+    sys.argv = [a for a in sys.argv if a != "--legacy"]
     mode = "nearest"
     if "--quantile" in sys.argv:
         mode = sys.argv[sys.argv.index("--quantile") + 1]
@@ -193,7 +290,8 @@ def main():
             sys.exit(f"unknown flag {tok!r}; known: --quantile, --max-pairs")
 
     legs, rejected = [], collections.Counter()
-    for pd in sorted(glob.glob("/home/treemann/geak_train/runs/*/probe")):
+    for pd in sorted(glob.glob(os.path.join(os.environ.get("GEAK_WORK_DIR", "/home/treemann/geak_train"),
+                                            "runs", "*", "probe"))):
         ok, why = _usable(pd)
         if not ok:
             rejected[why] += 1

@@ -449,7 +449,7 @@ const leg = (o = {}) => Object.assign({
     // probe and the step-aligned delta are both invalid, and L0 does not apply because no kernel
     // changed. Such a change would rest on throughput ALONE. The refusal lives in the ORCHESTRATOR,
     // not only in the role card: a rule only a prompt knows is a rule the next prompt can forget.
-    ok(/CLASS_B_LEVERS/.test(src) && /function classOfLever/.test(src),
+    ok(/CLASS_B_FLAG/.test(src) && /function classOfLever/.test(src),
       'ConfigSweep classifies levers in code, not only in the role prompt');
     for (const lever of ['packing', 'global-batch-size', 'micro-batch-size', 'seq-length']) {
       ok(new RegExp(`'${lever}'`).test(src),
@@ -458,15 +458,19 @@ const leg = (o = {}) => Object.assign({
     ok(/refused: true/.test(src) && /rest on throughput/.test(src),
       'a Class B proposal is REFUSED and says why, rather than being silently downgraded');
     // Behaviour, not just presence: extract the classifier and run it.
-    const { classOfLever } = load(['classOfLever'], 'const CLASS_B_LEVERS = ' +
-      (src.match(/const CLASS_B_LEVERS = \[[\s\S]*?\];/) || [''])[0].replace('const CLASS_B_LEVERS = ', '') + ';\n' +
-      ((src.match(/const GATEABLE_CLASS_B = \[[\s\S]*?\];/) || [''])[0]));
+    const { classOfLever } = load(['classOfLever'],
+      ((src.match(/const GATEABLE_CLASS_B = \[[\s\S]*?\];/) || [''])[0]) + '\n' +
+      ((src.match(/const CLASS_B_FLAG = \{[\s\S]*?\};/) || [''])[0]));
     ok(classOfLever(['--overlap-grad-reduce']).cls === 'A',
       'comm overlap classifies as A — it changes HOW a step is computed');
     ok(classOfLever(['--recompute-granularity', 'selective']).cls === 'A',
       'recompute granularity classifies as A, which is why it can be the memory converter');
     ok(classOfLever(['--global-batch-size', '128']).cls === 'B',
       'GBS classifies as B — it changes what a step contains');
+    ok(classOfLever(['--overlap-param-gather']).cls === 'A' && classOfLever(['--attention-backend', 'fused']).cls === 'A',
+      'classification is by flag name: no substring of an unrelated flag or value makes a lever Class B');
+    ok(classOfLever(['--train-data-path', '/work/data/x_packed.jsonl', 'packing']).key === 'packing',
+      'the packing proposal (data path + packing token) is the gateable Class-B packing lever');
     ok(classOfLever(['--sft-packing']).cls === 'B',
       'packing classifies as B even when the flag is spelled differently');
     ok(classOfLever(['--sft-packing']).gateable === true && classOfLever(['--global-batch-size', '128']).gateable === false,

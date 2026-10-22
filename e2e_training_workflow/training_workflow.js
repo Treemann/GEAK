@@ -534,7 +534,10 @@ function gateVerdict(spec) {
   if (deltaPct > band) return { accepted: true, klass: 'win', reason: `+${deltaPct.toFixed(2)}% > band ${band.toFixed(2)}%`, ...base };
   if (deltaPct < -band) return { accepted: false, klass: 'regression', reason: `${deltaPct.toFixed(2)}% < -band`, ...base };
   // In band. Memory is a CURRENCY, not a metric: it counts only once a config change spends it.
-  if (memDeltaPct != null && memDeltaPct < -2.0) {
+  // 5%, not 2%: on 2,403 TRUE-NULL pairs (same config + impl digest) peak_reserved differs by up to 4.0%
+  // at the 99th percentile and 78 pairs exceed 2%; the gate-based null control then called 24/400
+  // identical pairs 'banked_memory' (2026-10-22). A freed-memory claim must clear the null spread.
+  if (memDeltaPct != null && memDeltaPct < -5.0) {
     return {
       accepted: false, klass: 'banked_memory', banked_memory_pct: +(-memDeltaPct).toFixed(2),
       reason: mode === 'deep'
@@ -678,7 +681,7 @@ Do all filesystem/shell work yourself (Bash/Read/Write). ${intro}${carried}
 
 ## MEASUREMENT INVARIANT (do not violate — every number in this run must be comparable)
 Take EVERY throughput number through ${WORKFLOW_DIR}/scripts/bench_train.sh with the SAME
---workload (${WORKLOAD}), --stack ${STACK} and --nproc ${NPROC}. The headline is
+--workload (${WORKLOAD}), --stack ${STACK}, --nproc ${NPROC} and --gpus ${GPU_IDS.join(',')}. The headline is
 bench_summary.json:useful_tok_s_per_gpu (non-pad, loss-unmasked tokens), NEVER the stack's own
 tokens/s: on this workload 71.6% of tokens are padding, so the nominal figure overstates useful work
 by ~3.5x. Never change the parallel mapping, global batch size, sequence length or data order between
@@ -836,9 +839,14 @@ const CONFIG_SCHEMA = obj({ lever: { type: 'string' }, flags_added: { type: 'arr
   peak_reserved_mb: { type: 'object' }, memory_conversion: { type: 'object' } },
   ['lever', 'ref', 'cand', 'comparison']);
 
-const VALIDATE_SCHEMA = obj({ validation_status: { type: 'string' },
+// Validate is accepted only with its numbers and its L1 (audit ORCH-7: a bare {validation_status:
+// 'confirmed'} string used to make the run 'ok').
+const VALIDATE_SCHEMA = obj({
+  validation_status: { type: 'string', enum: ['confirmed', 'disputed', 'unusable'] },
   baseline_useful_tok_s: { type: 'number' }, final_useful_tok_s: { type: 'number' },
-  delta_pct: { type: 'number' } }, ['validation_status']);
+  delta_pct: { type: 'number' }, band_pct: { type: 'number' }, estimator: { type: 'string' },
+  wall_delta_pct: { type: ['number', 'null'] }, l1: VERDICT, legs: { type: 'array' } },
+  ['validation_status', 'baseline_useful_tok_s', 'final_useful_tok_s', 'delta_pct', 'band_pct', 'estimator', 'l1', 'legs']);
 
 // ---- wall clock -------------------------------------------------------------------------------
 // The workflow sandbox has NO clock at all: the `Date.now` / argless `new Date` family, plus
@@ -1058,10 +1066,6 @@ if (strategy && strategy.stop) {
 // apply either -- no kernel changed. Such a change would rest on throughput ALONE, and this layer
 // does not accept a number with no correctness gate behind it. Enforced here rather than left to the
 // role card: a rule only a prompt knows is a rule the next prompt can forget.
-const CLASS_B_LEVERS = [
-  'packing', 'pack', 'global-batch-size', 'micro-batch-size', 'seq-length', 'seq_length',
-  'gbs', 'mbs', 'sequence-length',
-];
 // PACKING is the one Class-B lever with a gate, and the reason is specific: it is a LAYOUT change
 // whose risks are structural (attention isolation, position restarts, which tokens are targets) and
 // checkable at step 1 on identical weights -- scripts/pack_gate.py. GBS, MBS and sequence length
@@ -1069,11 +1073,20 @@ const CLASS_B_LEVERS = [
 // correct, so they stay refused.
 const GATEABLE_CLASS_B = ['packing', 'pack'];
 const PACKING_MIN_GAIN_PCT = 5.0;   // cross-dataset comparison, no step pairing; measured effect 266%
+// By FLAG NAME, not substring of free text (audit: `txt.includes('pack')` made any flag or path that
+// merely contained the letters a Class-B lever). A bare `packing` token is how the Tuner names the
+// pack transform; a changed --train-data-path is a data change, hence Class B too.
+const CLASS_B_FLAG = { 'global-batch-size': 'global-batch-size', 'micro-batch-size': 'micro-batch-size',
+  'seq-length': 'seq-length', 'sequence-length': 'seq-length', 'sft-packing': 'packing', 'packing': 'packing',
+  'train-data-path': 'packing' };
 function classOfLever(flags) {
-  const txt = (flags || []).join(' ').toLowerCase();
-  const hit = CLASS_B_LEVERS.find((k) => txt.includes(k));
-  if (!hit) return { cls: 'A', key: null };
-  return { cls: 'B', key: hit, gateable: GATEABLE_CLASS_B.includes(hit) };
+  const toks = (Array.isArray(flags) ? flags : String(flags || '').split(/\s+/)).map((t) => String(t).toLowerCase());
+  const names = toks.filter((t) => t.startsWith('--')).map((t) => t.replace(/^--/, '').split('=')[0]);
+  const bare = toks.filter((t) => !t.startsWith('--') && CLASS_B_FLAG[t] === 'packing');
+  const hitName = names.find((n) => CLASS_B_FLAG[n]) || (bare.length ? 'packing' : null);
+  if (!hitName) return { cls: 'A', key: null };
+  const key = CLASS_B_FLAG[hitName];
+  return { cls: 'B', key, gateable: GATEABLE_CLASS_B.includes(key) };
 }
 
 // args.config_levers names the levers to measure, comma-separated, e.g.
@@ -1249,9 +1262,10 @@ let noImprove = 0;
 // outOfTime() is async (it reads the clock through an agent) and is deliberately LAST in the
 // condition: && short-circuits, so the free bounds are checked first and no clock agent is spawned
 // once the queue is empty or the task/gate budget is already spent.
+let stopCause = null;   // set at the break that ends the kernel track
 while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(await outOfTime())) {
   const stop = stopRule(headQueue, runFloor);
-  if (stop.stop) { log0(`stop rule: best remaining ${stop.best_expected_gain_pct}% <= band ${stop.band_pct}%`); break; }
+  if (stop.stop) { log0(`stop rule: best remaining ${stop.best_expected_gain_pct}% <= band ${stop.band_pct}%`); stopCause = 'stop_rule'; break; }
   const h = headQueue.shift();
   tasksUsed += 1;
   log0(`[head ${tasksUsed}/${BUDGET}] ${h.short_name || h.kernel} ` +
@@ -1381,7 +1395,7 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
   if (v.fatal) {
     // Retries are already exhausted inside bench_train.sh; continuing would spend the remaining
     // gate budget measuring a busy node and report the results as if they meant something.
-    wfReturn.blocked = { reason: v.reason, head: h.short_name || h.kernel };
+    wfReturn.blocked = { reason: v.reason, head: h.short_name || h.kernel }; stopCause = 'blocked';
     log0('  STOPPING: the box is not quiet enough to measure on. Re-run when it is.');
     break;
   }
@@ -1419,7 +1433,7 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
       noImprove += 1;
     }
   }
-  if (noImprove >= 2) { log0('two consecutive non-wins — stopping the kernel track'); break; }
+  if (noImprove >= 2) { log0('two consecutive non-wins — stopping the kernel track'); stopCause = 'two_consecutive_non_wins'; break; }
 }
 // What was NOT tried, and why the loop ended. The 7B run stopped on the wall clock with 3 of 4
 // queued heads never attempted, and nothing in the result said so -- a reader seeing accepted=1,
@@ -1431,10 +1445,12 @@ wfReturn.unexplored_heads = headQueue.map((h) => ({
   expected_gain_pct: +expectedGainPct(h).toFixed(2),
 }));
 wfReturn.skipped_heads = [...SKIP_HEADS];
-wfReturn.stop_reason = !headQueue.length ? 'queue_exhausted'
+// The cause recorded at the break wins; the loop-condition causes are inferred only when no break fired
+// (audit G10: 'two consecutive non-wins' and 'blocked' used to be reported as a budget or the clock).
+wfReturn.stop_reason = stopCause || (!headQueue.length ? 'queue_exhausted'
   : tasksUsed >= BUDGET ? 'task_budget'
   : gatesUsed >= MAX_GATES ? 'gate_budget'
-  : 'wall_clock_or_stop_rule';
+  : 'wall_clock');
 if (wfReturn.unexplored_heads.length) {
   log0(`${wfReturn.unexplored_heads.length} head(s) never attempted (${wfReturn.stop_reason}): ` +
        wfReturn.unexplored_heads.map((h) => `${h.kernel} exp=${h.expected_gain_pct}%`).join(', '));
@@ -1552,7 +1568,7 @@ if (QUALITY_GATE && stackChanged) {
 wfReturn.gates_used = gatesUsed;
 wfReturn.tasks_used = tasksUsed;
 wfReturn.kb_identity = kbIdentity(curConfig);
-wfReturn.status = val && val.validation_status === 'confirmed' ? 'ok'
+wfReturn.status = val && val.validation_status === 'confirmed' && val.l1 && val.l1.pass === true ? 'ok'
   : (wfReturn.accepted.length ? 'unconfirmed' : 'no_gain');
 // A bundle whose own re-check failed, or a stack the outcome test did NOT clear, is not 'ok' (audit G9).
 if (wfReturn.status === 'ok' && wfReturn.finalize_engagement_failed) wfReturn.status = 'bundle_not_engaged';

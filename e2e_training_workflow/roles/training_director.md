@@ -106,6 +106,11 @@ your own.
 - If the measured final delta disagrees with the sum of accepted per-candidate deltas, **say so and
   report yours**. Per-candidate deltas are measured on different references and do not add up; an
   unexplained gap is a finding, not a rounding error.
+- **The estimator is fixed, not yours to choose** (audit ORCH-2): `delta_pct` = `compare_legs.py`
+  `paired.delta_pct` when `paired.same_batches` is true, else the aligned `delta_pct`; name it in
+  `estimator`. `band_pct` = max(the run's floor, 4 x 0.929 x `paired.ratio_iqr_pct` / sqrt(`paired.steps`))
+  -- the gate's own formula. Report every pairing you took, but the headline is the PAIR you planned
+  before measuring (ref vs final, same session), not the best of several.
 - Also report the wall-time delta: `wall_delta_pct` from `compare_legs.py` (same aligned window;
   never subtract two bench_summary wall rates, whose windows differ), and each leg's `stall_pct`
   (fixed-shape legs only; None on variable-shape stacks). The headline is a median and excludes the synchronized host stalls a real run

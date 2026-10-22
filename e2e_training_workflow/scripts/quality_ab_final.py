@@ -13,7 +13,17 @@ x0.7 schedule moved it +0.0206 (P0-4d, all five seeds positive). That +0.0206 is
             otherwise INCONCLUSIVE.  max10: largest 10-step mean of loss(S8) - loss(REF) after step 150.
   CLEARED iff both PASS.
 
-Usage: quality_ab_final.py <runs/<name>_STAMP prefix> [--cand s8]
+RULES. `--rule point` (above) is the PRE-REGISTERED rule of every outcome test up to 2026-10-22 and
+reproduces their verdicts exactly. It is a point-estimate check: a stack that truly degrades held-out
+loss by the full margin still clears ~25-49% of the time (audit 2026-10-22 G3). `--rule noninf`, the
+DEFAULT from 2026-10-22 (DECISIONS 4.44), is a one-sided non-inferiority test on the same paired d:
+  quality   PASS iff mean d + t(0.95, n-1) x sd/sqrt(n) <= margin   (the upper 95% bound is inside)
+            FAIL iff mean d > margin and t >= t(0.975, n-1)          (as before)
+            otherwise INCONCLUSIVE
+It caps the chance of clearing a stack that is exactly one margin worse at ~5%, at the price of more
+INCONCLUSIVE verdicts for noisy runs (add seeds). The output prints both rules' verdicts.
+
+Usage: quality_ab_final.py <runs/<name>_STAMP prefix> [--cand s8] [--rule noninf|point]
 """
 import argparse
 import glob
@@ -31,6 +41,16 @@ T_CRIT = 2.776   # two-sided 95% t, df 4: the pre-registered 5-seed protocol
 _T975 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262,
          10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110,
          18: 2.101, 19: 2.093, 20: 2.086}
+
+
+_T95 = {1: 6.314, 2: 2.920, 3: 2.353, 4: 2.132, 5: 2.015, 6: 1.943, 7: 1.895, 8: 1.860, 9: 1.833,
+        10: 1.812, 11: 1.796, 12: 1.782, 13: 1.771, 14: 1.761, 15: 1.753, 16: 1.746, 17: 1.740,
+        18: 1.734, 19: 1.729, 20: 1.725}
+
+
+def t_one_sided(n):
+    """One-sided 95% critical t for n paired seeds (df = n - 1); the normal 1.645 past the table."""
+    return _T95.get(n - 1, 1.645)
 
 
 def t_crit(n):
@@ -61,6 +81,9 @@ def main():
     ap.add_argument("--ctrl", default=None,
                     help="measure the yardstick IN THIS RUN from a positive-control arm (e.g. ctrl70) instead of "
                          "the fixed P0-4d value; the control must then be DETECTED (mean > 0, t >= 2.776)")
+    ap.add_argument("--rule", choices=("noninf", "point"), default="noninf",
+                    help="noninf (default since 2026-10-22): upper one-sided 95%% bound of mean d <= margin; "
+                         "point: the pre-registered rule of the outcome tests up to 2026-10-22")
     a = ap.parse_args()
     P = a.prefix.rstrip("/")
     seeds = sorted({int(m.group(1)) for f in glob.glob(P + f"_{a.base}_seed*") for m in [re.search(r"seed(\d+)$", f)] if m})
@@ -107,12 +130,24 @@ def main():
     margin = 0.25 * yard
     m, sd = statistics.fmean(d), statistics.stdev(d)
     t = m / (sd / math.sqrt(len(d))) if sd > 0 else math.copysign(math.inf, m)
-    if m > margin and t >= tc:
-        qual = f"FAIL-quality: mean {m:+.5f} > margin {margin:.5f}, t {t:.2f}"
-    elif abs(m) <= margin and not (m > 0 and t >= tc):
-        qual = f"PASS-quality: |mean {m:+.5f}| <= {margin:.5f} (0.25 x yardstick {yard:.5f}, {ctrl_note}), t {t:.2f}"
-    else:
-        qual = f"INCONCLUSIVE-quality: mean {m:+.5f}, t {t:.2f}, margin {margin:.5f} ({ctrl_note})"
+    upper = m + t_one_sided(len(d)) * sd / math.sqrt(len(d))
+    def _point():
+        if m > margin and t >= tc:
+            return f"FAIL-quality: mean {m:+.5f} > margin {margin:.5f}, t {t:.2f}"
+        if abs(m) <= margin and not (m > 0 and t >= tc):
+            return f"PASS-quality: |mean {m:+.5f}| <= {margin:.5f} (0.25 x yardstick {yard:.5f}, {ctrl_note}), t {t:.2f}"
+        return f"INCONCLUSIVE-quality: mean {m:+.5f}, t {t:.2f}, margin {margin:.5f} ({ctrl_note})"
+    def _noninf():
+        if m > margin and t >= tc:
+            return f"FAIL-quality: mean {m:+.5f} > margin {margin:.5f}, t {t:.2f}"
+        if upper <= margin:
+            return (f"PASS-quality: upper 95% bound {upper:+.5f} <= margin {margin:.5f} "
+                    f"(mean {m:+.5f}, 0.25 x yardstick {yard:.5f}, {ctrl_note})")
+        return (f"INCONCLUSIVE-quality: upper 95% bound {upper:+.5f} > margin {margin:.5f} "
+                f"(mean {m:+.5f}, t {t:.2f}, {ctrl_note}) -- add seeds")
+    qual = _noninf() if a.rule == "noninf" else _point()
+    other = _point() if a.rule == "noninf" else _noninf()
+    print(f"RULE: {a.rule}   (the other rule would say: {other.split(':')[0]})")
     n_cat, n_sev = sum(x > CATASTROPHIC for x in sev), sum(x > SEVERE for x in sev)
     if n_cat:
         stab = f"FAIL-stability: {n_cat} catastrophic leg(s)"
@@ -124,7 +159,8 @@ def main():
     print("QUALITY:  ", qual)
     print("STABILITY:", stab)
     print("OVERALL:  ", "CLEARED" if cleared else "NOT CLEARED")
-    print(json.dumps({"seeds": seeds, "d": [round(x, 6) for x in d], "mean": round(m, 6), "t": round(t, 3),
+    print(json.dumps({"rule": a.rule, "upper95": round(upper, 6), "seeds": seeds, "d": [round(x, 6) for x in d],
+                      "mean": round(m, 6), "t": round(t, 3),
                       "max10": [round(x, 3) for x in sev], "quality": qual, "stability": stab, "cleared": cleared}))
 
 

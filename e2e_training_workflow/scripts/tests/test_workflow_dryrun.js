@@ -118,7 +118,8 @@ function stubFor(prompt) {
   if (is('PHASE=quality')) return { cleared: true, quality: 'PASS-quality: stub', stability: 'PASS-stability: stub' };
   if (is('PHASE=validate')) {
     return { validation_status: 'confirmed', baseline_useful_tok_s: 850, final_useful_tok_s: 900,
-             delta_pct: 5.88, band_pct: 0.15 };
+             delta_pct: 5.88, band_pct: 0.15, estimator: 'paired per-step ratio', wall_delta_pct: 5.1,
+             l1: { pass: true }, legs: [] };
   }
   if (is('date +%s%3N') || is('epoch_ms')) return { epoch_ms: 1791468713613 + 1000 };
   return {};
