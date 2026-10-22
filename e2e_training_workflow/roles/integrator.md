@@ -110,6 +110,14 @@ appends to its `GEAK_OVERLAY`. Its `--ref` mode is the base stack, not the bare 
 bundle** — a bundle that silently drops one accepted overlay must be reported as broken, not shipped
 as complete.
 
+**Pin what the bundle runs on** (audit OVL-4/5). The bundle uses the repo's live harness inside a
+tagged image, so write `SHA256SUMS.harness` (bench_train.sh, stack_overlay_env.sh, train_probe.py,
+probe_summarize.py, overlay_train.py, rocm_compat.py, adapters/<stack>.sh, compare_legs.py, the
+workload descriptor, plus a `# git <commit>  image <repo>@sha256:...` line from
+`docker image inspect --format '{{index .RepoDigests 0}}'`). launch.sh exports that image as
+GEAK_IMAGE unless set, and reports every harness file that changed (see
+runs/finalize_bundle_1021_s8_cosine_avg/launch.sh step 1b).
+
 Return JSON (PHASE=finalize):
 ```json
 {"overlay": "<bundle overlay dir>", "patch": "<final_patch.diff>", "launch": "<launch.sh>",

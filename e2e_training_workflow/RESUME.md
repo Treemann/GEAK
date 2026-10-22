@@ -236,7 +236,8 @@ PermissionError). OPEN, by priority:
   `--gc`, removes it). Still open: the 1020 attention's higher stall rate in its 30-step gate legs (cand
   stall_pct 2-7%) -- re-measure its wall delta with the warm cache before folding it into s8.
 * DONE 2026-10-22 (4.44): outcome tests default to a non-inferiority rule; every historical clearance also passes it.
-  Still open: the workflow QualityGate hard-codes the Megatron protocol (fixed yardstick, 358 iters).
+  DONE: quality_ab defaults to the cleared recipe and the descriptor's LR_DECAY_ITERS; the workflow runs the one
+  pre-registered seed extension itself. Open: no in-run positive control on Megatron (fixed P0-4d yardstick).
 * Agent trust: the orchestrator sees only the Integrator's chosen pair (ORCH-1); Validate's estimator and band are
   agent-chosen (ORCH-2: DONE, the card now fixes the estimator and band formula); probe paths (ORCH-3: DONE, schema);
   Validate as a bare string (ORCH-7: DONE, schema requires numbers + L1 + legs, status needs l1.pass); leg-dir
@@ -256,7 +257,8 @@ PermissionError). OPEN, by priority:
   drift over an epoch is -3.4% (M3); packing's GBS-in-packs changes samples per update (TP-7); HF 4.33 correction
   left two HF lever deltas on 12/4-step windows (F2); HF "step-1 loss 0.0" claims are at 4-decimal resolution (F6).
 * Reproducibility: rocm_compat changes the loss on packed data and is not in leg identity (OVL-6); kernels depend on
-  the unpinned image (OVL-5); bundles run live repo code (OVL-4). DONE: OVL-6 (harness shas recorded per leg,
+  the unpinned image (OVL-5) and live repo code (OVL-4): MITIGATED -- legs record image id + harness shas; bundles
+  pin both (SHA256SUMS.harness, digest-pinned image; deliverable re-checked cold). DONE: OVL-6 (harness shas recorded per leg,
   report-only), OVL-7 (--gpus -> HIP_VISIBLE_DEVICES, named/labelled container with --init, knobs forwarded).
 * Low: DONE stop_reason labels, classOfLever by flag name. Open: impl_digest includes manifest names (F8: a digest
   break, do it with the next schema bump), stale records (F10).
