@@ -19,8 +19,8 @@ reference; the cumulative multipliers (4.18x, 2.42x) are cross-session medians (
 Second stack (HF TRL, 7B, unpacked): **1,083 -> 2,618 useful tok/s/GPU (2.42x)**, cleared for
 training (DECISIONS 4.40). These are corrected figures (4.33): an earlier "2,269 / 2.07x" for hf3
 came from a warmup detector that over-trimmed variable-shape legs.
-* Two levers with a bitwise-identical trajectory: ZeRO-2 +21%, and skipping TRL's per-micro-batch
-  metric gathers.
+* Two levers with a bitwise-identical trajectory: ZeRO-2 +19%, and skipping TRL's per-micro-batch
+  metric gathers (+28% bare, +21% on the stack); paired deltas corrected in DECISIONS 4.33c.
 * Eight overlays accepted through the same workflow and gates:
   * attention, RMSNorm, MLP gate/up + SwiGLU, MLP down_proj;
   * the fused q/k/v/o projections and the fused lm_head + loss;

@@ -140,7 +140,7 @@ allowed), kept fixed during optimisation, not constant LR.
   `qwen2_5_math_7b_hf_cosine_zero2.env`.
 
 **Done 2026-10-17:**
-* HF headline: 1,096 → 1,474 useful tok/s/GPU (1.35x).
+* HF headline: 1,096 → 1,474 useful tok/s/GPU (1.35x). [superseded by 4.33: 1,083 → 1,433, 1.32x]
 * **P0-4g CLEARED: the HF stack is safe to train with** (4.29).
 
 **Done 2026-10-17 (evening):**
