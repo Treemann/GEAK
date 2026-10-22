@@ -16,14 +16,16 @@
 set -euo pipefail
 GEAK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_HOST="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
-SEEDS="1234,2345,3456"; ARMS="ref,s8,ctrl"; ITERS=358; NAME=qab
-WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed.env"; CAND_CMD=""; CAND_TARGS=""
+SEEDS="1234,2345,3456"; ARMS="ref,s8,ctrl"; ITERS=""; NAME=qab
+# Default = the CLEARED production recipe (audit 2026-10-22 G4: it was the constant-LR packed.env, which
+# is NOT cleared and which no outcome test since P0-4d should run on).
+WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed_cosine_avg.env"; CAND_CMD=""; CAND_TARGS=""
 STACK=megatron; TRAIN=""; HELDOUT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --seeds) SEEDS="$2"; shift 2;;
     --arms) ARMS="$2"; shift 2;;
-    --iters) ITERS="$2"; shift 2;;
+    --iters) ITERS="$2"; shift 2;;    # default: the descriptor's LR_DECAY_ITERS (its planned run = one epoch)
     --name) NAME="$2"; shift 2;;
     --workload) WORKLOAD="$2"; shift 2;;
     --cand-cmd) CAND_CMD="$2"; shift 2;;
@@ -35,6 +37,11 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
+# One epoch = the descriptor's planned run length, not a hard-coded 358 (which was GBS 16 on train19k only).
+if [ -z "$ITERS" ]; then
+  ITERS="$(bash -c 'source "$1" >/dev/null 2>&1; echo "${LR_DECAY_ITERS:-}"' _ "$WORKLOAD")"
+  [ -n "$ITERS" ] || { echo "!!! $WORKLOAD sets no LR_DECAY_ITERS (not a scheduled recipe?): pass --iters explicitly" >&2; exit 2; }
+fi
 if [ "$STACK" = hf_trl ]; then
   TRAIN="${TRAIN:-/work/data/sft_ultrachat20k_train19k.jsonl}"
   HELDOUT="${HELDOUT:-/work/data/sft_ultrachat20k_heldout1k.jsonl}"

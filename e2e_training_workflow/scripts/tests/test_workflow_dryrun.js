@@ -47,6 +47,7 @@ const refShaFrom = (prompt) => {
 };
 let INTEG_N = 0;
 let AUDIT_OVERRIDE;
+let QUALITY_SEQ = null;                    // queued quality-phase replies (extension tests)
 let VERIFY_OVERRIDE;                       // (refDir, candDir) -> verdict klass; undefined = 'win'                        // undefined = normal stub; null = the Auditor failed
 let ENG_OVERRIDE;
 
@@ -131,7 +132,10 @@ function stubFor(prompt) {
   if (is('PHASE=finalize')) return { overlay: '/work/ovl', patch: 'p', launch: 'l',
                                      engagement_recheck: { forward: true, backward: true } };
   if (is('PHASE=report')) return 'report text';
-  if (is('PHASE=quality')) return { cleared: true, quality: 'PASS-quality: stub', stability: 'PASS-stability: stub' };
+  if (is('PHASE=quality')) {
+    if (QUALITY_SEQ) return QUALITY_SEQ.shift();
+    return { cleared: true, quality: 'PASS-quality: stub', stability: 'PASS-stability: stub' };
+  }
   if (is('PHASE=validate')) {
     return { validation_status: 'confirmed', baseline_useful_tok_s: 850, final_useful_tok_s: 900,
              delta_pct: 5.88, band_pct: 0.15, estimator: 'paired per-step ratio', wall_delta_pct: 5.1,
@@ -399,6 +403,29 @@ async function dryRun(args) {
     ok(false, `fail-closed cases threw: ${e && e.message}`);
   }
   AUDIT_OVERRIDE = undefined; ENG_OVERRIDE = undefined;
+
+  // ---- 2026-10-22: ONE pre-registered seed extension of an INCONCLUSIVE outcome test ---------------
+  try {
+    QUALITY_SEQ = [{ cleared: false, quality: 'INCONCLUSIVE-quality: upper bound > margin', stability: 'PASS-stability: 0',
+                     legs_prefix: '/work/runs/qgate_A' },
+                   { cleared: true, quality: 'PASS-quality: n=10', stability: 'PASS-stability: 0', legs_prefix: '/work/runs/qgatex_B' }];
+    const { result: rq, calls: cqx } = await dryRun({ ...base, quality_gate: 'true' });
+    const qps = cqx.prompts.filter((p) => p.includes('PHASE=quality'));
+    ok(qps.length === 2 && qps[1].includes('"EXTENSION_OF": "/work/runs/qgate_A"') && qps[1].includes('7013,8124,9235,1346,2457'),
+      'an INCONCLUSIVE outcome test triggers exactly one extension with the pre-registered seeds');
+    ok(rq.quality_gate.cleared === true && rq.quality_gate.extended === true && !!rq.quality_gate.first_verdict,
+      'the combined verdict is final and the first verdict is kept on the record');
+    QUALITY_SEQ = [{ cleared: false, quality: 'INCONCLUSIVE-quality: x', stability: 'PASS-stability: 0', legs_prefix: '/p' },
+                   { cleared: false, quality: 'INCONCLUSIVE-quality: still', stability: 'PASS-stability: 0', legs_prefix: '/q' }];
+    const { calls: cq2 } = await dryRun({ ...base, quality_gate: 'true' });
+    ok(cq2.prompts.filter((p) => p.includes('PHASE=quality')).length === 2, 'never more than ONE extension');
+    QUALITY_SEQ = [{ cleared: false, quality: 'FAIL-quality: worse', stability: 'PASS-stability: 0', legs_prefix: '/p' }];
+    const { calls: cq3 } = await dryRun({ ...base, quality_gate: 'true' });
+    ok(cq3.prompts.filter((p) => p.includes('PHASE=quality')).length === 1, 'a FAIL is not extended');
+  } catch (e) {
+    ok(false, `extension cases threw: ${e && e.message}`);
+  }
+  QUALITY_SEQ = null;
 
   // ---- 2026-10-22 ORCH-1: the gate verifier recomputes every pairing from the leg dirs ---------
   try {

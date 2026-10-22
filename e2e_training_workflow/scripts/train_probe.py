@@ -270,6 +270,8 @@ def _harness_shas():
                 out[f] = hashlib.sha256(fh.read()).hexdigest()[:16]
         except OSError:
             out[f] = None
+    out["image"] = os.environ.get("GEAK_IMAGE")
+    out["image_id"] = os.environ.get("GEAK_IMAGE_ID")
     return out
 
 

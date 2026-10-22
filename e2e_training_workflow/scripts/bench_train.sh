@@ -59,14 +59,17 @@ if [ ! -d "${MLM_DIR:-/workspace/Primus/third_party/Megatron-LM}" ] && [ -z "${G
   # A NAMED, LABELLED container with an init: the shared-node rule is "stop only your own containers,
   # by ID, after docker inspect" -- a name/label makes them identifiable; --init reaps the ranks.
   _CNAME="geak_bench_$(printf '%s' "${_TAGH:-leg}" | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-40)_$$"
-  echo ">>> not inside the training image; re-executing in $IMAGE (container $_CNAME, GPUs $_VIS)"
+  # The image ID that actually runs (audit OVL-5: kernels depend on the image's CK headers, hipcc, TE
+  # and hipBLASLt, and the tag is mutable). Recorded per leg (report-only); pin with GEAK_IMAGE=<repo>@sha256:...
+  _IMGID="$(docker image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null || true)"
+  echo ">>> not inside the training image; re-executing in $IMAGE ${_IMGID:+[$_IMGID]} (container $_CNAME, GPUs $_VIS)"
   exec docker run --rm --init --name "$_CNAME" --label geak=1 --label geak_owner="$(id -un)" --network host \
     --device=/dev/kfd --device=/dev/dri --group-add video \
     --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
     --ipc=host --shm-size 32G \
     -v "$MODELS":/models:ro -v "$WORK":/work -v "$REPO":/repo \
     -e GEAK_IN_CONTAINER=1 -e GEAK_HOST_WORK="$WORK" \
-    -e HIP_VISIBLE_DEVICES="$_VIS" \
+    -e HIP_VISIBLE_DEVICES="$_VIS" -e GEAK_IMAGE="$IMAGE" ${_IMGID:+-e GEAK_IMAGE_ID="$_IMGID"} \
     ${MASTER_PORT:+-e MASTER_PORT="$MASTER_PORT"} ${HANG_TIMEOUT:+-e HANG_TIMEOUT="$HANG_TIMEOUT"} \
     ${TRITON_CACHE_DIR:+-e TRITON_CACHE_DIR="$TRITON_CACHE_DIR"} \
     ${ATTENTION_BACKEND:+-e ATTENTION_BACKEND="$ATTENTION_BACKEND"} \

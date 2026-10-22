@@ -41,6 +41,10 @@ const BASE_OVERLAY_CMD = !_BASE_RAW ? null
 // kernel or a non-packing config lever (otherwise the stack is unchanged and was judged before).
 const QUALITY_GATE = String(A.quality_gate || '').toLowerCase() === 'true' || A.quality_gate === true;
 const QUALITY_SEEDS = String(A.quality_seeds || '5567,6678,7789,8890,9901');
+// The ONE pre-registered seed extension (DECISIONS 4.45): when the first verdict is INCONCLUSIVE under
+// the non-inferiority rule, these 5 fresh seeds are added and the combined verdict is FINAL -- fixed
+// here, before any result, so it is not open-ended optional stopping. 'none' disables it.
+const QUALITY_EXTEND_SEEDS = String(A.quality_extend_seeds || '7013,8124,9235,1346,2457');
 // Default = THIS RUN's workload: the outcome test must judge the stack the run built, on the recipe it
 // built it on. A fixed default (`_cosine_avg`, 2026-10-20..22) broke the moment a run's own lever was
 // --ddp-average-in-collective on `_cosine`: the REF arm would already carry the lever and REF == cand.
@@ -1621,6 +1625,21 @@ if (QUALITY_GATE && stackChanged) {
     'Run the one-epoch outcome test of the final stack against REF and return the verdict of ' +
     'quality_ab_final.py VERBATIM (cleared, quality, stability). Do not reinterpret it.');
   wfReturn.quality_gate = q || { cleared: false, quality: 'not run', stability: 'not run' };
+  if (q && /^INCONCLUSIVE-quality/.test(String(q.quality || '')) && !/^FAIL/.test(String(q.stability || '')) &&
+      QUALITY_EXTEND_SEEDS !== 'none' && q.legs_prefix) {
+    log0(`quality gate INCONCLUSIVE (${q.quality}) -- running the ONE pre-registered extension: seeds ${QUALITY_EXTEND_SEEDS}`);
+    const qx = await safeAgentStub('training_director', 'quality',
+      { ...benchInputs(curConfig, 'quality_ext'), FINAL: fin, OVERLAY: curOverlay,
+        ACCEPTED_CONFIG: qConfig, QUALITY_SEEDS: QUALITY_EXTEND_SEEDS, QUALITY_WORKLOAD,
+        EXTENSION_OF: q.legs_prefix,
+        QUALITY_SCRIPT: `${WORKFLOW_DIR}/scripts/quality_ab.sh`,
+        QUALITY_VERDICT: `${WORKFLOW_DIR}/scripts/quality_ab_final.py` },
+      'This is the ONE pre-registered seed extension of an INCONCLUSIVE outcome test. Run the SAME protocol ' +
+      '(same cand command, arms, workload) for QUALITY_SEEDS only, then judge the COMBINED sample with ' +
+      '`QUALITY_VERDICT EXTENSION_OF <your new prefix> --cand cand` and return that verdict VERBATIM. It is final.');
+    wfReturn.quality_gate = Object.assign({}, qx || { cleared: false, quality: 'extension not run', stability: 'not run' },
+      { first_verdict: q, extended: true });
+  }
   log0(wfReturn.quality_gate.cleared
     ? 'quality gate: CLEARED for training (one-epoch outcome test)'
     : `quality gate: NOT CLEARED -- the stack must not be used for production training ` +

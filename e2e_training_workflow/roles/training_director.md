@@ -157,4 +157,9 @@ pass before it is called safe to train with.
 4. **Judge** with `QUALITY_VERDICT <prefix> --cand cand`. Return its `cleared`, `quality` and
    `stability` VERBATIM, plus `legs_prefix`. Do not soften a NOT CLEARED. A NOT CLEARED stack still
    ships its throughput number, but must be labelled not cleared for production training.
+5. **If `EXTENSION_OF` is set**, this call is the ONE pre-registered seed extension (DECISIONS 4.45):
+   run the same protocol with the same cand command for `QUALITY_SEEDS` only (`--name qgatex`), then
+   judge the COMBINED sample: `QUALITY_VERDICT EXTENSION_OF <new prefix> --cand cand` (the script
+   refuses a seed counted twice). Return that verdict verbatim, with `legs_prefix` = the new prefix.
+   It is final: never propose a further extension.
 

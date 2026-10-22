@@ -23,7 +23,9 @@ DEFAULT from 2026-10-22 (DECISIONS 4.44), is a one-sided non-inferiority test on
 It caps the chance of clearing a stack that is exactly one margin worse at ~5%, at the price of more
 INCONCLUSIVE verdicts for noisy runs (add seeds). The output prints both rules' verdicts.
 
-Usage: quality_ab_final.py <runs/<name>_STAMP prefix> [--cand s8] [--rule noninf|point]
+Usage: quality_ab_final.py <prefix> [<prefix> ...] [--cand s8] [--rule noninf|point]
+  Several prefixes are judged as ONE sample (a pre-registered seed extension: the first run's prefix
+  plus the extension's). A seed found under two prefixes is refused -- it would be counted twice.
 """
 import argparse
 import glob
@@ -75,7 +77,7 @@ def heldout(d):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("prefix")
+    ap.add_argument("prefix", nargs="+")
     ap.add_argument("--cand", default="s8")
     ap.add_argument("--base", default="ref", help="the comparison arm (e.g. s8 when testing a lever ON the stack)")
     ap.add_argument("--ctrl", default=None,
@@ -85,8 +87,18 @@ def main():
                     help="noninf (default since 2026-10-22): upper one-sided 95%% bound of mean d <= margin; "
                          "point: the pre-registered rule of the outcome tests up to 2026-10-22")
     a = ap.parse_args()
-    P = a.prefix.rstrip("/")
-    seeds = sorted({int(m.group(1)) for f in glob.glob(P + f"_{a.base}_seed*") for m in [re.search(r"seed(\d+)$", f)] if m})
+    prefixes = [p.rstrip("/") for p in a.prefix]
+    where = {}
+    for P in prefixes:
+        for f in glob.glob(P + f"_{a.base}_seed*"):
+            m = re.search(r"seed(\d+)$", f)
+            if m:
+                s_ = int(m.group(1))
+                if s_ in where and where[s_] != P:
+                    print(f"REFUSED: seed {s_} appears under {where[s_]} and {P}; a seed may be counted once")
+                    return
+                where[s_] = P
+    seeds = sorted(where)
     if len(seeds) < 3:
         # An empty glob used to crash in statistics.fmean; one or two seeds cannot carry a t-test.
         print(f"INCOMPLETE: {len(seeds)} seed(s) found for {P}_{a.base}_seed* -- the protocol needs >= 3 "
@@ -97,6 +109,7 @@ def main():
         print(f"NOTE: {len(seeds)} seeds, not the pre-registered 5 -- t critical = {tc} (df {len(seeds) - 1})")
     rows, d, sev = [], [], []
     for s in seeds:
+        P = where[s]
         r, c = f"{P}_{a.base}_seed{s}", f"{P}_{a.cand}_seed{s}"
         sr, sc = steps(r), steps(c)
         hr, hc = heldout(r), heldout(c)
@@ -114,7 +127,7 @@ def main():
     if a.ctrl:
         cd = []
         for s in seeds:
-            hb, hk = heldout(f"{P}_{a.base}_seed{s}"), heldout(f"{P}_{a.ctrl}_seed{s}")
+            hb, hk = heldout(f"{where[s]}_{a.base}_seed{s}"), heldout(f"{where[s]}_{a.ctrl}_seed{s}")
             if hk is None:
                 print(f"INCOMPLETE: control seed {s} has no held-out loss")
                 return
