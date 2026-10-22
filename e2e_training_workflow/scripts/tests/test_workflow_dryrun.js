@@ -46,7 +46,8 @@ const refShaFrom = (prompt) => {
   return m ? m[1] : '';
 };
 let INTEG_N = 0;
-let AUDIT_OVERRIDE;                        // undefined = normal stub; null = the Auditor failed
+let AUDIT_OVERRIDE;
+let VERIFY_OVERRIDE;                       // (refDir, candDir) -> verdict klass; undefined = 'win'                        // undefined = normal stub; null = the Auditor failed
 let ENG_OVERRIDE;
 
 // One stub per role phase, returning the minimum shape its call site reads.
@@ -101,11 +102,26 @@ function stubFor(prompt) {
     const rs = refShaFrom(prompt), add = `k${++INTEG_N}`;
     const impl = (sha) => (sha ? { 'attention-backend': 'fused', GEAK_OVERLAY: 'm.json', GEAK_OVERLAY_SHA: sha }
                                : { 'attention-backend': 'fused' });
-    return { ref: leg({ implementation: impl(rs) }),
-             cand: leg({ useful_tok_s_per_gpu: 900, impl_digest: 'bbb', implementation: impl(rs ? `${rs}+${add}` : add) }),
+    return { ref: leg({ implementation: impl(rs), dir: `/work/runs/gref_${INTEG_N}`, probe_dir: `/work/runs/gref_${INTEG_N}/probe` }),
+             cand: leg({ useful_tok_s_per_gpu: 900, impl_digest: 'bbb', implementation: impl(rs ? `${rs}+${add}` : add),
+                         dir: `/work/runs/gcand_${INTEG_N}`, probe_dir: `/work/runs/gcand_${INTEG_N}/probe` }),
+             legs_measured: { refs: [`/work/runs/gref_${INTEG_N}`, `/work/runs/gref2_${INTEG_N}`],
+                              cands: [`/work/runs/gcand_${INTEG_N}`] },
              comparison: { delta_pct: 5.8, window_artifact_pct: 0.1 },
              engagement: ENG_OVERRIDE !== undefined ? ENG_OVERRIDE : { forward: true, backward: true },
              overlay_path: '/work/ovl', notes: 'n' };
+  }
+  if (is('PHASE=verify')) {
+    if (VERIFY_OVERRIDE === null) return null;
+    const grab = (key) => { const m = new RegExp(`"${key}": \\[([^\\]]*)\\]`).exec(prompt); return m ? JSON.parse(`[${m[1]}]`) : []; };
+    const refs = grab('REF_DIRS'), cands = grab('CAND_DIRS');
+    const pairs = [];
+    for (const r of refs) for (const c of cands) {
+      const klass = VERIFY_OVERRIDE ? VERIFY_OVERRIDE(r, c) : 'win';
+      pairs.push({ ref_dir: r, cand_dir: c, verdict: { klass, delta_pct: 2.0, band_pct: 0.5, reason: 'stub' },
+                   engagement: { forward: true, backward: true }, comparison: {}, error: null });
+    }
+    return { pairs };
   }
   if (is('PHASE=gate')) {
     if (AUDIT_OVERRIDE !== undefined) return AUDIT_OVERRIDE;
@@ -383,6 +399,26 @@ async function dryRun(args) {
     ok(false, `fail-closed cases threw: ${e && e.message}`);
   }
   AUDIT_OVERRIDE = undefined; ENG_OVERRIDE = undefined;
+
+  // ---- 2026-10-22 ORCH-1: the gate verifier recomputes every pairing from the leg dirs ---------
+  try {
+    const { result: r0, calls: c0 } = await dryRun(base);
+    const vp = c0.prompts.filter((p) => p.includes('PHASE=verify'));
+    ok(r0.accepted.length > 0 && vp.length === r0.accepted.length && vp[0].includes('gref2_'),
+      `every accepted kernel was recomputed by the verifier, over EVERY measured leg (${vp.length} verify calls)`);
+    VERIFY_OVERRIDE = () => 'inconclusive_noise';
+    const { result: r1 } = await dryRun(base);
+    ok(r1.accepted.length === 0, 'a verifier that recomputes the reported pair as inconclusive blocks the accept');
+    VERIFY_OVERRIDE = (r) => (r.includes('gref2_') ? 'regression' : 'win');
+    const { result: r2 } = await dryRun(base);
+    ok(r2.accepted.length === 0, 'ANY measured pairing that is a regression vetoes the accept (no cherry-picking)');
+    VERIFY_OVERRIDE = null;
+    const { result: r3 } = await dryRun(base);
+    ok(r3.accepted.length === 0, 'no verifier result -> no accept (fail closed)');
+  } catch (e) {
+    ok(false, `verifier cases threw: ${e && e.message}`);
+  }
+  VERIFY_OVERRIDE = undefined;
 
   // ---- 2026-10-16: the optional outcome gate ---------------------------------------------------
   try {

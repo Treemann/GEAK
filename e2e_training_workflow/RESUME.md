@@ -235,8 +235,11 @@ PermissionError). OPEN, by priority:
 * Agent trust: the orchestrator sees only the Integrator's chosen pair (ORCH-1); Validate's estimator and band are
   agent-chosen (ORCH-2: DONE, the card now fixes the estimator and band formula); probe paths (ORCH-3: DONE, schema);
   Validate as a bare string (ORCH-7: DONE, schema requires numbers + L1 + legs, status needs l1.pass); leg-dir
-  collisions (ORCH-8: DONE, bench_train refuses an --out that holds a leg). Open: ORCH-1 (one pair seen); a
-  fixed-script verifier that recomputes delta/band/engagement from the leg dirs (scripts/gate_eval.js is the core).
+  collisions (ORCH-8: DONE, bench_train refuses an --out that holds a leg). ORCH-1 DONE: a `gate_verifier` role
+  runs scripts/verify_gate.py on EVERY measured ref x cand pairing (the Integrator must list legs_measured); the
+  reported pair must win on the recomputed numbers with engagement proven from the proof files, and any regressing
+  pairing vetoes. Its first use found the accepted 1020 gate's first pair inconclusive (cand leg stalled 7%; band
+  12%) -- the win came from the re-measured pair; every pairing agreed on +3.6..+4.2%, so the accept stands.
 * Oracles: Megatron s8 oracles have zero holdouts (G6); HF attention oracle has the same dq blind band with no paired
   check (G8); training-path fp32 main_grad wgrad of the GEMM overlays is never exercised by a voting gate (G5);
   kernel_swap step-1 floor 2.0% is 45x the largest observed delta (G7); the 28 frozen template oracles keep the

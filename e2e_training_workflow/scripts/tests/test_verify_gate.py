@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""verify_gate.py recomputes a gate from the leg DIRECTORIES (audit 2026-10-22 ORCH-1).
+
+Synthetic legs: a ref and a cand whose steps are 3% faster on the same batches, with proof files for
+the overlay the cand adds. Checks: the real gate (gate_eval.js) calls it a win; engagement is proven
+only from the ADDED overlay's proofs on every rank; a fallback counter or a missing rank breaks it.
+Skips (exit 0) when no node binary is available, since the gate is JavaScript.
+"""
+import glob, json, os, shutil, subprocess, sys, tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+VG = os.path.join(os.path.dirname(HERE), "verify_gate.py")
+node = os.environ.get("NODE") or shutil.which("node") or next(iter(sorted(
+    glob.glob(os.path.expanduser("~/.cursor-server/bin/*/node")) +
+    glob.glob(os.path.expanduser("~/.cursor-server/bin/*/*/node")))), None)
+if not node:
+    print("SKIP: no node binary"); sys.exit(0)
+fails = 0
+def ok(c, m):
+    global fails
+    print(("  ok: " if c else "  FAIL: ") + m); fails += 0 if c else 1
+
+IMPL = {"attention-backend": "fused", "NVTE_FUSED_ATTN": "1"}
+def leg(root, name, speed, overlay=None, nranks=8, fallback=0, drop_rank=None):
+    d = os.path.join(root, name); os.makedirs(os.path.join(d, "probe"))
+    impl = dict(IMPL, **({"GEAK_OVERLAY": "m.json", "GEAK_OVERLAY_SHA": "k1"} if overlay else {}))
+    cfg = {"seq-length": "4096", "snapshot_keys": "v5", **impl}
+    for rk in range(nranks):
+        with open(os.path.join(d, "probe", f"probe_rank{rk}.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "header", "rank": rk, "world_size": nranks, "argv_hash": "a", "config": cfg}) + "\n")
+            t = 0.0
+            for i in range(30):
+                dur = (40000 if i == 0 else 2300 + 7 * ((i * 37) % 5)) * speed
+                t += dur / 1000 + 0.001
+                f.write(json.dumps({"record": "step", "step": i + 1, "dur_ms": dur, "useful_tokens": 8000,
+                                    "total_tokens": 8192, "peak_reserved_mb": 80000, "t_wall": t,
+                                    "loss": 3.0 - 0.01 * i, "grad_norm": 5.0}) + "\n")
+    json.dump({"status": "ok", "hang_detected": False, "occupancy_verdict": {"verdict": "clean"}},
+              open(os.path.join(d, "bench_summary.json"), "w"))
+    if overlay:
+        os.makedirs(os.path.join(d, overlay))
+        for rk in range(nranks):
+            if rk == drop_rank:
+                continue
+            json.dump({"rank": rk, "forward": 56, "backward": 56}, open(os.path.join(d, overlay, f"engagement.json.rank{rk}"), "w"))
+            json.dump({"rank": rk, "candidate_fwd": 56, "candidate_bwd": 56, "fallback_fwd": fallback},
+                      open(os.path.join(d, overlay, f"engagement_fused.json.rank{rk}"), "w"))
+    return d
+
+def run(ref, cand):
+    r = subprocess.run([sys.executable, VG, ref, cand, "--nproc", "8", "--floor", "0.25"],
+                       capture_output=True, text=True, timeout=120, env=dict(os.environ, NODE=node))
+    return json.loads(r.stdout)
+
+root = tempfile.mkdtemp(prefix="vgtest_")
+try:
+    ref = leg(root, "ref", 1.0)
+    good = run(ref, leg(root, "cand", 0.97, overlay="attn"))
+    ok(good["verdict"]["klass"] == "win", f"a 3% faster cand on the same batches is a win (got {good['verdict'].get('klass')})")
+    ok(good["engagement"]["forward"] and good["engagement"]["backward"] and good["engagement"]["added"] == ["attn"],
+       "engagement proven from the ADDED overlay's proof files on every rank")
+    fb = run(ref, leg(root, "cand_fb", 0.97, overlay="attn", fallback=3))
+    ok(fb["engagement"]["forward"] is False, "a non-zero fallback counter breaks the engagement proof")
+    miss = run(ref, leg(root, "cand_miss", 0.97, overlay="attn", drop_rank=5))
+    ok(miss["engagement"]["forward"] is False, "a rank without a proof breaks the engagement proof")
+    none = run(ref, leg(root, "cand_none", 0.97))
+    ok(none["engagement"]["forward"] is False and "no overlay proof" in none["engagement"].get("why", ""),
+       "a cand that adds no proof is not engaged")
+    via_probe = run(os.path.join(ref, "probe"), os.path.join(root, "cand", "probe"))
+    ok(via_probe["verdict"]["klass"] == "win", "probe/ paths are accepted as leg paths")
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+print("all checks passed" if not fails else f"{fails} check(s) FAILED")
+sys.exit(1 if fails else 0)

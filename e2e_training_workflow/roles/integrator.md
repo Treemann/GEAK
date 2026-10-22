@@ -94,6 +94,10 @@ Return JSON:
  "comparison": {...compare_legs.py stdout verbatim — MUST contain a numeric delta_pct; also carries
                  window_artifact_pct, dispersion_reliable, window...},
  "engagement": {"forward": true, "backward": true, "evidence": "..."},   // booleans; anything else is 'not proven'
+ "legs_measured": {"refs": ["<host leg dir>", ...], "cands": ["<host leg dir>", ...]},
+ // EVERY leg you took for this gate, not just the reported pair: a gate verifier recomputes every
+ // ref x cand pairing from these dirs (scripts/verify_gate.py). The reported pair must win on the
+ // recomputed numbers and no pairing may be a regression -- re-measuring a noisy leg is fine, hiding it is not.
  "overlay_path": "...", "notes": "..."}
 ```
 

@@ -59,7 +59,7 @@ const QUALITY_WORKLOAD = String(A.quality_workload || A.workload || "");
 const IMPLEMENTED_ROLES = new Set([
   'training_director', 'system_architect', 'profiler',
   'kernel_extractor', 'convergence_auditor', 'integrator',
-  'config_tuner',
+  'config_tuner', 'gate_verifier',
 ]);
 
 function requireRole(role) {
@@ -412,6 +412,44 @@ function overlayShaCheck(expectedRef, ref, cand) {
   return { ok: true };
 }
 
+// The independent recomputation (audit ORCH-1). `ver` is the gate_verifier's output: verify_gate.py run
+// on EVERY ref x cand leg the measuring agent took. Accept only if the REPORTED pair is a win on the
+// recomputed numbers, its engagement is proven from the proof files (kernel gates), and NO pairing is
+// a regression. Legs are matched by directory basename (agents mix host and container paths).
+const legBase = (l) => {
+  const d = typeof l === 'string' ? l : (l && (l.dir || l.probe_dir));
+  return d ? String(d).replace(/\/+$/, '').replace(/\/probe$/, '').split('/').pop() : null;
+};
+function verifyDecision(ver, refLegOrDir, candLegOrDir, needEngagement) {
+  const pairs = (ver && Array.isArray(ver.pairs)) ? ver.pairs : null;
+  if (!pairs || !pairs.length) return { ok: false, why: 'the gate verifier returned nothing: no independent recomputation, no accept' };
+  const rb = legBase(refLegOrDir), cb = legBase(candLegOrDir);
+  const prim = pairs.find((p) => legBase(p.ref_dir) === rb && legBase(p.cand_dir) === cb);
+  const table = pairs.map((p) => ({ ref: legBase(p.ref_dir), cand: legBase(p.cand_dir),
+    klass: p.verdict && p.verdict.klass, delta_pct: p.verdict && p.verdict.delta_pct,
+    band_pct: p.verdict && p.verdict.band_pct, error: p.error || null }));
+  if (!prim) return { ok: false, table, why: `the verifier did not recompute the reported pair ${rb} -> ${cb}` };
+  if (prim.error || !prim.verdict || prim.verdict.error) {
+    return { ok: false, table, why: `the verifier could not judge the reported pair: ${prim.error || (prim.verdict || {}).error}` };
+  }
+  if (prim.verdict.klass !== 'win') {
+    return { ok: false, table, why: `recomputed from the legs, the reported pair is ${prim.verdict.klass}: ${prim.verdict.reason}` };
+  }
+  if (needEngagement) {
+    const e = prim.engagement || {};
+    if (e.forward !== true || e.backward !== true) {
+      return { ok: false, table, why: `the proof files do not show engagement on every rank (forward=${e.forward}, ` +
+                                      `backward=${e.backward}${e.why ? `: ${e.why}` : ''})` };
+    }
+  }
+  const reg = pairs.filter((p) => p.verdict && p.verdict.klass === 'regression');
+  if (reg.length) {
+    return { ok: false, table, why: `${reg.length} measured pairing(s) are a REGRESSION on the recomputed numbers ` +
+                                    `(${reg.map((p) => `${legBase(p.ref_dir)}->${legBase(p.cand_dir)}`).join(', ')})` };
+  }
+  return { ok: true, table, delta_pct: prim.verdict.delta_pct, band_pct: prim.verdict.band_pct };
+}
+
 function comparable(ref, cand, allowedImpl) {
   if (!ref.config_digest || !cand.config_digest) return { ok: false, why: 'a leg carries no config digest' };
   // Distinguish "different workload" from "the digest DEFINITION changed between these summaries".
@@ -710,6 +748,7 @@ const PROGRESS_GROUP = {
   setup: 'Setup', reprofile: 'Profile', strategize: 'Strategize', config: 'ConfigSweep',
   extract: 'KernelTrack', integrate: 'KernelTrack', gate: 'KernelTrack',
   finalize: 'Finalize', report: 'Report', validate: 'Validate', quality: 'QualityGate',
+  verify: 'KernelTrack',
 };
 
 async function safeAgentStub(role, phase, inputs, intro = '', extra = {}) {
@@ -824,7 +863,11 @@ const EXTRACT_SCHEMA = obj({ task_dir: { type: 'string' }, op: { type: 'string' 
 // run's Integrator trimmed it away (kept impl_digest only), which would have skipped the check silently.
 const INTEGRATE_SCHEMA = obj({ ref: LEG, cand: LEG,
   comparison: { type: 'object' }, engagement: PROOF,
-  overlay_path: { type: 'string' } }, ['ref', 'cand', 'comparison', 'engagement', 'overlay_path']);
+  overlay_path: { type: 'string' },
+  // EVERY leg dir measured for this gate (host paths), not just the reported pair (audit ORCH-1).
+  legs_measured: obj({ refs: { type: 'array', items: { type: 'string' }, minItems: 1 },
+                       cands: { type: 'array', items: { type: 'string' }, minItems: 1 } }, ['refs', 'cands']) },
+  ['ref', 'cand', 'comparison', 'engagement', 'overlay_path', 'legs_measured']);
 const AUDIT_SCHEMA = obj({ l0: VERDICT, l1: VERDICT,
   l2_recommended: { type: 'boolean' }, risk_class: { type: 'string' },
   // Path of the KB card written back to the kernel layer on a reject, or null on a pass. Declared so
@@ -870,12 +913,17 @@ const VALIDATE_SCHEMA = obj({
 const QUALITY_SCHEMA = obj({ cleared: { type: 'boolean' }, quality: { type: 'string' },
   stability: { type: 'string' }, legs_prefix: { type: 'string' }, notes: { type: 'string' } },
   ['cleared', 'quality', 'stability']);
+const VERIFY_SCHEMA = obj({ pairs: { type: 'array', minItems: 1, items: obj({
+  ref_dir: { type: 'string' }, cand_dir: { type: 'string' }, verdict: { type: ['object', 'null'] },
+  engagement: { type: ['object', 'null'] }, comparison: { type: ['object', 'null'] },
+  error: { type: ['string', 'null'] } }, ['ref_dir', 'cand_dir']) } }, ['pairs']);
+
 const PHASE_SCHEMA = {
   quality: QUALITY_SCHEMA,
   setup: SETUP_SCHEMA, profile: PROFILE_SCHEMA, reprofile: PROFILE_SCHEMA,
   strategize: STRATEGY_SCHEMA, extract: EXTRACT_SCHEMA, integrate: INTEGRATE_SCHEMA,
   gate: AUDIT_SCHEMA, finalize: FINALIZE_SCHEMA, validate: VALIDATE_SCHEMA,
-  config: CONFIG_SCHEMA,
+  config: CONFIG_SCHEMA, verify: VERIFY_SCHEMA,
 };
 
 const T0 = A.t0_epoch_ms != null ? parseInt(A.t0_epoch_ms, 10) : null;
@@ -1218,6 +1266,18 @@ if (want('config')) {
         memory_conversion: sweep.memory_conversion || null });
       log0(`ConfigSweep ${sweep.lever}: ${cv.klass} (${cv.delta_pct}% vs band ${cv.band_pct}%, ` +
            `ceiling was ${sweep.ceiling_pct}%)`);
+      if (cv.accepted) {
+        // Same independent recomputation as a kernel gate (audit ORCH-1), on the Tuner's legs.
+        const ver = await safeAgentStub('gate_verifier', 'verify',
+          { REF_DIRS: [sweep.ref.dir || sweep.ref.probe_dir].filter(Boolean),
+            CAND_DIRS: [sweep.cand.dir || sweep.cand.probe_dir].filter(Boolean),
+            KIND: 'config', LEVER_FLAGS: flagsString(sweep.flags_added), FLOOR: runFloor, NPROC,
+            GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts` },
+          'Run verify_gate.py on EVERY ref x cand pairing and return its output verbatim. You are a script runner.');
+        const vd = verifyDecision(ver, sweep.ref, sweep.cand, false);
+        cv.verifier = vd;
+        if (!vd.ok) Object.assign(cv, { accepted: false, klass: 'verifier_refused', reason: vd.why });
+      }
       if (cv.accepted) curConfig = acceptLever(curConfig, sweep);
     }
   }
@@ -1363,6 +1423,18 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
   const v = gateVerdict({ ref: integ.ref, cand: integ.cand, comparison: integ.comparison,
                           l0: audit && audit.l0, l1: audit && audit.l1,
                           mode: DEEP_MODE ? 'deep' : 'fast', allowedImpl: KERNEL_IMPL_DELTA });
+  // INDEPENDENT RECOMPUTATION of every pairing the Integrator measured (audit ORCH-1).
+  if (v.accepted) {
+    const lm = integ.legs_measured || {};
+    const ver = await safeAgentStub('gate_verifier', 'verify',
+      { REF_DIRS: [...new Set([integ.ref.dir || integ.ref.probe_dir, ...(lm.refs || [])].filter(Boolean))],
+        CAND_DIRS: [...new Set([integ.cand.dir || integ.cand.probe_dir, ...(lm.cands || [])].filter(Boolean))],
+        KIND: 'kernel', FLOOR: runFloor, NPROC, GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts` },
+      'Run verify_gate.py on EVERY ref x cand pairing and return its output verbatim. You are a script runner.');
+    const vd = verifyDecision(ver, integ.ref, integ.cand, true);
+    v.verifier = vd;
+    if (!vd.ok) Object.assign(v, { accepted: false, klass: 'verifier_refused', reason: vd.why });
+  }
   // The reference must BE the carried stack, and the candidate that stack plus this head's overlay
   // (audit G3): comparable() only checks that they differ in GEAK_OVERLAY*, not HOW. A bare ref
   // against a stacked cand would credit this head with the whole stack. SHA components, not names
