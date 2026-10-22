@@ -209,6 +209,16 @@ documented for auditor/tuner; DECISIONS 3.2b paired-dq red line), and snapshot v
 * Still open: locate the non-GC stalls; full-epoch host-memory check before `--gc` could become default; P1-B(3) sources; P1-C
   ConfigSweep merge / config_flags carry; QualityGate never run in a workflow; P2; P3 (MoE).
 
+**RUN 2026-10-22 `wf_292a2e25-eb6`** (deep, bare `_cosine`, config_levers ddp_average_in_collective, budget 0,
+quality_gate on; first real run on the fail-closed code): every phase ran with agents_error 0; Setup legs passed the
+strict legUsable (v5 digests 3dc12e7c / 72932ab7); the lever measured +0.54% paired (+0.73% aligned, L1 pass as
+`overlay`, step-1 loss 0.0) but the band was 1.68% -> `inconclusive_noise`, NOT accepted; so QualityGate correctly
+skipped ("nothing accepted") and Finalize returned null proofs; status ok. QualityGate is therefore STILL unexercised
+inside a workflow (it needs an accepted change). Finding: the band came from a paired-ratio IQR of 2.17% over 23 steps;
+today's BARE null pairs show ratio IQR 0.54-1.49% vs 0.18% on s8 pairs and 0.44% on the 10-20 bare pair -- bare
+legs are currently a noisy reference (cause unknown; not the Triton cache, which bare legs only read). Synchronized
+GC on BOTH legs of every gate would remove the GC tail; consider it as a measurement setting.
+
 **AUDIT 2026-10-22** (`wf_3be44e2c-a6b`, 6 lenses x adversarial verify, DECISIONS 4.42). FIXED: the critical
 fail-open (kernel accepted with no L0/L1) and every high item (engagement/finalize/legUsable fail closed, ref must be
 the carried stack, ConfigSweep re-gate, overlay carry composed, status, L1 NaN, L0 template output count for new
