@@ -109,6 +109,15 @@ source "$WORKLOAD"
 OUT_DIR="${OUT_DIR:-/work/runs/bench_${WORKLOAD_NAME}${TAG:+_$TAG}_$(date +%m%d_%H%M%S)}"
 PROBE_DIR="$OUT_DIR/probe"
 mkdir -p "$PROBE_DIR"
+# PERSISTENT Triton cache (DECISIONS 4.43). Each leg is a fresh --rm container, so the default
+# $HOME/.triton cache was empty every run, and rope_fused_qk's Triton kernel -- specialised on the
+# power-of-2 bucket of segments per pack -- recompiled (~0.9 s, every rank waiting) the first time
+# each bucket appeared: 59% of a production epoch's stall time, at fixed data-determined steps.
+# A cache, not a configuration: Triton keys entries on source + compile options, so a changed kernel
+# recompiles, and the bytes that run are identical (paired leg1->leg2 +0.02%). An explicit
+# TRITON_CACHE_DIR (env or --extra-env) still wins.
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/work/triton_cache}"
+mkdir -p "$TRITON_CACHE_DIR" 2>/dev/null || true
 export MLM_DIR MODEL_CKPT TOKENIZER_DIR DATA_PATH OUT_DIR PROBE_DIR NPROC ITERS MBS GBS SEQ \
        ARCH_ARGS ROPE_BASE EXTRA_TRAIN_ARGS EXTRA_ENV GEAK_SCRIPTS PROFILE_STEPS PROFILE_RANKS \
        LR MIN_LR LR_DECAY_STYLE LR_WARMUP_ITERS LR_DECAY_ITERS DDP_EXTRA_ARGS HF_FSDP HF_TRAIN_METRICS

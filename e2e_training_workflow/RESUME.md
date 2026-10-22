@@ -214,11 +214,12 @@ fail-open (kernel accepted with no L0/L1) and every high item (engagement/finali
 the carried stack, ConfigSweep re-gate, overlay carry composed, status, L1 NaN, L0 template output count for new
 oracles, --hf-train-metrics + overlay env knobs in the implementation digest, wall rate from t_wall, bundle --bare
 PermissionError). OPEN, by priority:
-* **Overlay-induced host stalls** (the biggest measured effect): s8 / 1020-attention legs stall 2-3x as often as bare;
-  the 1020 kernel is ~+1.4% wall vs ~+4% median. Find the source (Python churn -> GC? engagement counters?) and
-  consider gating on long-leg wall time for marginal heads.
-* **External ~880 ms stall class** (59% of stall time): test the GPU-telemetry hypothesis (pause the user's
-  `watch -n 0.1 rocm-smi`; the fleet exporter cannot be touched).
+* **RESOLVED 2026-10-22 (DECISIONS 4.43): the ~900 ms 'external' class was rope_fused_qk's Triton recompile per
+  segment-count bucket, paid every run because each container had an empty cache** (not telemetry: the user's
+  rocm-smi watch was paused for one leg and resumed; same stall steps). bench_train now defaults to a persistent
+  TRITON_CACHE_DIR. Remaining overlay-induced stall: extra Python GC churn on overlay legs (synchronized GC,
+  `--gc`, removes it). Still open: the 1020 attention's higher stall rate in its 30-step gate legs (cand
+  stall_pct 2-7%) -- re-measure its wall delta with the warm cache before folding it into s8.
 * Outcome-test rule is a point estimate: pre-register an equivalence (TOST) rule before the next outcome test.
   Workflow QualityGate hard-codes the Megatron protocol (no in-run control, fixed yardstick, 358 iters, no --stack).
 * Agent trust: the orchestrator sees only the Integrator's chosen pair (ORCH-1); Validate's estimator and band are
