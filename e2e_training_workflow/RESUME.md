@@ -209,6 +209,11 @@ documented for auditor/tuner; DECISIONS 3.2b paired-dq red line), and snapshot v
 * Still open: locate the non-GC stalls; full-epoch host-memory check before `--gc` could become default; P1-B(3) sources; P1-C
   ConfigSweep merge / config_flags carry; QualityGate never run in a workflow; P2; P3 (MoE).
 
+**RUN 2026-10-22 `wf_b4b35fd3-d93` + seed extension: QualityGate EXERCISED in a workflow for the first time
+(DECISIONS 4.45).** 1022 attention accepted (+4.42% gate, +3.97% Director, wall +1.5%); outcome test INCONCLUSIVE at
+n=5 under the new noninf rule (one outlier seed), CLEARED at the pre-registered n=10 (upper bound +0.00242 vs 0.00515).
+Open from it: the workflow's QualityGate cannot itself extend seeds -- the extension was run by hand.
+
 **RUN 2026-10-22 `wf_292a2e25-eb6`** (deep, bare `_cosine`, config_levers ddp_average_in_collective, budget 0,
 quality_gate on; first real run on the fail-closed code): every phase ran with agents_error 0; Setup legs passed the
 strict legUsable (v5 digests 3dc12e7c / 72932ab7); the lever measured +0.54% paired (+0.73% aligned, L1 pass as
