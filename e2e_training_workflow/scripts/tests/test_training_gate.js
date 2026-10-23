@@ -327,6 +327,17 @@ const leg = (o = {}) => Object.assign({
   // ranks_agree_on_argv must be TRUE, not merely not-false.
   ok(!comparable(leg({ ranks_agree_on_argv: undefined }), leg()).ok, 'a leg that does not say its ranks agree is not comparable');
   // The digest check runs last and is flagged, so ConfigSweep can re-gate only that case.
+  // Runtime code (DECISIONS 4.59): schema-6 legs must carry `harness`, and must have run the same
+  // rocm_compat / overlay_train / image.
+  const H = { 'rocm_compat.py': 'aaa', 'overlay_train.py': 'bbb', 'train_probe.py': 'ccc', image_id: 'sha256:x' };
+  ok(comparable(leg({ digest_schema: 6, harness: H }), leg({ digest_schema: 6, harness: { ...H, 'train_probe.py': 'zzz' } })).ok,
+    'harness: legs differing only in train_probe (measurement code) are comparable');
+  const hr = comparable(leg({ digest_schema: 6, harness: H }), leg({ digest_schema: 6, harness: { ...H, 'rocm_compat.py': 'ddd' } }));
+  ok(!hr.ok && /different runtime code/.test(hr.why) && /rocm_compat/.test(hr.why), 'harness: a different rocm_compat is refused');
+  ok(!comparable(leg({ digest_schema: 6, harness: H }), leg({ digest_schema: 6, harness: { ...H, image_id: 'sha256:y' } })).ok,
+    'harness: a different image is refused');
+  ok(!comparable(leg({ digest_schema: 6 }), leg({ digest_schema: 6, harness: H })).ok,
+    'harness: a schema-6 leg without its harness record is refused (fail closed)');
   const dOnly = comparable(leg(), leg({ config_digest: 'other' }));
   ok(!dOnly.ok && dOnly.digestOnly === true, 'a pair differing only in config_digest is flagged digestOnly');
   const notOnly = comparable(leg({ implementation: IMPL }), leg({ config_digest: 'other',

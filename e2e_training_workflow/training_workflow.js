@@ -536,6 +536,27 @@ function comparable(ref, cand, allowedImpl) {
         'the reference is not this run\'s reference, so the delta would include that difference' };
     }
   }
+  // RUNTIME CODE that changes the computation without touching argv or env (audit OVL-6, DECISIONS
+  // 4.59): rocm_compat patches Megatron at runtime (it changed the loss on packed data), overlay_train
+  // installs every overlay, and the image carries every library kernel. Recorded per leg since v5 as
+  // report-only provenance; a pair that ran different versions of any of them is not one A/B. Checked
+  // here rather than digested, so no schema bump re-measures every leg. FAIL CLOSED from schema 6 (every
+  // v6 leg records it); older legs cannot carry it and are refused by the schema check above anyway
+  // unless both are old.
+  const HARNESS_KEYS = ['rocm_compat.py', 'overlay_train.py', 'image_id'];
+  const rh = ref.harness, ch = cand.harness;
+  if (!(rh && ch)) {
+    if (Math.max(Number(ref.digest_schema) || 0, Number(cand.digest_schema) || 0) >= 6) {
+      return { ok: false, why: 'a schema-6 leg carries no `harness` record (runtime code + image), so the ' +
+                               'gate cannot check that both legs ran the same rocm_compat / overlay_train / image' };
+    }
+  } else {
+    const hd = HARNESS_KEYS.filter((k) => (rh[k] || null) !== (ch[k] || null));
+    if (hd.length) {
+      return { ok: false, why: `the legs ran different runtime code (${hd.map((k) => `${k}: ${rh[k] || '-'} vs ` +
+        `${ch[k] || '-'}`).join('; ')}): re-measure the reference with the current harness` };
+    }
+  }
   // The digest check runs LAST and says so (`digestOnly`), so ConfigSweep can re-gate a lever that is
   // supposed to move identity WITHOUT skipping the rank and implementation checks above. Before
   // 2026-10-22 it ran first and ConfigSweep re-gated on any 'incomparable' (audit G2/ORCH-6).
@@ -882,7 +903,9 @@ const LEG = obj({ implementation: { type: 'object' }, workload_identity: { type:
   hang_detected: { type: 'boolean' }, dispersion_reliable: { type: 'boolean' },
   worst_iqr_spread_pct: { type: 'number' }, min_steady_steps: { type: 'number' },
   step_shape: { type: 'string', enum: ['fixed', 'variable'] }, ranks_agree_on_argv: { type: 'boolean' },
-  probe_dir: { type: 'string' } },
+  probe_dir: { type: 'string' },
+  // runtime code + image the leg ran (comparable() requires it from schema 6; copy it verbatim)
+  harness: { type: ['object', 'null'] } },
   LEG_REQUIRED);
 const PROOF = obj({ forward: { type: 'boolean' }, backward: { type: 'boolean' } }, ['forward', 'backward']);
 // Finalize runs even when no kernel was accepted; then there is nothing to re-check and null is honest.
