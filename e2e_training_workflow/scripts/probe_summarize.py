@@ -57,6 +57,14 @@ def load_rank(path):
 # Below this many steady steps the IQR is dominated by where the quartiles happen to land, not by
 # the machine. Measured: 7 steady steps gave 1.243%, 24 gave 0.072% on the same workload.
 MIN_STEADY_FOR_DISPERSION = 12
+# The headline window never starts before this step index (0-based), even when the detector settles
+# earlier -- owner decision 2026-10-23: keep 30-step legs, but do not count the first, unstable steps.
+# MEASURED (DECISIONS 4.57) on 227 fixed-shape 30-step legs / 1,080 same-identity pairs: pairwise
+# per-step disagreement is ~1% (median) on steps 2-11 and 0.1-0.8% after; recomputing every headline
+# with the window starting at max(detected, K), K=8 gave the lowest pairwise p90 (0.731% vs 0.760% at
+# the detector alone; 0.308% vs 0.347% on post-Triton-cache legs) and cut the worst pair from 3.29% to
+# 1.89%. A leg too short to keep MIN_STEADY_FOR_DISPERSION steady steps after it keeps the detector's.
+MIN_WARMUP_SKIP = 8
 
 
 def detect_warmup_end(durs, tol=0.02, patience=3):
@@ -305,6 +313,8 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
             rule = "variable: time per token, tol max(2%, 3 x 1.4826 x MAD of the back half)"
         else:
             i0, rule = detect_warmup_end(durs, tol=tol), "fixed: step time within 2% of the back half"
+        if force_warmup is None and i0 < MIN_WARMUP_SKIP and len(steps) - MIN_WARMUP_SKIP >= MIN_STEADY_FOR_DISPERSION:
+            i0, rule = MIN_WARMUP_SKIP, rule + f"; floored at step index {MIN_WARMUP_SKIP} (the first steps are unstable)"
         steady = steps[i0:]
         if max_steps:
             steady = steady[:int(max_steps)]

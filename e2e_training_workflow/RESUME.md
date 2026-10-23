@@ -15,6 +15,8 @@ P3 reuse HF QualityGate ref/ctrl70 legs, mid-leg occupancy sampling, HF L1 backw
   contradicted verdict().
 * (1) DONE 2026-10-23 (DECISIONS 4.56): scripts/main_grad_contract.{py,sh} gate every kernel candidate's fp32
   main_grad accumulation (fail closed); reproduces G5 on the four s8 GEMM overlays.
+* (2) DONE 2026-10-23 (DECISIONS 4.57): 30-step legs kept; the headline window starts at max(detected, step index 8)
+  (lowest pairwise p90 of K = 0..15 on 1,080 same-identity pairs; worst pair 3.29% -> 1.89%).
 
 ## State (2026-10-10, after run wf_cc06b402-312 completed)
 Run `wf_cc06b402-312` finished: `rope_fused_qk` +3.89% and `swiglu_bwd_fwd_bw` +3.15% ACCEPTED,

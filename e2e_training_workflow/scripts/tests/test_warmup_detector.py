@@ -40,5 +40,31 @@ ok(detect_warmup_end_variable(SLOW, [10000] * 30) == 5, "a real monotone settlin
 # Zero token counts fall back to the fixed rule rather than dividing by zero.
 ok(detect_warmup_end_variable(MEG, [0] * 30) == detect_warmup_end(MEG), "zero tokens fall back to the fixed rule")
 
+# The headline window floor (DECISIONS 4.57): summarize() never counts the first MIN_WARMUP_SKIP steps
+# of a long-enough leg, and keeps the detector's boundary on a short one.
+import json, tempfile, shutil  # noqa: E402
+from probe_summarize import summarize, MIN_WARMUP_SKIP, MIN_STEADY_FOR_DISPERSION  # noqa: E402
+root = tempfile.mkdtemp(prefix="wfloor_")
+try:
+    def leg(name, durs):
+        d = os.path.join(root, name); os.makedirs(d)
+        with open(os.path.join(d, "probe_rank0.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "header", "rank": 0, "world_size": 1, "argv_hash": "x", "config": {}}) + "\n")
+            for i, t in enumerate(durs):
+                f.write(json.dumps({"record": "step", "step": i + 1, "dur_ms": t, "useful_tokens": 8000,
+                                    "total_tokens": 8192, "peak_reserved_mb": 1}) + "\n")
+        return summarize(d)
+    s30 = leg("m30", MEG)
+    ok(MIN_WARMUP_SKIP == 8 and s30["warmup_steps_max"] == MIN_WARMUP_SKIP and "floored" in s30["per_rank"][0]["warmup_rule"],
+       f"30-step leg detected at 1 is floored to {MIN_WARMUP_SKIP} ({s30['warmup_steps_max']})")
+    ok(s30["per_rank"][0]["steady_steps"] == 30 - MIN_WARMUP_SKIP, "...leaving 22 steady steps")
+    short = MEG[:MIN_WARMUP_SKIP + MIN_STEADY_FOR_DISPERSION - 1]
+    ok(leg("short", short)["warmup_steps_max"] == 1, "a leg too short to keep 12 steady steps keeps the detector's boundary")
+    late = [40000] + [5000] * 11 + [2810] * 18
+    ok(leg("late", late)["warmup_steps_max"] == detect_warmup_end(late) > MIN_WARMUP_SKIP,
+       "a detector boundary later than the floor is kept")
+finally:
+    shutil.rmtree(root)
+
 print(f"\n{len(fails)} FAILURE(S)" if fails else "\nall checks passed")
 sys.exit(1 if fails else 0)
