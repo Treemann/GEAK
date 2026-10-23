@@ -1005,9 +1005,8 @@ phase('Setup');
 // legs the L1 envelope is a single abs(A-B) sample per step, so it collapses wherever those two legs
 // happened to cross -- and BOTH real runs then had their L1 verdict rejected by its own null
 // control, forcing the Director to hand-recalibrate mid-flight (0.5B from 5 legs, 7B likewise).
-// trajectory_gate.MIN_BAND_LEGS is 3: below it the envelope is reported but may not vote. The cost
-// is one extra baseline leg per run; the legs also feed the across-job throughput band, so it is not
-// wasted. If the band's null control still fails at 3, raise this to 5 -- the band now SAYS so.
+// (Since DECISIONS 3.4b the envelope never votes at any leg count; the three legs still give the
+// sign-balance null range three pairs instead of one, and feed the across-job throughput band.)
 // REUSING a baseline is the single biggest speed lever available, and schema 3 is what makes it
 // safe: before it, config_digest covered five fields and two different workloads could share one.
 // Measured on the 2026-09-24 run, Setup cost 0.7h of a 10.6h run -- and it measured SIX legs when

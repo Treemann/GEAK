@@ -9,6 +9,10 @@ cross-stack note -> P2 HF token-balanced ranks, 1022 attention into s8, NaN-chec
 P3 reuse HF QualityGate ref/ctrl70 legs, mid-leg occupancy sampling, HF L1 backward check.
 * (8) DONE 2026-10-23: comm-sweep arm C record corrected (crash, AssertionError in start_param_sync, not
   "degenerate"); README open list refreshed (P1-C and in-workflow QualityGate were already done).
+* (3) RESOLVED DIFFERENTLY 2026-10-23: the premise was wrong -- Setup already takes REPEAT 3, and the per-step
+  envelope was RETIRED from voting on evidence (DECISIONS 3.4b), so no leg count makes it vote. Fixed the
+  stale text that said ">=5 legs restore a blocking envelope" and the band label "BLOCKING" that
+  contradicted verdict().
 
 ## State (2026-10-10, after run wf_cc06b402-312 completed)
 Run `wf_cc06b402-312` finished: `rope_fused_qk` +3.89% and `swiglu_bwd_fwd_bw` +3.15% ACCEPTED,

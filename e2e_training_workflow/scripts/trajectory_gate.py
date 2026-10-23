@@ -172,7 +172,6 @@ def _early(stats_series, n=EARLY_STEPS):
 # A band built from fewer than MIN legs is not refused outright (it still carries the step-1 probe,
 # which is the detector that actually discriminates) but it cannot cast a blocking envelope vote.
 MIN_BAND_LEGS = 3
-RECOMMENDED_BAND_LEGS = 5
 
 
 def _rel_floor_pct(series, key, n):
@@ -403,12 +402,15 @@ def calibrate(dirs, safety=3.0, holdout=None):
         band["envelope_status"] = (
             "ADVISORY -- the per-step envelope is REPORTED BUT DOES NOT VOTE, because %s. The "
             "blocking detectors remain the step-1 forward probe and the early-window sign balance, "
-            "which are unaffected. Recalibrate from >=%d independent clean legs of the SAME identity "
-            "to restore a blocking envelope." % (why, RECOMMENDED_BAND_LEGS))
+            "which are unaffected. The envelope is RETIRED FROM VOTING (DECISIONS 3.4b) whatever the "
+            "leg count: more calibration legs make this number better described, not voting." % (why,))
         print("[trajectory_gate] WARNING: " + band["envelope_status"], flush=True)
     else:
-        band["envelope_status"] = "BLOCKING -- passed its null control on %d baseline pair(s)" % (
-            band["null_control"]["pairs_tested"])
+        # Passing the controls describes the band; it does not license a vote (verdict() never lets
+        # the envelope block, DECISIONS 3.4b). The old "BLOCKING" label here contradicted verdict().
+        band["envelope_status"] = ("ADVISORY -- passed its null and out-of-sample controls on %d "
+                                   "baseline pair(s); still reported only (DECISIONS 3.4b)" % (
+                                       band["null_control"]["pairs_tested"]))
     return band
 
 
@@ -579,8 +581,8 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
         res["checks"]["envelope_status"] = (
             "ADVISORY -- this band was calibrated on argv_hash %s and these legs are %s. A per-step "
             "envelope is fitted to a particular argv and leg length; applied to anything else it "
-            "describes a different process. Re-calibrate on >=3 clean legs of THIS config (with a "
-            "holdout) before the envelope may vote." % (cal, leg_hashes))
+            "describes a different process. Re-calibrate on clean legs of THIS config before reading "
+            "it (it never votes, DECISIONS 3.4b)." % (cal, leg_hashes))
         print("[trajectory_gate] WARNING: " + res["checks"]["envelope_status"], flush=True)
     res["checks"]["envelope_blocking"] = blocking
     res["checks"]["envelope_status"] = band.get(
