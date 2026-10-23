@@ -48,6 +48,7 @@ const refShaFrom = (prompt) => {
 let INTEG_N = 0;
 let AUDIT_OVERRIDE;
 let QUALITY_SEQ = null;                    // queued quality-phase replies (extension tests)
+let CARRIED_OVERRIDE;                      // the verifier's `carried` block; undefined = all carried overlays engaged
 let VERIFY_OVERRIDE;                       // (refDir, candDir) -> verdict klass; undefined = 'win'                        // undefined = normal stub; null = the Auditor failed
 let ENG_OVERRIDE;
 
@@ -120,7 +121,9 @@ function stubFor(prompt) {
     for (const r of refs) for (const c of cands) {
       const klass = VERIFY_OVERRIDE ? VERIFY_OVERRIDE(r, c) : 'win';
       pairs.push({ ref_dir: r, cand_dir: c, verdict: { klass, delta_pct: 2.0, band_pct: 0.5, reason: 'stub' },
-                   engagement: { forward: true, backward: true }, comparison: {}, error: null });
+                   engagement: { forward: true, backward: true }, comparison: {},
+                   carried: CARRIED_OVERRIDE !== undefined ? CARRIED_OVERRIDE : { ok: true, lost: [], slots: {} },
+                   error: null });
     }
     return { pairs };
   }
@@ -446,6 +449,16 @@ async function dryRun(args) {
     VERIFY_OVERRIDE = null;
     const { result: r3 } = await dryRun(base);
     ok(r3.accepted.length === 0, 'no verifier result -> no accept (fail closed)');
+    // DECISIONS 4.55: a candidate that switches off an overlay the reference runs is refused, and a
+    // verifier reply without the carried check cannot accept (fail closed).
+    VERIFY_OVERRIDE = undefined;
+    CARRIED_OVERRIDE = { ok: false, lost: ['rope'], slots: { rope: { engaged: false, fallback_total: 3360 } } };
+    const { result: r4 } = await dryRun(base);
+    ok(r4.accepted.length === 0, 'a candidate that silently disables a carried overlay (rope fallback) is refused');
+    CARRIED_OVERRIDE = null;
+    const { result: r5 } = await dryRun(base);
+    ok(r5.accepted.length === 0, 'a verifier reply without the carried-overlay check cannot accept');
+    CARRIED_OVERRIDE = undefined;
   } catch (e) {
     ok(false, `verifier cases threw: ${e && e.message}`);
   }

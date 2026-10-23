@@ -12,7 +12,9 @@ produced the verdict. This script is the independent half: given ref and cand le
   * runs the workflow's OWN gateVerdict on the result (scripts/gate_eval.js), and
   * reads the engagement proofs of the overlay(s) the candidate ADDS (proof subdirs present in the
     cand leg and absent from the ref leg): every rank must show forward AND backward calls, and every
-    `fallback*` counter must be 0.
+    `fallback*` counter must be 0;
+  * checks that every overlay the REF leg runs is still engaged in the cand leg (`carried`), for
+    kernel AND config gates: a lever that silently switches an accepted overlay off is refused.
 
   verify_gate.py <ref_leg_dir> <cand_leg_dir> [--nproc 8] [--floor PCT (default: per-stack)] [--kind kernel|config]
                  [--lever-flags "--flag value ..."]
@@ -133,6 +135,26 @@ def _engagement(ref_dir, cand_dir, nproc):
     return res
 
 
+def _carried(ref_dir, cand_dir, nproc):
+    """Every overlay slot the REFERENCE leg proves engaged must still be engaged in the candidate leg.
+
+    WHY (DECISIONS 4.55). A config lever can switch an accepted overlay off without touching its bytes:
+    `--rope-fusion` on s8 makes Megatron call the fused RoPE path, and the gated rope overlay then
+    delegated all 3,360 calls per rank (fallback_fwd 3360, candidate_fwd 0). The pair still measured,
+    and only the throughput sign showed something was wrong. A slot engaged in the ref and not in the
+    cand is a silently removed accepted kernel, whatever the delta says."""
+    rp, cp = _proofs(ref_dir), _proofs(cand_dir)
+    out = {}
+    for slot in sorted(rp):
+        if not _slot_engaged(rp[slot], nproc)["forward"]:
+            continue                       # the ref itself does not run it: nothing is carried
+        e = _slot_engaged(cp.get(slot, {}), nproc)
+        out[slot] = {"engaged": bool(e["forward"] and e["backward"]), "fallback_total": e["fallback_total"],
+                     "ranks": e["ranks"]}
+    lost = [k for k, v in out.items() if not v["engaged"]]
+    return {"slots": out, "lost": lost, "ok": not lost}
+
+
 def _leg_dir(p):
     """Accept a leg dir or its probe/ dir, as a host path or a container /work/... path."""
     p = str(p).rstrip("/")
@@ -181,6 +203,7 @@ def main():
         out["verdict"] = {"error": "no node to run gate_eval.js, or no comparison"}
     if kind == "kernel":
         out["engagement"] = _engagement(ref_dir, cand_dir, nproc)
+    out["carried"] = _carried(ref_dir, cand_dir, nproc)
     print(json.dumps(out))
 
 

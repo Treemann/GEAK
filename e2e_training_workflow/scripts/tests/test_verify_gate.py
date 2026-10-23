@@ -91,6 +91,15 @@ try:
     ok(e2["added"] == ["attn"] and e2["forward"], "a candidate replacing an incumbent overlay in the SAME slot is judged, not refused")
     via_probe = run(os.path.join(ref, "probe"), os.path.join(root, "cand", "probe"))
     ok(via_probe["verdict"]["klass"] == "win", "probe/ paths are accepted as leg paths")
+    # Carried overlays (DECISIONS 4.55): a slot the ref runs must stay engaged in the cand, for any kind.
+    ref_c = leg(root, "ref_carry", 1.0, overlay="attn")
+    ok(run(ref_c, leg(root, "cand_carry_ok", 0.97, overlay="attn"))["carried"]["ok"] is True,
+       "carried: the ref's overlay still engaged in the cand -> ok")
+    lostc = run(ref_c, leg(root, "cand_carry_lost", 0.97, overlay="attn", fallback=3360))["carried"]
+    ok(lostc["ok"] is False and lostc["lost"] == ["attn"],
+       "carried: the ref's overlay falling back in the cand (a lever switched it off) is reported as lost")
+    ok(run(ref, leg(root, "cand_carry_none", 0.97, overlay="attn"))["carried"] == {"slots": {}, "lost": [], "ok": True},
+       "carried: a ref with no overlay carries nothing")
     # gate_eval's per-stack floor default (DECISIONS 4.54): Megatron 0.30%, HF 0.25%, explicit wins.
     import subprocess
     nul = run(ref, leg(root, "null", 1.0), floor=())

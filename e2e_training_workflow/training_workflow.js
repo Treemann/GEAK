@@ -469,6 +469,17 @@ function verifyDecision(ver, refLegOrDir, candLegOrDir, needEngagement) {
                                       `backward=${e.backward}${e.why ? `: ${e.why}` : ''})` };
     }
   }
+  // Every overlay the reference runs must still run in the candidate (DECISIONS 4.55: --rope-fusion on
+  // s8 turned the accepted rope overlay into a 100% fallback while the pair still measured). FAIL
+  // CLOSED: a primary pair without the check (an agent trimmed it) cannot show it was done.
+  if (!prim.carried || typeof prim.carried.ok !== 'boolean') {
+    return { ok: false, table, why: 'the verifier output for the reported pair lacks the carried-overlay check' };
+  }
+  const lost = pairs.filter((p) => p.carried && p.carried.ok === false);
+  if (lost.length) {
+    return { ok: false, table, why: `the candidate switches off accepted overlay(s) the reference runs ` +
+      `(${[...new Set(lost.flatMap((p) => p.carried.lost || []))].join(', ')}: no longer engaged / falling back)` };
+  }
   const reg = pairs.filter((p) => p.verdict && p.verdict.klass === 'regression');
   if (reg.length) {
     return { ok: false, table, why: `${reg.length} measured pairing(s) are a REGRESSION on the recomputed numbers ` +
@@ -949,6 +960,7 @@ const QUALITY_SCHEMA = obj({ cleared: { type: 'boolean' }, quality: { type: 'str
 const VERIFY_SCHEMA = obj({ pairs: { type: 'array', minItems: 1, items: obj({
   ref_dir: { type: 'string' }, cand_dir: { type: 'string' }, verdict: { type: ['object', 'null'] },
   engagement: { type: ['object', 'null'] }, comparison: { type: ['object', 'null'] },
+  carried: { type: ['object', 'null'] },
   error: { type: ['string', 'null'] } }, ['ref_dir', 'cand_dir']) } }, ['pairs']);
 
 const PHASE_SCHEMA = {

@@ -23,7 +23,8 @@ run anything else. If a pairing exits non-zero, record `{"ref": ..., "cand": ...
 Return JSON:
 ```json
 {"pairs": [{"ref_dir": "...", "cand_dir": "...", "verdict": {...}, "engagement": {...},
-            "comparison": {...}, "error": null}, ...]}
+            "comparison": {...}, "carried": {...}, "error": null}, ...]}
 ```
-(`verdict`, `engagement`, `comparison` copied from the script output; `ref`/`cand` summaries may be
+(`verdict`, `engagement`, `comparison`, `carried` copied from the script output -- `carried` is
+required: without it the orchestrator refuses the gate; `ref`/`cand` summaries may be
 omitted to keep the reply small.)

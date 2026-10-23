@@ -1982,3 +1982,23 @@ steps, and the flat-grad overlay touches the gradient path of every parameter.
 * Engagement in training: 8/8 ranks, fallback 0 for all 8 overlays.
   * rope: candidate fwd = bwd = 66,304 per rank (296 × 8 × 28).
   * Eval-only fallbacks: lmce 125 and rope 3,500 per rank, all no_grad, running the original path.
+
+## P0-4l PRE-REGISTRATION (2026-10-23, before any P0-4l leg): the model-matched RMSNorm epsilon recipe
+
+Every Megatron leg so far fine-tuned with RMSNorm eps 1e-5 (Megatron's default; the torch_dist checkpoint
+does not carry it), while Qwen2.5-Math-7B was trained with 1e-6 (DECISIONS 4.55). The fix is the
+descriptor `_cosine_avg_eps6` and, for the stack, condition `s8eps` (s8 with the rmsnorm overlay's eps
+envelope widened; L0 at eps 1e-6 PASS, L1 overlay PASS, throughput +0.34/+0.31% over s7).
+* Workload `qwen2_5_math_7b_packed_cosine_avg_eps6.env`, 358 iterations (one epoch), the pre-registered
+  train19k / heldout1k packs, `quality_ab.sh` protocol. Seeds **1123, 2234, 3345, 4456, 5567** (fresh).
+* Arms, interleaved per seed: `ref` (bare, eps 1e-6), `s8eps`, `cand` = bare with
+  `--norm-epsilon 1e-5` (the old recipe as a per-leg arm; `--cand-cmd true`).
+* Q1, the GATE (clears the deliverable stack on the new recipe): `quality_ab_final.py <prefix>
+  --base ref --cand s8eps` (rule noninf, margin 0.00515). CLEARED iff PASS-quality and PASS-stability.
+* Q2, REPORT (the effect of the epsilon itself): `--base cand --cand ref`, i.e. d = held-out(eps 1e-6)
+  - held-out(eps 1e-5). eps 1e-6 becomes the RECOMMENDED recipe iff it is non-inferior to 1e-5 on the
+  same rule (upper 95% bound of d <= 0.00515). It is a correctness fix approved by the owner, so a
+  non-significant d is the expected outcome; a significantly POSITIVE d would be reported and the
+  recommendation revisited, not silently kept.
+* No positive control arm: the Megatron yardstick (+0.0206 for the x0.7 schedule, P0-4d) is fixed.
+* If Q1 is INCONCLUSIVE: one pre-registered extension, seeds 6678, 7789, 8890, 9901, 1012.
