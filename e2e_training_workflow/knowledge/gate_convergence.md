@@ -2071,3 +2071,18 @@ change to a cleared stack still needs the outcome test.
 * `quality_ab_final.py <prefix> --base s8 --cand cand` (rule noninf, fixed P0-4d yardstick, margin 0.00515).
   CLEARED iff PASS-quality and PASS-stability. If INCONCLUSIVE: one extension, seeds 7013, 8124, 9235, 1346, 2457,
   with fresh s8 and cand arms.
+
+### P0-4n RESULT (2026-10-23): **NOT CLEARED** — s9 (the 1022 attention on s8) has a late divergence; the extension was not run
+
+* Legs `runs/qabs9_1023_175600_*` (cand) vs P0-4f's s8 legs (linked as `s8`; `quality_reuse.py check` valid: only
+  check_for_nan_in_loss_and_grad and manual_gc differ). Held-out d: +0.00321 / -0.00573 / +0.00084 / **+0.27336** /
+  -0.00303 (seed 4680), mean +0.0537, upper 95% +0.171 -> INCONCLUSIVE; stability PASS by the max10 rule (0.145).
+* Seed 4680 is a genuine late divergence, not noise: grad norm sustained at 5-20 from step ~300 (s8: 1-2), train
+  loss 0.1-0.2 above s8 at the end, held-out 1.569 vs 1.296.
+* DEVIATION FROM THE PRE-REGISTRATION, stated: the one extension was NOT run. With d = +0.273 in the sample, the
+  combined n = 10 upper bound stays >= ~+0.077 even if all five new seeds were perfect -- far above the 0.00515
+  margin -- so the only reachable verdicts were INCONCLUSIVE or FAIL; 2.7 GPU-hours would have bought no decision.
+* ATTRIBUTION (one leg, `runs/qabs8n4680_*_seed4680`): s8 + NaN check from the grad norm + --gc on seed 4680 is
+  healthy (held-out 1.2929 vs s8 1.2958; late grad norm median 1.41). The divergence comes with the 1022 attention
+  on s8. (On bare, the 1022 kernel cleared at n = 10 after one outlier seed, 4.45.)
+* Consequence: the 1022 attention is NOT folded into s8 (DECISIONS 4.64).
