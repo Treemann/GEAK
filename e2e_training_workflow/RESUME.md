@@ -24,6 +24,9 @@ P3 reuse HF QualityGate ref/ctrl70 legs, mid-leg occupancy sampling, HF L1 backw
 * P1(7) DONE 2026-10-23: README states the cross-stack recipe difference (eps, packing) next to the HF headline.
 * P2 HF balance DONE 2026-10-23 (DECISIONS 4.61): +15.2..+15.9% paired on hf8, P0-4m CLEARED; recommended HF config
   = hf8 + --hf-balance-tokens on. P3 QualityGate reuse DONE (4.63), mid-leg occupancy DONE, HF unrounded loss DONE.
+* P2 rest DONE 2026-10-23: NaN check moved to the grad norm ACCEPTED (+0.62%, 4.62); 1022 attention NOT folded into
+  s8 (P0-4n NOT CLEARED, late divergence on seed 4680 attributed to it, 4.64); --gc + NaN move = the deliverable's
+  default mode `fast` (bundle re-run in fast/plain/bare, re-pinned). ALL ITEMS OF THE 2026-10-23 LIST ARE DONE.
 
 ## State (2026-10-10, after run wf_cc06b402-312 completed)
 Run `wf_cc06b402-312` finished: `rope_fused_qk` +3.89% and `swiglu_bwd_fwd_bw` +3.15% ACCEPTED,

@@ -40,7 +40,9 @@ on pre-registered one-epoch, multi-seed outcome tests: held-out loss −0.0023 v
 episodes (DECISIONS 4.24), and again with `--ddp-average-in-collective` (4.25). It is NOT cleared for
 constant-LR, no-warmup training (4.22). **Deliverable bundle: `finalize_bundle_1021_s8_cosine_avg`**
 (4 cold runs: 3 pass at launch, the bare leg after pinning its own v5 impl_digest; bare -> s8
-+20.9/+21.8% paired; opt-in `--gc` mode, 4.41; re-pinned to identity v6 on 2026-10-23, all three modes pass).
++20.9/+21.8% paired; re-pinned to identity v6 on 2026-10-23). Since 2026-10-23 its DEFAULT mode is `fast` = s8 +
+synchronized GC + the NaN check moved to the grad norm (+0.62% paired, numerically inert; DECISIONS 4.62, 4.64);
+`--plain` runs the s8 stack exactly as cleared.
 `finalize_bundle_1015_s8` runs the constant-LR `packed.env` and is NOT the deliverable.
 The recipe keeps Megatron's RMSNorm eps 1e-5 although the model was pretrained with 1e-6: the
 model-matched 1e-6 was outcome-tested and lost (held-out +0.0067, 5/5 seeds; P0-4l, DECISIONS 4.55).
