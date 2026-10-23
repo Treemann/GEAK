@@ -18,6 +18,9 @@ P3 reuse HF QualityGate ref/ctrl70 legs, mid-leg occupancy sampling, HF L1 backw
 * (2) DONE 2026-10-23 (DECISIONS 4.57): 30-step legs kept; the headline window starts at max(detected, step index 8)
   (lowest pairwise p90 of K = 0..15 on 1,080 same-identity pairs; worst pair 3.29% -> 1.89%).
 * P1(5) DONE 2026-10-23 (DECISIONS 4.59): comparable() refuses a pair whose rocm_compat / overlay_train / image differ.
+* P0-4 DONE 2026-10-23 (DECISIONS 4.58): layer-14 holdouts for the six per-layer s8 kernels: all pass, all controls fail.
+* P1(6) DONE 2026-10-23 (DECISIONS 4.60): L0 must name its oracle; pre-v2 template oracles refused; 8 HF oracles
+  rebuilt into tasks_v2/ (base_error reproduced exactly); the six shipped HF kernels pass them.
 
 ## State (2026-10-10, after run wf_cc06b402-312 completed)
 Run `wf_cc06b402-312` finished: `rope_fused_qk` +3.89% and `swiglu_bwd_fwd_bw` +3.15% ACCEPTED,

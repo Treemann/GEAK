@@ -940,7 +940,12 @@ const INTEGRATE_SCHEMA = obj({ ref: LEG, cand: LEG,
 const MGC = obj({ applicable: { type: 'boolean' }, passed: { type: ['boolean', 'null'] },
   head: { type: ['string', 'null'] }, why: { type: ['string', 'null'] }, result: { type: ['string', 'null'] } },
   ['applicable', 'passed']);
-const AUDIT_SCHEMA = obj({ l0: VERDICT, l1: VERDICT, main_grad_contract: MGC,
+// The L0 oracle's provenance (DECISIONS 4.60): a pre-v2 TEMPLATE oracle silently skips a missing output.
+const L0_VERDICT = obj({ pass: { type: 'boolean' }, reason: { type: 'string' },
+  oracle: obj({ kind: { type: 'string', enum: ['template', 'custom'] },
+    template_version: { type: ['number', 'null'] }, scores_every_output: { type: 'boolean' },
+    task_dir: { type: 'string' } }, ['kind', 'template_version', 'scores_every_output']) }, ['pass', 'oracle']);
+const AUDIT_SCHEMA = obj({ l0: L0_VERDICT, l1: VERDICT, main_grad_contract: MGC,
   l2_recommended: { type: 'boolean' }, risk_class: { type: 'string' },
   // Path of the KB card written back to the kernel layer on a reject, or null on a pass. Declared so
   // the Auditor is asked for it; a rejection the KB never hears about is re-derived from zero next run.
@@ -1520,6 +1525,17 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
   }
   if (v.accepted && !carried.ok) {
     Object.assign(v, { accepted: false, klass: 'incomparable', reason: carried.why });
+  }
+  // The oracle that produced L0 must score every output (DECISIONS 4.60): a template oracle from
+  // build_task_dir >= v2 (output count / coverage / shape gated), or a custom one the Auditor confirms.
+  const orc = audit && audit.l0 && audit.l0.oracle;
+  const orcOk = !!orc && orc.scores_every_output === true &&
+    (orc.kind === 'custom' || (orc.kind === 'template' && Number(orc.template_version) >= 2));
+  if (v.accepted && !orcOk) {
+    Object.assign(v, { accepted: false, klass: 'no_correctness_gate',
+      reason: orc ? `L0 oracle cannot vouch for every output (kind=${orc.kind}, template_version=` +
+                    `${orc.template_version}, scores_every_output=${orc.scores_every_output}): rebuild it ` +
+                    'with scripts/rebuild_oracle.py' : 'L0 did not report which oracle it ran' });
   }
   // The fp32 main_grad accumulation contract (DECISIONS 4.50 / 4.56): L0 cannot see that path, and the
   // oracle-style limit passes a bf16-rounded wgrad. Fail closed on a missing result, an applicable

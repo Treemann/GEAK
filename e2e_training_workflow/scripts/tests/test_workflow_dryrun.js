@@ -48,6 +48,7 @@ const refShaFrom = (prompt) => {
 let INTEG_N = 0;
 let AUDIT_OVERRIDE;
 let QUALITY_SEQ = null;                    // queued quality-phase replies (extension tests)
+let ORACLE_OVERRIDE;                       // the Auditor's l0.oracle block; undefined = template v2
 let MGC_OVERRIDE;                          // the Auditor's main_grad_contract block; undefined = applicable + passed
 let CARRIED_OVERRIDE;                      // the verifier's `carried` block; undefined = all carried overlays engaged
 let VERIFY_OVERRIDE;                       // (refDir, candDir) -> verdict klass; undefined = 'win'                        // undefined = normal stub; null = the Auditor failed
@@ -130,7 +131,9 @@ function stubFor(prompt) {
   }
   if (is('PHASE=gate')) {
     if (AUDIT_OVERRIDE !== undefined) return AUDIT_OVERRIDE;
-    return { l0: { pass: true }, l1: { pass: true }, l2_recommended: false, risk_class: 'low',
+    return { l0: { pass: true, oracle: ORACLE_OVERRIDE !== undefined ? ORACLE_OVERRIDE
+                                      : { kind: 'template', template_version: 2, scores_every_output: true } },
+             l1: { pass: true }, l2_recommended: false, risk_class: 'low',
              main_grad_contract: MGC_OVERRIDE !== undefined ? MGC_OVERRIDE : { applicable: true, passed: true },
              kb_rejection_card: null };
   }
@@ -472,6 +475,20 @@ async function dryRun(args) {
     const { result: m3 } = await dryRun(base);
     ok(m3.accepted.length > 0, 'a not-applicable contract (decided by the script) does not block');
     MGC_OVERRIDE = undefined;
+    // DECISIONS 4.60: the L0 oracle must score every output.
+    ORACLE_OVERRIDE = { kind: 'template', template_version: 1, scores_every_output: true };
+    const { result: o1 } = await dryRun(base);
+    ok(o1.accepted.length === 0, 'L0 from a pre-v2 template oracle (missing-output hole) cannot accept');
+    ORACLE_OVERRIDE = { kind: 'custom', template_version: null, scores_every_output: false };
+    const { result: o2 } = await dryRun(base);
+    ok(o2.accepted.length === 0, 'a custom oracle not confirmed to score every output cannot accept');
+    ORACLE_OVERRIDE = { kind: 'custom', template_version: null, scores_every_output: true };
+    const { result: o3 } = await dryRun(base);
+    ok(o3.accepted.length > 0, 'a custom oracle confirmed to score every output is accepted');
+    ORACLE_OVERRIDE = null;
+    const { result: o4 } = await dryRun(base);
+    ok(o4.accepted.length === 0, 'L0 without its oracle provenance cannot accept (fail closed)');
+    ORACLE_OVERRIDE = undefined;
   } catch (e) {
     ok(false, `verifier cases threw: ${e && e.message}`);
   }

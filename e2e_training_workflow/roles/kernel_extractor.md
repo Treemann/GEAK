@@ -14,8 +14,12 @@ to cheat. Read `knowledge/gate_convergence.md` (L0) before you build the oracle.
 
 1b. **Reusing an existing task dir?** Only if its `meta.json` has `"template_version" >= 2`. An older
    template-built oracle silently skips a candidate's missing trailing gradient and has no 1-ulp rule
-   (DECISIONS 4.42, 4.52): REBUILD it from its capture with the current `build_task_dir.py` (same
-   reference / layout / acceptance arguments, recorded in the old meta) into a NEW task dir, and say so.
+   (DECISIONS 4.42, 4.52): REBUILD it with `scripts/rebuild_oracle.py <old> <new> --capture-dir <its
+   _cap dir>` (inside the image): it carries the old reference / const / acceptance options and
+   holdouts, finds the primary capture, and REFUSES unless the rebuilt base_error equals the old one on
+   the primary and every holdout. Rebuilt HF oracles live in `$GEAK_WORK_DIR/tasks_v2/` (DECISIONS 4.60).
+   Per-layer ops: capture at least one MID-DEPTH call as a holdout (`GEAK_CAPTURE_CALL=14`,
+   `GEAK_ROPE_CAPTURE_CALL=14`; the first matching call is layer 0, DECISIONS 4.58).
    A custom (non-template) oracle is reused only if you confirm it scores every output.
 2. **Freeze the oracle.** Write `reference_io.pt` + `unittest.py` + `meta.json` into a task dir and do
    not let anything downstream regenerate them. The kernel layer must be scored against inputs it

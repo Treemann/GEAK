@@ -26,6 +26,9 @@ Usage (inside the training process, installed by rocm_compat.py):
     GEAK_CAPTURE_TARGET="transformer_engine.pytorch.attention.dot_product_attention:DotProductAttention"
     GEAK_CAPTURE_STEP=12          # capture on this step (after warmup)
     GEAK_CAPTURE_DIR=/work/tasks/attn_bwd
+    GEAK_CAPTURE_CALL=14          # optional: the Nth MATCHING call of the step (0-based; default 0).
+                                  # Per-layer ops run layer 0..L-1 per micro-batch, so 0 = layer 0 and
+                                  # 14 = layer 14 of micro-batch 0 -- a mid-depth oracle (DECISIONS 4.58).
 """
 from __future__ import annotations
 
@@ -38,6 +41,7 @@ import torch
 _TARGET = os.environ.get("GEAK_CAPTURE_TARGET", "")
 _STEP = int(os.environ.get("GEAK_CAPTURE_STEP", "0") or 0)
 _DIR = os.environ.get("GEAK_CAPTURE_DIR", "")
+_CALL = int(os.environ.get("GEAK_CAPTURE_CALL", "0") or 0)
 # Capture on ONE rank by default. Every rank writing the same path corrupts it (observed: a 689-byte
 # truncated reference_io.pt from two concurrent writers), and the extra copies carry no information
 # at TP1 -- the ranks see the same op with the same shapes.
@@ -52,7 +56,7 @@ _MATCH = [tuple(int(d) for d in s.split("x"))
           for s in os.environ.get("GEAK_CAPTURE_MATCH_SHAPE", "").split(",") if s.strip()]
 ENABLED = bool(_TARGET and _DIR and _STEP > 0 and _RANK in _RANKS)
 
-_state = {"step": 0, "captured": False}
+_state = {"step": 0, "captured": False, "seen": 0}
 
 
 def _matches(a, kw):
@@ -141,11 +145,14 @@ def install():
     def wrapped(*a, **kw):
         if _state["captured"] or _state["step"] + 1 != _STEP or not _matches(a, kw):
             return orig(*a, **kw)
+        _state["seen"] += 1
+        if _state["seen"] - 1 < _CALL:          # not yet the requested matching call of this step
+            return orig(*a, **kw)
         _state["captured"] = True
         # `rank` travels in the record, not only in the sidecar meta.json: build_task_dir reads the
         # record and was writing `captured_from.rank: null`, which silently loses the one fact that
         # says WHICH rank's view of the op the oracle froze.
-        rec = {"target": _TARGET, "step": _STEP, "rank": _RANK,
+        rec = {"target": _TARGET, "step": _STEP, "rank": _RANK, "call": _CALL,
                "args": _snap(a), "kwargs": _snap(kw)}
         _state["rec"] = rec
 
@@ -361,7 +368,7 @@ def _collect_opaque(node, out=None):
 def _write_meta(rec):
     opaque = _collect_opaque(rec["args"]) + _collect_opaque(rec["kwargs"])
     meta = {
-        "target": rec["target"], "step": rec["step"], "rank": _RANK,
+        "target": rec["target"], "step": rec["step"], "rank": _RANK, "call": rec.get("call", 0),
         "call_site_filter": [list(m) for m in _MATCH],
         "call_site_note": ("the Function class serves several call sites; the capture armed only on a "
                            "call carrying these argument shapes. Empty => first call of the step."),

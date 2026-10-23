@@ -36,6 +36,8 @@ Env:
     GEAK_ROPE_CAPTURE_DIR=/work/tasks/rope_cap      (required; enables the capture)
     GEAK_ROPE_CAPTURE_STEP=13                      (capture on this step, after warmup)
     GEAK_ROPE_CAPTURE_RANKS=0                      (one rank: concurrent writers corrupt the file)
+    GEAK_ROPE_CAPTURE_CALL=14                      (optional: the Nth (query, key) PAIR of the step,
+                                                    0-based = the layer of micro-batch 0; default 0)
 """
 from __future__ import annotations
 
@@ -49,9 +51,10 @@ _STEP = int(os.environ.get("GEAK_ROPE_CAPTURE_STEP", "0") or 0)
 _RANKS = {int(r) for r in os.environ.get("GEAK_ROPE_CAPTURE_RANKS", "0").split(",")
           if r.strip().isdigit()}
 _RANK = int(os.environ.get("RANK", "0"))
+_CALL = int(os.environ.get("GEAK_ROPE_CAPTURE_CALL", "0") or 0)
 ENABLED = bool(_DIR and _STEP > 0 and _RANK in _RANKS)
 
-_state = {"step": 0, "done": False, "q": None, "k": None, "grads": {}}
+_state = {"step": 0, "done": False, "q": None, "k": None, "grads": {}, "pairs": 0}
 
 
 def note_step(step):
@@ -98,7 +101,8 @@ def install():
             return orig(t, freqs, *a, **kw)
         out = orig(t, freqs, *a, **kw)
         if _state["q"] is None:
-            # The first rotated tensor of the step is the query of layer 0, microbatch 0.
+            # The first rotated tensor of the step (after the GEAK_ROPE_CAPTURE_CALL pairs skipped below)
+            # is the query of that layer, microbatch 0.
             _state["q"] = {"t": t, "freqs": freqs, "a": a, "kw": kw, "out": out}
             return out
         q = _state["q"]
@@ -112,6 +116,10 @@ def install():
                    f"{q['t'].shape[1]}: this is not the (query, key) pair of one layer")
         if why:
             abort(why)
+            return out
+        _state["pairs"] += 1
+        if _state["pairs"] - 1 < _CALL:          # a complete (q, k) pair of an earlier layer: skip it
+            _state["q"] = None
             return out
         _state["k"] = {"t": t, "freqs": freqs, "a": a, "kw": kw, "out": out}
         _state["done"] = True
@@ -198,7 +206,7 @@ def _capture(orig):
     rec = {
         "target": "megatron.core.transformer.attention:apply_rotary_pos_emb"
                   " [query call + key call of one SelfAttention.forward, thd, unfused]",
-        "step": _STEP, "rank": _RANK,
+        "step": _STEP, "rank": _RANK, "call": _CALL,
         "args": [_snap(t) for t in args],
         "kwargs": {},
         "grad_output": [_snap(gq), _snap(gk)],
@@ -218,7 +226,7 @@ def _capture(orig):
     torch.save(rec, tmp)
     os.replace(tmp, path)
     with open(os.path.join(_DIR, "capture_meta.json"), "w") as f:
-        json.dump({"target": rec["target"], "step": _STEP, "rank": _RANK,
+        json.dump({"target": rec["target"], "step": _STEP, "rank": _RANK, "call": _CALL,
                    "shapes": {"args": [list(t.shape) for t in args],
                               "grad_output": [list(gq.shape), list(gk.shape)]},
                    "dtypes": {"args": [str(t.dtype) for t in args],
