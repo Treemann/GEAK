@@ -17,7 +17,7 @@ produced the verdict. This script is the independent half: given ref and cand le
     kernel AND config gates: a lever that silently switches an accepted overlay off is refused.
 
   verify_gate.py <ref_leg_dir> <cand_leg_dir> [--nproc 8] [--floor PCT (default: per-stack)] [--kind kernel|config]
-                 [--lever-flags "--flag value ..."]
+                 [--lever-flags "--flag value ..."] [--lever-env KNOB1,KNOB2]
 
 Prints one JSON object. Exit 0 always when it could judge (the verdict is in the JSON); exit 2 when it
 could not (missing dirs or probes) -- the caller must then fail closed.
@@ -178,6 +178,9 @@ def main():
     opt = lambda k, d: args[args.index(k) + 1] if k in args else d   # noqa: E731
     nproc, floor = int(opt("--nproc", 8)), opt("--floor", None)
     kind, lever = opt("--kind", "kernel"), opt("--lever-flags", "")
+    # A lever that is a flag PLUS an env knob (e.g. --no-check-for-nan-in-loss-and-grad with
+    # GEAK_NAN_FROM_GRAD_NORM=1, DECISIONS 4.62): the knob's names, comma-separated.
+    lever_env = [k.strip() for k in opt("--lever-env", "").split(",") if k.strip()]
     for d in (ref_dir, cand_dir):
         if not os.path.isdir(os.path.join(d, "probe")):
             print(json.dumps({"error": f"no probe dir under {d}"}))
@@ -188,6 +191,7 @@ def main():
         allowed = ["GEAK_OVERLAY", "GEAK_OVERLAY_SHA"]
     else:
         allowed = [t.lstrip("-").split("=")[0] for t in lever.split() if t.startswith("--")]
+        allowed += ["env:" + k for k in lever_env]
         allowed += [k for k in {**ref.get("implementation", {}), **cand.get("implementation", {})} if k.startswith("NVTE_")]
     out = {"ref": ref, "cand": cand, "comparison": cmp, "kind": kind, "verdict": None}
     node = _node()

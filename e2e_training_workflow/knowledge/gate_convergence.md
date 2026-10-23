@@ -2057,3 +2057,17 @@ change to a cleared stack still needs the outcome test.
   upper 95% +0.00018 <= 0.00162. Control ctrl70 - hf8 +0.00648 (t 122.6). Stability: max10 0 on every leg.
 * Engagement on the cand legs: all 8 hf8 overlays, 8/8 ranks, training fallback 0.
 * **CLEARED.** The recommended HF configuration becomes hf8 + `--hf-balance-tokens on` (DECISIONS 4.61).
+
+## P0-4n PRE-REGISTRATION (2026-10-23, before any P0-4n leg): outcome test of s9 (s8 with the 1022 attention + NaN check from the grad norm) under synchronized GC
+
+* s9 = `stack_overlay_env.sh --cond s8a22` (attention overlay replaced by finalize_bundle_1022_attn_ck1022, cleared on
+  the bare recipe by 4.45) + `--no-check-for-nan-in-loss-and-grad` with `GEAK_NAN_FROM_GRAD_NORM=1` (DECISIONS 4.62),
+  run with `--manual-gc --manual-gc-interval 0` (the deliverable's intended default). 30-step gates on s8+gc:
+  +1.15 / +1.16% paired (wall +2.1 / +1.6%; s8 nulls +-0.02%), L1 kernel_swap PASS both reps (step-1 loss 0.0).
+* cand legs: workload `qwen2_5_math_7b_packed_cosine_avg.env`, 358 iterations, seeds 1357, 2468, 3579, 4680, 5791.
+* BASE = P0-4f's s8 legs (`runs/qabavg_1016_175311_cand_seed*` = s8 + --ddp-average-in-collective, the _cosine_avg
+  recipe), linked as arm `s8` with `quality_reuse.py`; its check must show only check_for_nan_in_loss_and_grad,
+  manual_gc and manual_gc_interval differing (DECISIONS 4.63).
+* `quality_ab_final.py <prefix> --base s8 --cand cand` (rule noninf, fixed P0-4d yardstick, margin 0.00515).
+  CLEARED iff PASS-quality and PASS-stability. If INCONCLUSIVE: one extension, seeds 7013, 8124, 9235, 1346, 2457,
+  with fresh s8 and cand arms.
