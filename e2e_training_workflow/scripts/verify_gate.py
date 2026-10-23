@@ -89,6 +89,11 @@ def _identity(proofs_by_rank):
                     v = r[k]
                     if k in ("replacement", "manifest"):
                         v = os.path.basename(os.path.dirname(str(v).split(":")[0]))   # overlay dir name, not install path
+                    elif isinstance(v, dict):
+                        # Source hashes only: compiled artifacts (*.so) are rebuilt per install and their
+                        # names carry a build key, so the SAME gated attention overlay read as 'changed'
+                        # between the s7 and s8eps installs (2026-10-23).
+                        v = {f: h for f, h in v.items() if not f.endswith(".so")}
                     ids.add((k, json.dumps(v, sort_keys=True)))
         break
     return ids

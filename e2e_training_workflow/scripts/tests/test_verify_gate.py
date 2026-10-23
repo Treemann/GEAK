@@ -91,6 +91,15 @@ try:
     ok(e2["added"] == ["attn"] and e2["forward"], "a candidate replacing an incumbent overlay in the SAME slot is judged, not refused")
     via_probe = run(os.path.join(ref, "probe"), os.path.join(root, "cand", "probe"))
     ok(via_probe["verdict"]["klass"] == "win", "probe/ paths are accepted as leg paths")
+    # Rebuilt compiled artifacts (*.so) are not identity: same sources, different .so hash -> unchanged.
+    sys.path.insert(0, os.path.dirname(HERE))
+    import verify_gate as _vg
+    mk = lambda so: {"0": [{"replacement": "/work/overlays/a/attn/impl.py:f",
+                            "kernel_sha256": {"kernel.py": "k1", "libx_123.so": so}}]}
+    ok(_vg._identity(mk("aaa")) == _vg._identity(mk("bbb")), "identity ignores rebuilt .so hashes")
+    ok(_vg._identity(mk("aaa")) != _vg._identity({"0": [{"replacement": "/x/attn/impl.py:f",
+                                                          "kernel_sha256": {"kernel.py": "k2"}}]}),
+       "...but a changed SOURCE hash is still a changed overlay")
     # Carried overlays (DECISIONS 4.55): a slot the ref runs must stay engaged in the cand, for any kind.
     ref_c = leg(root, "ref_carry", 1.0, overlay="attn")
     ok(run(ref_c, leg(root, "cand_carry_ok", 0.97, overlay="attn"))["carried"]["ok"] is True,
