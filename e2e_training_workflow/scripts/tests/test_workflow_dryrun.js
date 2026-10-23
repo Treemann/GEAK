@@ -427,6 +427,22 @@ async function dryRun(args) {
                    { cleared: false, quality: 'INCONCLUSIVE-quality: still', stability: 'PASS-stability: 0', legs_prefix: '/q' }];
     const { calls: cq2 } = await dryRun({ ...base, quality_gate: 'true' });
     ok(cq2.prompts.filter((p) => p.includes('PHASE=quality')).length === 2, 'never more than ONE extension');
+    // DECISIONS 4.63: reused REF/control legs count only when quality_reuse.py proved them valid.
+    const reuse = { quality_gate: 'true', quality_seeds: '1111,2222', quality_reuse: { prefix: 'qabhf8_old', ref_arm: 'cand', ctrl_arm: 'ctrl70' } };
+    QUALITY_SEQ = [{ cleared: true, quality: 'PASS-quality: ok', stability: 'PASS-stability: 0', legs_prefix: '/p',
+                     reuse_check: { valid: false } }];
+    const { result: ru1, calls: cru } = await dryRun({ ...base, ...reuse });
+    ok(ru1.quality_gate.cleared === false && /not proven/.test(ru1.quality_gate.quality),
+      'quality_reuse: an invalid reuse check makes the gate NOT CLEARED whatever the verdict says');
+    ok(cru.prompts.some((p) => p.includes('PHASE=quality') && p.includes('qabhf8_old') && p.includes('quality_reuse.py')),
+      'quality_reuse: the Director gets the reused prefix and the tool');
+    QUALITY_SEQ = [{ cleared: true, quality: 'PASS-quality: ok', stability: 'PASS-stability: 0', legs_prefix: '/p',
+                     reuse_check: { valid: true } }];
+    const { result: ru2 } = await dryRun({ ...base, ...reuse });
+    ok(ru2.quality_gate.cleared === true, 'quality_reuse: a valid reuse check keeps the verdict');
+    let threw = false;
+    try { await dryRun({ ...base, quality_gate: 'true', quality_reuse: { prefix: 'x', ref_arm: 'cand' } }); } catch (e) { threw = /quality_seeds/.test(String(e && e.message)); }
+    ok(threw, 'quality_reuse without explicit quality_seeds fails loudly');
     QUALITY_SEQ = [{ cleared: false, quality: 'INCONCLUSIVE-quality: the positive control was not detected', stability: 'PASS-stability: 0', legs_prefix: '/p' }];
     const { calls: cqc } = await dryRun({ ...base, quality_gate: 'true', quality_ctrl: 'ctrl70' });
     ok(cqc.prompts.filter((p) => p.includes('PHASE=quality')).length === 1,

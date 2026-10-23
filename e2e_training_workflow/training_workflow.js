@@ -58,6 +58,18 @@ const QUALITY_CTRL = A.quality_ctrl ? (String(A.quality_ctrl) === 'none' ? null 
 // pass quality_workload explicitly, and the Director says so if it is not scheduled.
 // HF's outcome-test recipe is the run's descriptor with a `_q` suffix (same recipe, LR_DECAY_ITERS = one
 // epoch of the train19k split = 296 iterations, P0-4g); Megatron's is the run's own descriptor.
+// REUSE an earlier outcome test's REF (and control) legs (review P3, DECISIONS 4.63): {prefix, ref_arm,
+// ctrl_arm}. Only the cand arm is run; scripts/quality_reuse.py links the reused legs and must prove,
+// seed by seed, that their realized argument tables equal the new cand legs' apart from the change under
+// test. The seeds are the reused test's, so quality_seeds must be given explicitly.
+const QUALITY_REUSE = (() => {
+  const r = A.quality_reuse;
+  if (!r) return null;
+  const o = typeof r === 'string' ? JSON.parse(r) : r;
+  if (!o.prefix || !o.ref_arm) throw new Error('quality_reuse needs {prefix, ref_arm[, ctrl_arm]}');
+  if (!A.quality_seeds) throw new Error('quality_reuse: pass quality_seeds = the reused test\'s seeds');
+  return o;
+})();
 const QUALITY_WORKLOAD = String(A.quality_workload ||
   ((A.stack || 'megatron') === 'hf_trl' ? String(A.workload || '').replace(/(_q)?\.env$/, '_q.env') : (A.workload || '')));
 
@@ -988,7 +1000,9 @@ const VALIDATE_SCHEMA = obj({
 // shape mismatch retries at the MODEL layer instead of arriving here as prose to be pattern-matched.
 // 'report' is deliberately absent: it returns a written report, and prose is its correct output.
 const QUALITY_SCHEMA = obj({ cleared: { type: 'boolean' }, quality: { type: 'string' },
-  stability: { type: 'string' }, legs_prefix: { type: 'string' }, notes: { type: 'string' } },
+  stability: { type: 'string' }, legs_prefix: { type: 'string' }, notes: { type: 'string' },
+  // quality_reuse.py check's JSON, verbatim, when QUALITY_REUSE was given
+  reuse_check: { type: ['object', 'null'] } },
   ['cleared', 'quality', 'stability']);
 const VERIFY_SCHEMA = obj({ pairs: { type: 'array', minItems: 1, items: obj({
   ref_dir: { type: 'string' }, cand_dir: { type: 'string' }, verdict: { type: ['object', 'null'] },
@@ -1716,11 +1730,18 @@ if (QUALITY_GATE && stackChanged) {
   const q = await safeAgentStub('training_director', 'quality',
     { ...benchInputs(curConfig, 'quality'), FINAL: fin, OVERLAY: curOverlay,
       ACCEPTED_CONFIG: qConfig, QUALITY_SEEDS, QUALITY_WORKLOAD, QUALITY_CTRL, QUALITY_STACK: STACK,
+      QUALITY_REUSE, QUALITY_REUSE_TOOL: `${WORKFLOW_DIR}/scripts/quality_reuse.py`,
       QUALITY_SCRIPT: `${WORKFLOW_DIR}/scripts/quality_ab.sh`,
       QUALITY_VERDICT: `${WORKFLOW_DIR}/scripts/quality_ab_final.py` },
     'Run the one-epoch outcome test of the final stack against REF and return the verdict of ' +
     'quality_ab_final.py VERBATIM (cleared, quality, stability). Do not reinterpret it.');
   wfReturn.quality_gate = q || { cleared: false, quality: 'not run', stability: 'not run' };
+  // Reused legs count only if the tool proved them the same recipe (fail closed).
+  if (q && QUALITY_REUSE && !(q.reuse_check && q.reuse_check.valid === true)) {
+    wfReturn.quality_gate = Object.assign({}, q, { cleared: false,
+      quality: `NOT CLEARED: the reused legs of ${QUALITY_REUSE.prefix} were not proven to train the cand's ` +
+               `recipe (quality_reuse.py check valid=${q.reuse_check && q.reuse_check.valid})` });
+  }
   // Extend only when the verdict is INCONCLUSIVE because the sample is too small -- NOT when the positive
   // control itself was not detected (more seeds of an undetected control prove nothing; review QEXT).
   if (q && /^INCONCLUSIVE-quality/.test(String(q.quality || '')) &&
