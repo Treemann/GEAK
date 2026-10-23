@@ -14,6 +14,10 @@ ok(mid_foreign([{"pids": own[:3]}] + clean[1:], 8) == [], "ranks still starting 
 ok(mid_foreign(clean[:2] + [{"pids": own + [999]}] + clean[3:], 8) == [999], "a PID that comes and goes is foreign")
 ok(mid_foreign([{"pids": own + [99]}] * 5, 8) == [], "8 ranks + the launcher's KFD handle (9 persistent) is our own job")
 ok(len(mid_foreign([{"pids": own + [99, 999]}] * 5, 8)) == 10, "a neighbour present the whole leg (10 > 8 + 1 persistent) is caught")
+# Exact mode (own host PIDs recorded per sample): our JIT build children are not foreign; a neighbour is.
+ex = [{"pids": own + [500, 501], "own_host_pids": own + [500, 501, 7]}, {"pids": own, "own_host_pids": own}]
+ok(mid_foreign(ex, 8) == [], "exact: our own short-lived children (17 KFD processes at start-up) are not foreign")
+ok(mid_foreign(ex + [{"pids": own + [999], "own_host_pids": own}], 8) == [999], "exact: a process not in our namespace is foreign")
 B = {"available": True, "pids": []}
 ok(compare(B, B, (), clean, 8)["verdict"] == "clean" and
    compare(B, B, (), clean[:2] + [{"pids": own + [999]}], 8)["verdict"] == "contaminated",

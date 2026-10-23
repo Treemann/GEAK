@@ -34,8 +34,30 @@ def kfd_pids():
     return {"available": True, "pids": sorted(set(pids))}
 
 
+def own_host_pids():
+    """HOST PIDs of every process visible in OUR pid namespace (bench_train runs in a container; rocm-smi
+    reports host PIDs). /proc/<pid>/sched's first line carries the host-namespace PID ("python3 (1472260,
+    #threads: 1)") while NSpid shows only the container's -- measured 2026-10-23."""
+    import glob
+    import re as _re
+    own = set()
+    for f in glob.glob("/proc/[0-9]*/sched"):
+        try:
+            with open(f) as fh:
+                m = _re.search(r"\((\d+),", fh.readline())
+            if m:
+                own.add(int(m.group(1)))
+        except OSError:
+            continue
+    return own
+
+
 def sample(tag: str):
+    own = own_host_pids() if tag == "mid" else set()
     s = kfd_pids()
+    if tag == "mid":
+        own |= own_host_pids()           # before AND after rocm-smi: a short-lived child of ours counts
+        s["own_host_pids"] = sorted(own)
     s["tag"] = tag
     return s
 
@@ -50,6 +72,9 @@ def mid_foreign(mid, nproc):
     whole leg is in any case usually also caught by the before/after samples."""
     if not mid:
         return []
+    # EXACT when the sampler recorded our own host PIDs: foreign = held a GPU and is not ours.
+    if all("own_host_pids" in s for s in mid):
+        return sorted({p for s in mid for p in set(s.get("pids", [])) - set(s["own_host_pids"])})
     seen = {}
     for s in mid:
         for p in set(s.get("pids", [])):

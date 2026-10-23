@@ -67,12 +67,15 @@ case "$COND" in
   # unchanged) -- the s8 for the model-matched _eps6 recipe, where s8's rmsnorm falls back on every
   # call (DECISIONS 4.55). Its manifests list `sources`, so GEAK_OVERLAY_SHA covers core.py.
   s8eps) N=8; RN_EPS=1;;
+  # s8 with the attention overlay REPLACED by the 1022 kernel (finalize_bundle_1022_attn_ck1022, cleared
+  # on the bare recipe by DECISIONS 4.45; review MEG-3 estimates +0.33% on s8). Candidate condition.
+  s8a22) N=8; AT22=1;;
   # The SECOND STACK (HF TRL, 7B): its own accepted overlays (wf_4385c413-a19, DECISIONS 4.27).
   hf1) N=1; HFSTACK=1;; hf2) N=2; HFSTACK=1;; hf3) N=3; HFSTACK=1;; hf4) N=4; HFSTACK=1;; hf5) N=5; HFSTACK=1;; hf6) N=6; HFSTACK=1;; hf7) N=7; HFSTACK=1;; hf8) N=8; HFSTACK=1;;
   # ONE overlay on the bare workload, for isolating a defect (2026-10-16 instability bisection).
   # Not a shippable condition: qkv alone is invalid (it chains after fc1) and is refused below.
   only:*) N=1; ONLY="${COND#only:}";;
-  *) echo "--cond must be one of ref,s2..s8,s8eps,hf1..hf8,only:<overlay> (got '$COND')" >&2; exit 2;;
+  *) echo "--cond must be one of ref,s2..s8,s8eps,s8a22,hf1..hf8,only:<overlay> (got '$COND')" >&2; exit 2;;
 esac
 # A condition installed on the wrong stack does not fail: Megatron targets may not resolve under HF,
 # but HF targets (transformers.*) DO resolve inside the Megatron image and are simply never called,
@@ -109,6 +112,10 @@ OVERLAYS=(
   "qkv_lnlinear_gemm|gate|$QKV_SRC|transformer_engine.pytorch.module.layernorm_linear:_LayerNormLinear|lnlinear_apply|qkv"
   "rmsnorm_bwd_fc1_fused|bundle|$RN_BUNDLE|transformer_engine_torch:rmsnorm_fwd;transformer_engine_torch:rmsnorm_bwd|rmsnorm_fwd;rmsnorm_bwd|rmsn|m_fwd.json;m_bwd.json"
 )
+if [ -n "${AT22:-}" ]; then
+  AT22_BUNDLE="$WORK_HOST/runs/finalize_bundle_1022_attn_ck1022"
+  OVERLAYS[5]="attn_fmha_ck_varlen_1022|bundle|$AT22_BUNDLE|transformer_engine.pytorch.attention.dot_product_attention.backends:FusedAttnFunc|fused_attn_apply|attn"
+fi
 if [ -n "${RN_EPS:-}" ]; then
   RN_EPS_BUNDLE="$WORK_HOST/runs/finalize_bundle_1023_rmsn_eps"
   RN_SOURCES="core.py,kernel_src/kernel.py,kernel_src/rmsnorm_fwd.py,kernel_src/rmsnorm_bwd.py,kernel_src/rmsnorm_cpp_autograd.py,kernel_src/__init__.py"
