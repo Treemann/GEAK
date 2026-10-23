@@ -84,7 +84,13 @@ def main():
     # Environment variables are captured by a different path (the probe reads os.environ), so they
     # are legitimately in IMPL_KEYS without appearing in the argv lists.
     ENV_SOURCED = {"GEAK_OVERLAY", "GEAK_OVERLAY_SHA"}
-    classified = set(impl) - ENV_SOURCED
+    # DERIVED keys: written from the realized state, not copied from one argv token (v6:
+    # `rope-fusion` is "false" iff --no-rope-fusion is present). Each must really be written.
+    DERIVED = {"rope-fusion"}
+    src_probe = open(probe).read()
+    for k in DERIVED:
+        ok(f'out["{k}"]' in src_probe, f"derived implementation key `{k}` is written by train_probe")
+    classified = set(impl) - ENV_SOURCED - DERIVED
 
     orphans = sorted(classified - captured)
     ok(not orphans,
@@ -112,8 +118,14 @@ def main():
     # covering different keys -- the exact confusion `snapshot_keys` exists to prevent.
     src = open(probe).read()
     m = re.search(r'out\["snapshot_keys"\]\s*=\s*"(v\d+)"', src)
-    ok(m is not None and m.group(1) == "v5",
-       f"snapshot_keys is stamped v5 at the capture site (found {m.group(1) if m else 'nothing'})")
+    ok(m is not None and m.group(1) == "v6",
+       f"snapshot_keys is stamped v6 at the capture site (found {m.group(1) if m else 'nothing'})")
+    # v6 (DECISIONS 4.55): the RMSNorm epsilon is WORKLOAD identity; RoPE / CE fusion are implementation.
+    ok("--norm-epsilon" in pair and "norm-epsilon" not in set(impl), "`norm-epsilon` is captured as workload identity")
+    ok("--no-rope-fusion" not in flag and "rope-fusion" in set(impl),
+       "RoPE fusion left the workload half: recorded as implementation key `rope-fusion`")
+    for k in ("cross-entropy-loss-fusion", "cross-entropy-fusion-impl"):
+        ok(k in captured and k in set(impl), f"`{k}` is captured AND classed as implementation")
     summ = open(os.path.join(SCRIPTS, "probe_summarize.py")).read()
     sys.path.insert(0, SCRIPTS)
     from probe_summarize import snapshot_schema
@@ -184,6 +196,28 @@ def main():
     ok(any(isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "IMPL_KEYS"
            for n in ast.parse(open(os.path.join(SCRIPTS, "probe_summarize.py")).read()).body),
        "IMPL_KEYS is defined at MODULE level in probe_summarize, where it can be imported")
+
+    # F8 (v6): the overlay manifest NAME is a label -- renaming it must not move impl_digest when the
+    # content hash is equal; a v5 summary keeps its historical digest (schema-aware).
+    import json, tempfile, shutil
+    from probe_summarize import summarize
+    root = tempfile.mkdtemp(prefix="f8_")
+    try:
+        def leg(name, schema, label):
+            d = os.path.join(root, name); os.makedirs(d)
+            cfg = {"seq-length": "4096", "snapshot_keys": schema, "GEAK_OVERLAY": label, "GEAK_OVERLAY_SHA": "abc"}
+            with open(os.path.join(d, "probe_rank0.jsonl"), "w") as f:
+                f.write(json.dumps({"record": "header", "rank": 0, "world_size": 1, "argv_hash": "x", "config": cfg}) + "\n")
+                for i in range(30):
+                    f.write(json.dumps({"record": "step", "step": i + 1, "dur_ms": 1000.0, "useful_tokens": 8000,
+                                        "total_tokens": 8192, "peak_reserved_mb": 1}) + "\n")
+            return summarize(d)["impl_digest"]
+        ok(leg("a6", "v6", "m_base.json") == leg("b6", "v6", "m_other.json"),
+           "v6: renaming the overlay manifest leaves impl_digest unchanged (content hash decides)")
+        ok(leg("a5", "v5", "m_base.json") != leg("b5", "v5", "m_other.json"),
+           "v5 summaries keep their historical digest (the label still counted there)")
+    finally:
+        shutil.rmtree(root)
 
     print()
     if fails:

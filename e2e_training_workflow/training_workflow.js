@@ -494,7 +494,8 @@ function comparable(ref, cand, allowedImpl) {
     // flags, which v4 sidecars never recorded (the header keeps argv_hash, not argv).
     const RECAPTURE = { 3: 'dropout, lr, seed, architecture',
                         4: 'attention-backend, comm-overlap and recompute flags',
-                        5: 'lr-decay-iters, per-token loss, bf16 grad reduction and the DDP flags' };
+                        5: 'lr-decay-iters, per-token loss, bf16 grad reduction and the DDP flags',
+                        6: 'the RMSNorm epsilon, RoPE fusion (moved to implementation) and CE fusion' };
     const crossed = Object.keys(RECAPTURE).map(Number)
       .filter((b) => Math.min(rs, cs) < b && b <= Math.max(rs, cs));
     return { ok: false, stale: true,

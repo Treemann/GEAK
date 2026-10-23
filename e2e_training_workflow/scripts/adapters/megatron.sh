@@ -30,8 +30,56 @@ adapter_capabilities() {
 CAP
 }
 
+# RMSNorm epsilon preflight (DECISIONS 4.55). Megatron never reads the epsilon from the checkpoint
+# (common.pt args carry norm_epsilon None) and defaults to 1e-5; the HF config next to the tokenizer
+# says what the model was trained with (Qwen2.5: 1e-6). A descriptor that SETS NORM_EPS must match it
+# (refuse otherwise: that would be a recipe nobody chose). A descriptor that does not set it keeps
+# Megatron's default for byte-identity with the legs cleared under it, and the mismatch is recorded
+# in $OUT_DIR/recipe_warnings.json and printed, never silent.
+adapter_preflight() {
+  local cfg="$TOKENIZER_DIR/config.json" want
+  [ -r "$cfg" ] || return 0
+  want=$(python3 -c "import json,sys; v=json.load(open(sys.argv[1])).get('rms_norm_eps'); print('' if v is None else repr(float(v)))" "$cfg" 2>/dev/null) || return 0
+  [ -n "$want" ] || return 0
+  local got="${NORM_EPS:-1e-05}" arm="" prev=""
+  # A per-leg --norm-epsilon in EXTRA_TRAIN_ARGS (argparse: last wins) is a deliberate experiment ARM
+  # (e.g. an outcome test of the epsilon itself): recorded and printed, never refused. Only the
+  # DESCRIPTOR's NORM_EPS -- the recipe -- must agree with the model.
+  for t in $EXTRA_TRAIN_ARGS; do
+    [ "$prev" = "--norm-epsilon" ] && arm="$t"
+    case "$t" in --norm-epsilon=*) arm="${t#--norm-epsilon=}";; esac
+    prev="$t"
+  done
+  if [ -n "$arm" ]; then
+    got="$arm"
+    if ! python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) == float(sys.argv[2]) else 1)" "$got" "$want"; then
+      echo ">>> RECIPE WARNING: this leg's --norm-epsilon $arm (extra train args) differs from the model's rms_norm_eps $want: an experiment arm, recorded in recipe_warnings.json" >&2
+      printf '{"norm_epsilon": {"run": %s, "model_config": %s, "source": "%s", "note": "per-leg --norm-epsilon in extra train args (experiment arm)"}}\n' "$arm" "$want" "$cfg" > "$OUT_DIR/recipe_warnings.json"
+    fi
+    return 0
+  fi
+  if python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) == float(sys.argv[2]) else 1)" "$got" "$want"; then
+    return 0
+  fi
+  if [ -n "${NORM_EPS:-}" ]; then
+    echo "!!! NORM_EPS=$NORM_EPS but $cfg has rms_norm_eps $want: refusing a recipe whose epsilon matches neither the model nor Megatron's default by accident" >&2
+    return 1
+  fi
+  echo ">>> RECIPE WARNING: Megatron runs RMSNorm eps 1e-05 (default; descriptor sets no NORM_EPS) but the model was trained with rms_norm_eps $want ($cfg). Kept for identity with cleared legs; see DECISIONS 4.55 and the _eps6 descriptor." >&2
+  printf '{"norm_epsilon": {"run": 1e-05, "model_config": %s, "source": "%s", "note": "descriptor sets no NORM_EPS; Megatron default"}}\n' "$want" "$cfg" > "$OUT_DIR/recipe_warnings.json"
+}
+
 adapter_launch() {
   mkdir -p "$OUT_DIR" "$PROBE_DIR"
+  # RoPE fusion is a Class-A IMPLEMENTATION lever (same rotation, TE/apex fused kernel). Megatron
+  # only has the negative flag, so a lever cannot ADD it: `--rope-fusion` in EXTRA_TRAIN_ARGS is a
+  # GEAK pseudo-flag, stripped here, that drops the recipe's --no-rope-fusion. The probe records the
+  # realized state as `rope-fusion` (identity v6, implementation half).
+  local rope_flag="--no-rope-fusion" extra=""
+  for t in $EXTRA_TRAIN_ARGS; do
+    if [ "$t" = "--rope-fusion" ]; then rope_flag=""; else extra="$extra $t"; fi
+  done
+  EXTRA_TRAIN_ARGS="${extra# }"
   # shellcheck disable=SC2086
   env $EXTRA_ENV \
     PYTHONPATH="$MLM_DIR${PYTHONPATH:+:$PYTHONPATH}" \
@@ -57,7 +105,7 @@ adapter_launch() {
       --lr-warmup-iters "${LR_WARMUP_ITERS:-0}" ${LR_DECAY_ITERS:+--lr-decay-iters "$LR_DECAY_ITERS"} \
       ${DDP_EXTRA_ARGS:-} \
       --weight-decay 0.1 --clip-grad 1.0 --adam-beta1 0.9 --adam-beta2 0.95 \
-      --bf16 --use-distributed-optimizer --no-rope-fusion \
+      --bf16 --use-distributed-optimizer $rope_flag ${NORM_EPS:+--norm-epsilon "$NORM_EPS"} \
       --log-interval 1 --log-throughput \
       --eval-iters 0 --eval-interval 1000000 --save-interval 1000000 \
       --seed "${SEED:-1234}" --distributed-timeout-minutes "${DIST_TIMEOUT_MIN:-10}" \

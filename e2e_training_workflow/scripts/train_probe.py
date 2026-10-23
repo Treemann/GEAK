@@ -383,12 +383,19 @@ _IDENTITY_PAIR_KEYS = (
     "--load", "--tokenizer-model", "--train-data-path",
     "--num-layers", "--hidden-size", "--ffn-hidden-size", "--num-attention-heads",
     "--num-query-groups", "--kv-channels", "--max-position-embeddings", "--rotary-base",
+    # v6, WORKLOAD identity: the RMSNorm epsilon. Megatron does NOT take it from the checkpoint
+    # (common.pt args carry norm_epsilon None) and defaults to 1e-5, while Qwen2.5 was trained with
+    # rms_norm_eps 1e-6: every Megatron leg before v6 ran 1e-5 and no snapshot said so (review
+    # 2026-10-23, DECISIONS 4.55). Recorded ALWAYS on Megatron -- the realized default when absent.
+    "--norm-epsilon",
+    # v6, implementation half: which cross-entropy kernel computes the (same) loss.
+    "--cross-entropy-fusion-impl",
 )
 # Presence-only flags (store_true). The old scan read `--flag value` pairs ONLY, so none of these
 # could ever be captured -- a leg run with --bf16 and one without were the same workload to the gate.
 _IDENTITY_FLAG_KEYS = (
     "--bf16", "--fp16", "--sft", "--finetune", "--swiglu", "--disable-bias-linear",
-    "--add-qkv-bias", "--no-rope-fusion", "--untie-embeddings-and-output-weights",
+    "--add-qkv-bias", "--untie-embeddings-and-output-weights",
     "--group-query-attention", "--sequence-parallel", "--use-flash-attn",
     # comm overlap: implementation, see the note above
     "--overlap-grad-reduce", "--overlap-param-gather",
@@ -407,6 +414,8 @@ _IDENTITY_FLAG_KEYS = (
     # change, like --master-weights. --calculate-per-token-loss changes the loss normalization
     # (pack_gate.py passes it).
     "--grad-reduce-in-bf16", "--calculate-per-token-loss",
+    # v6, implementation half: the fused cross-entropy path (same loss, different kernel).
+    "--cross-entropy-loss-fusion",
 )
 
 
@@ -427,6 +436,9 @@ _KNOBS = (
     "GEAK_RMSN_BWD_ROWS", "GEAK_RMSN_BWD_RPWG", "GEAK_RMSN_FWD_CFG", "GEAK_RMSN_XFLAGS", "GEAK_RMSN_XNAME",
     "ROPE_BT", "ROPE_CPP", "ROPE_FAST", "ROPE_FAST_LAUNCH", "ROPE_HC", "ROPE_NW",
     "SWIGLU_EXTRA_FLAGS", "GEAK_ATTN_AMAX",
+    # Not an overlay knob: apex's fused RoPE picks the aiter kernel ("lower precision") unless this is
+    # 0. With the v6 rope-fusion lever it selects WHICH fused kernel runs (DECISIONS 4.55).
+    "USE_ROCM_AITER_ROPE_BACKEND",
 )
 
 
@@ -453,6 +465,15 @@ def _config_snapshot():
     for k in _IDENTITY_FLAG_KEYS:
         if k in argv:
             out[k.lstrip("-")] = "true"
+    # v6. Megatron-only realized values that an ABSENT flag still decides (an HF leg passes
+    # --geak-stack; its norm epsilon and RoPE come from the checkpoint's own modeling code).
+    if "--geak-stack" not in argv and not any(t.startswith("--geak-stack=") for t in argv):
+        # RoPE fusion is ON unless --no-rope-fusion: implementation (which kernel applies the same
+        # rotation), so it lives in the implementation half as `rope-fusion`. Until v5 the flag was
+        # captured as `no-rope-fusion` in the WORKLOAD half, which would have refused a fused-RoPE
+        # lever as 'a different workload' (DECISIONS 4.55).
+        out["rope-fusion"] = "false" if "--no-rope-fusion" in argv else "true"
+        out.setdefault("norm-epsilon", "1e-05")       # Megatron's default (TransformerConfig)
     # Version the SNAPSHOT at the capture site, not the summary. A v2 sidecar physically does not
     # contain attention_dropout, so re-summarising it cannot recover the value: stamping a newer
     # schema onto it in probe_summarize would produce a digest that CLAIMS to cover dropout and does
@@ -473,7 +494,11 @@ def _config_snapshot():
     # the same run digest differently. The header keeps argv_hash, not argv, so a v4 sidecar cannot
     # be re-captured: a v4-vs-v5 pair must be RE-MEASURED, exactly like v2-vs-v3. The gate and L1
     # both refuse such a pair and say so (training_workflow.js comparable, trajectory_gate verdict).
-    out["snapshot_keys"] = "v5"
+    # v6 (2026-10-23) is NOT free either: norm-epsilon and rope-fusion are recorded on EVERY Megatron
+    # leg (no-rope-fusion leaves the workload half), so a v5 and a v6 summary of one run digest
+    # differently and a v5-vs-v6 pair must be RE-MEASURED. v6 also drops the overlay manifest LABEL
+    # (GEAK_OVERLAY) from impl_digest -- probe_summarize, schema-aware (audit F8).
+    out["snapshot_keys"] = "v6"
     # Kernel-selecting env knobs the overlays read (FC1_BWD_MODE, QKV_*, KCK_*, ...): legs running
     # serial vs overlap schedules shared BOTH digests with a 0.64% throughput gap (audit OVL-2).
     # Captured only when SET, as `env:<NAME>` (implementation half), so default legs -- every gated

@@ -437,7 +437,7 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
     # or moved is in IMPL_KEYS, which ident() excludes (v4 did move impl_digest, DECISIONS 4.10b).
     rk, ck = snapshot_schema(rs.get("config")), snapshot_schema(cs.get("config"))
     if rk != ck and max(rk, ck) >= 5:
-        return {"pass": False, "reason": f"identity snapshot v{rk} vs v{ck}: v5 captures keys the older "
+        return {"pass": False, "reason": f"identity snapshot v{rk} vs v{ck}: v{max(rk, ck)} captures keys the older "
                                          "sidecar never recorded; RE-MEASURE the older leg, "
                                          "re-summarising cannot recover them", "checks": {}}
     if ident(rs.get("config")) != ident(cs.get("config")):

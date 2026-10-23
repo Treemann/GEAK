@@ -140,11 +140,17 @@ export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/work/triton_cache}"
 mkdir -p "$TRITON_CACHE_DIR" 2>/dev/null || true
 export MLM_DIR MODEL_CKPT TOKENIZER_DIR DATA_PATH OUT_DIR PROBE_DIR NPROC ITERS MBS GBS SEQ \
        ARCH_ARGS ROPE_BASE EXTRA_TRAIN_ARGS EXTRA_ENV GEAK_SCRIPTS PROFILE_STEPS PROFILE_RANKS \
-       LR MIN_LR LR_DECAY_STYLE LR_WARMUP_ITERS LR_DECAY_ITERS DDP_EXTRA_ARGS HF_FSDP HF_TRAIN_METRICS
+       LR MIN_LR LR_DECAY_STYLE LR_WARMUP_ITERS LR_DECAY_ITERS DDP_EXTRA_ARGS HF_FSDP HF_TRAIN_METRICS \
+       NORM_EPS
 
 # shellcheck disable=SC1090
 source "$GEAK_SCRIPTS/adapters/${STACK}.sh"
 adapter_capabilities > "$OUT_DIR/capabilities.json"
+# Optional per-stack recipe checks that must hold BEFORE any GPU time is spent (Megatron: the RMSNorm
+# epsilon vs the model's config, DECISIONS 4.55). Non-zero = the descriptor asks for a recipe nobody chose.
+if declare -F adapter_preflight >/dev/null; then
+  adapter_preflight || { echo "!!! adapter preflight refused this configuration" >&2; exit 3; }
+fi
 
 echo ">>> bench_train: stack=$STACK workload=$WORKLOAD_NAME nproc=$NPROC iters=$ITERS mbs=$MBS gbs=$GBS seq=$SEQ"
 echo ">>> out=$OUT_DIR"

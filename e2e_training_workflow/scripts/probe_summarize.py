@@ -231,7 +231,14 @@ IMPL_KEYS = ("attention-backend", "GEAK_OVERLAY", "GEAK_OVERLAY_SHA",
              # host-side GC schedule: when Python collects, not what is computed
              "manual-gc", "manual-gc-interval",
              # HF: TRL's per-micro-batch metric gathers (logging work, not training math)
-             "hf-train-metrics")
+             "hf-train-metrics",
+             # v6: which kernel applies RoPE / computes cross-entropy -- same math, other kernel.
+             # New key NAMES: no pre-v6 sidecar contains them, so listing them moves no old digest.
+             "rope-fusion", "cross-entropy-loss-fusion", "cross-entropy-fusion-impl")
+# Implementation keys that are LABELS, not implementation: recorded, never digested from v6 on.
+# GEAK_OVERLAY is the manifest file NAMES; GEAK_OVERLAY_SHA is the content. Renaming a manifest moved
+# impl_digest with identical bytes running (audit F8). Schema-aware so a v5 summary keeps its digest.
+IMPL_LABEL_KEYS_FROM_V6 = ("GEAK_OVERLAY",)
 
 
 def _wall_span_ms(steps, i0, steady):
@@ -359,7 +366,9 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
     identity = {k: v for k, v in cfg.items() if k not in impl and k not in META_KEYS}
     cfg_digest = hashlib.sha256(
         json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]
-    impl_digest = hashlib.sha256(json.dumps(impl, sort_keys=True).encode()).hexdigest()[:16]
+    impl_digested = ({k: v for k, v in impl.items() if k not in IMPL_LABEL_KEYS_FROM_V6}
+                     if snapshot_schema(cfg) >= 6 else impl)
+    impl_digest = hashlib.sha256(json.dumps(impl_digested, sort_keys=True).encode()).hexdigest()[:16]
 
     meds = [v["median_ms"] for v in per_rank.values()]
     slowest = max(per_rank.items(), key=lambda kv: kv[1]["median_ms"])[0]

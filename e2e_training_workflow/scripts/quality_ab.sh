@@ -71,7 +71,7 @@ for SEED in ${SEEDS//,/ }; do
     EXTRA=""; TARGS="--seed $SEED $EVAL_ARGS"
     case "$ARM" in
       ref) ;;
-      s[2-8]) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$ARM" --stack "$STACK" --out "$OUT_HOST" --install "$OVL_HOST")" ;;
+      s[2-8]|s8eps) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$ARM" --stack "$STACK" --out "$OUT_HOST" --install "$OVL_HOST")" ;;
       # The accepted stack with every side stream disabled (fc1/qkv wgrad overlap -> serial, lm-head
       # single stream): same kernel bytes, single-stream scheduling. Tests the side-stream race
       # hypothesis for the late-training instability (2026-10-16).

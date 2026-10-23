@@ -80,6 +80,39 @@ ok("--ddp-average-in-collective" not in argv, "and NOT the DDP lever unless aske
 rc, argv, err = launch({"DDP_EXTRA_ARGS": "--ddp-average-in-collective"})
 ok(rc == 0 and argv.count("--ddp-average-in-collective") == 1, "DDP_EXTRA_ARGS reaches the argv once")
 
+# ---- v6 recipe knobs (DECISIONS 4.55) ----------------------------------------------------------------
+rc, argv, err = launch({"NORM_EPS": "1e-6"})
+ok(rc == 0 and flag(argv, "--norm-epsilon") == "1e-6", "NORM_EPS reaches the argv as --norm-epsilon")
+rc, argv, err = launch({"EXTRA_TRAIN_ARGS": "--rope-fusion --manual-gc"})
+ok(rc == 0 and "--no-rope-fusion" not in argv and "--rope-fusion" not in argv and "--manual-gc" in argv,
+   "the --rope-fusion pseudo-flag drops --no-rope-fusion, is itself stripped, and keeps the other extras")
+
+
+def preflight(norm_eps, model_eps, extra=""):
+    with tempfile.TemporaryDirectory() as t:
+        os.makedirs(os.path.join(t, "tok")); os.makedirs(os.path.join(t, "o"))
+        if model_eps is not None:
+            open(os.path.join(t, "tok", "config.json"), "w").write('{"rms_norm_eps": %s}' % model_eps)
+        env = f"TOKENIZER_DIR={t}/tok OUT_DIR={t}/o EXTRA_TRAIN_ARGS='{extra}'" + (f" NORM_EPS={norm_eps}" if norm_eps else "")
+        r = subprocess.run(["bash", "-c", f"set -euo pipefail; export {env}; source {ADAPTER}; adapter_preflight"],
+                           capture_output=True, text=True)
+        w = os.path.join(t, "o", "recipe_warnings.json")
+        return r.returncode, r.stderr, open(w).read() if os.path.exists(w) else None
+
+
+rc, err, w = preflight("1e-6", "1e-06")
+ok(rc == 0 and w is None, "preflight: NORM_EPS matching the model config passes silently")
+rc, err, w = preflight("1e-5", "1e-06")
+ok(rc != 0 and "refusing" in err, "preflight: a NORM_EPS that disagrees with the model config is REFUSED")
+rc, err, w = preflight(None, "1e-06")
+ok(rc == 0 and "RECIPE WARNING" in err and w and '"model_config": 1e-06' in w,
+   "preflight: no NORM_EPS on a 1e-6 model runs (identity with cleared legs) but warns and records it")
+rc, err, w = preflight("1e-6", "1e-06", extra="--seed 1 --norm-epsilon 1e-5")
+ok(rc == 0 and "experiment arm" in err and w and '"run": 1e-5' in w,
+   "preflight: a per-leg --norm-epsilon arm is allowed, warned and recorded (the descriptor stays the recipe)")
+rc, err, w = preflight(None, None)
+ok(rc == 0 and w is None, "preflight: no config.json -> nothing to check")
+
 # ---- the HF TRL adapter: same contract -------------------------------------------------------------
 HF = os.environ.get("GEAK_HF_ADAPTER_UNDER_TEST", os.path.join(HERE, "..", "adapters", "hf_trl.sh"))
 rc, argv, err = launch({}, adapter=HF, gbs=64)
