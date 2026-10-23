@@ -2026,3 +2026,24 @@ Per the pre-registered rule, eps 1e-6 does NOT become the recommended recipe: pr
 trains to a worse and less stable model over the epoch at this LR schedule; one plausible mechanism is
 that a smaller eps raises rstd -- and with it dx -- for low-norm rows. Not investigated further:
 the measurement answers the recipe question.
+
+## P0-4m PRE-REGISTRATION (2026-10-23, before any P0-4m leg): outcome test of token-balanced rank assignment on hf8
+
+The lever (`--hf-balance-tokens on`, DECISIONS 4.61) keeps every optimizer step's sample SET and only moves
+samples between ranks / micro-batch slots; under transformers' global loss normalization
+(`average_tokens_across_devices` true, now explicit and in workload identity) the step gradient is the same
+sum, changed only by floating-point summation order. 30-step gates: +14.7..+16.9% paired; step-1 loss
+identical; L1 PASS on bare (deterministic stack) and on hf8 rep 2, early-sign FAIL on hf8 rep 1, inside
+hf8's own run-to-run nondeterminism (its off-vs-off null pair shows the same one-sided pattern). Per 4.23 a
+change to a cleared stack still needs the outcome test.
+* cand = `stack_overlay_env.sh --cond hf8 --stack hf_trl` + `--hf-balance-tokens on` (the balance
+  algorithm as committed when the legs launch), workload `qwen2_5_math_7b_hf_cosine_zero2_nm_q.env`,
+  296 iterations, seeds 1111, 2222, 3333, 4444, 5555 (P0-4k's).
+* BASE = P0-4k's hf8 legs (`runs/qabhf8_1020_022718_cand_seed*`, same overlay bytes, same descriptor and
+  data, hf_sft training path unchanged since -- the only later edit before today was capture-only),
+  symlinked into the new prefix as arm `hf8`; control = P0-4k's `ctrl70` legs, symlinked likewise. This
+  reuse is the P3 item "reuse HF QualityGate ref/ctrl70 legs"; it puts cross-session nondeterminism into
+  d, which can only make the test harder to pass.
+* `quality_ab_final.py <prefix> --base hf8 --cand cand --ctrl ctrl70` (rule noninf). CLEARED iff
+  PASS-quality and PASS-stability. If INCONCLUSIVE: one extension, seeds 6666, 7777, 8888, 9999, 1212,
+  with fresh hf8 and cand arms.
