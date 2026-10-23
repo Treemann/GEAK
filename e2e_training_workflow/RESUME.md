@@ -250,7 +250,9 @@ PermissionError). OPEN, by priority:
   holdout on a one-ulp rounding flip (frozen rule = FAIL; not a defect; proposal: ulp floor for ~0-error labels).
   G5 DONE (4.50: main_grad accumulation correct on fc1/fc2op/qkv/lmhead; contract checks recommended for future
   GEMM oracles). G8 (4.49): the HF attention overlay FAILS the paired-dq rule (+1.0e-2) while its stacks are
-  outcome-cleared -- FLAGGED for the owner, not un-cleared. Still open: HF attention oracle has the same dq blind band with no paired
+  outcome-cleared -- owner decided (4.51): cross-family rule; validated (4.53): it passes at L14/L27 and fails
+  only at the near-one-hot layer 0 -> stays cleared, known deviation narrowed to that regime. 4.52 (1-ulp rule)
+  validated: qkv/rmsnorm holdouts pass under the new oracle rules, every control still fails. Still open: HF attention oracle has the same dq blind band with no paired
   check (G8); training-path fp32 main_grad wgrad of the GEMM overlays is never exercised by a voting gate (G5);
   G7 DONE (4.48: kernel_swap floor 0.25%, 2.0% only with --l0-strictly-better); the 28 frozen template oracles keep the
   missing-output hole (re-generate when a task is reused).
