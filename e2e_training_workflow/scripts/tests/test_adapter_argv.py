@@ -103,10 +103,11 @@ def preflight(norm_eps, model_eps, extra=""):
 rc, err, w = preflight("1e-6", "1e-06")
 ok(rc == 0 and w is None, "preflight: NORM_EPS matching the model config passes silently")
 rc, err, w = preflight("1e-5", "1e-06")
-ok(rc != 0 and "refusing" in err, "preflight: a NORM_EPS that disagrees with the model config is REFUSED")
+ok(rc == 0 and "RECIPE NOTE" in err and w and '"note": "descriptor NORM_EPS"' in w,
+   "preflight: a descriptor eps differing from the model is a recipe CHOICE (P0-4l): runs, printed, recorded")
 rc, err, w = preflight(None, "1e-06")
-ok(rc == 0 and "RECIPE WARNING" in err and w and '"model_config": 1e-06' in w,
-   "preflight: no NORM_EPS on a 1e-6 model runs (identity with cleared legs) but warns and records it")
+ok(rc == 0 and "RECIPE NOTE" in err and w and '"model_config": 1e-06' in w and "Megatron default" in w,
+   "preflight: no NORM_EPS on a 1e-6 model runs Megatron's 1e-5 and records it")
 rc, err, w = preflight("1e-6", "1e-06", extra="--seed 1 --norm-epsilon 1e-5")
 ok(rc == 0 and "experiment arm" in err and w and '"run": 1e-5' in w,
    "preflight: a per-leg --norm-epsilon arm is allowed, warned and recorded (the descriptor stays the recipe)")

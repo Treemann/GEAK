@@ -2002,3 +2002,27 @@ envelope widened; L0 at eps 1e-6 PASS, L1 overlay PASS, throughput +0.34/+0.31% 
   recommendation revisited, not silently kept.
 * No positive control arm: the Megatron yardstick (+0.0206 for the x0.7 schedule, P0-4d) is fixed.
 * If Q1 is INCONCLUSIVE: one pre-registered extension, seeds 6678, 7789, 8890, 9901, 1012.
+
+### P0-4l RESULT (2026-10-23): s8eps CLEARED on eps 1e-6, but the eps 1e-6 recipe itself is NOT recommended
+
+Legs: `runs/qabeps6_1023_073707_*` (15 legs, 07:37-12:02, all rc 0). Per-arm held-out loss by seed (1123, 2234, 3345, 4456, 5567):
+* ref (bare, eps 1e-6): 1.300942 / 1.297982 / 1.303304 / 1.307243 / 1.302431
+* s8eps (eps 1e-6):     1.298323 / 1.300178 / 1.304090 / 1.297119 / 1.296110
+* cand (bare, eps 1e-5): 1.294472 / 1.295910 / 1.299808 / 1.295370 / 1.292632
+
+**Q1 (gate): s8eps vs ref — CLEARED.** d −0.00262 / +0.00220 / +0.00079 / −0.01012 / −0.00632, mean −0.00322,
+upper 95% +0.00162 ≤ 0.00515. Stability 0 severe, 0 catastrophic (worst max10 0.242 at seed 3345, just
+under the 0.25 severe line). All 8 overlays engaged in training on 8/8 ranks; the only fallbacks are the
+end-of-training eval pass (`no_grad`, `dropout_p0`, `not_training`); rmsnorm fallback 0.
+
+**Q2 (report): eps 1e-6 vs eps 1e-5 — FAILS non-inferiority.** d = held-out(1e-6) − held-out(1e-5) =
++0.00647 / +0.00207 / +0.00350 / +0.01187 / +0.00980, mean **+0.00674**, t 3.65 (5/5 positive), upper 95%
++0.01068 > 0.00515. Stability: the bare eps-1e-6 leg of seed 4456 had a CATASTROPHIC late episode (max10
+1.046 around step 328; progressive-validation loss 1.764 against 1.453 for eps 1e-5). Without that seed
+the mean is still +0.0055. s8eps against eps 1e-5 is worse on 5/5 seeds as well (+0.0017..+0.0043).
+Per the pre-registered rule, eps 1e-6 does NOT become the recommended recipe: production stays
+`_cosine_avg` (eps 1e-5) and its s8 bundle stays the deliverable. The step-1 loss IS lower with 1e-6
+(2.66771 vs 2.66823 on the throughput legs), so matching pretraining helps the first forward and still
+trains to a worse and less stable model over the epoch at this LR schedule; one plausible mechanism is
+that a smaller eps raises rstd -- and with it dx -- for low-norm rows. Not investigated further:
+the measurement answers the recipe question.

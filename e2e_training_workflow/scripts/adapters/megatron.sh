@@ -32,10 +32,10 @@ CAP
 
 # RMSNorm epsilon preflight (DECISIONS 4.55). Megatron never reads the epsilon from the checkpoint
 # (common.pt args carry norm_epsilon None) and defaults to 1e-5; the HF config next to the tokenizer
-# says what the model was trained with (Qwen2.5: 1e-6). A descriptor that SETS NORM_EPS must match it
-# (refuse otherwise: that would be a recipe nobody chose). A descriptor that does not set it keeps
-# Megatron's default for byte-identity with the legs cleared under it, and the mismatch is recorded
-# in $OUT_DIR/recipe_warnings.json and printed, never silent.
+# says what the model was pretrained with (Qwen2.5: 1e-6). The two are DIFFERENT RECIPES and the choice
+# is measured, not assumed: P0-4l found the model-matched 1e-6 WORSE on held-out loss (+0.0067, 5/5
+# seeds) and less stable, so the production recipe keeps 1e-5. This check therefore never refuses: a
+# mismatch is printed and recorded in $OUT_DIR/recipe_warnings.json so no leg runs it silently.
 adapter_preflight() {
   local cfg="$TOKENIZER_DIR/config.json" want
   [ -r "$cfg" ] || return 0
@@ -43,8 +43,7 @@ adapter_preflight() {
   [ -n "$want" ] || return 0
   local got="${NORM_EPS:-1e-05}" arm="" prev=""
   # A per-leg --norm-epsilon in EXTRA_TRAIN_ARGS (argparse: last wins) is a deliberate experiment ARM
-  # (e.g. an outcome test of the epsilon itself): recorded and printed, never refused. Only the
-  # DESCRIPTOR's NORM_EPS -- the recipe -- must agree with the model.
+  # (e.g. an outcome test of the epsilon itself): recorded and printed under its own note.
   for t in $EXTRA_TRAIN_ARGS; do
     [ "$prev" = "--norm-epsilon" ] && arm="$t"
     case "$t" in --norm-epsilon=*) arm="${t#--norm-epsilon=}";; esac
@@ -61,12 +60,10 @@ adapter_preflight() {
   if python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) == float(sys.argv[2]) else 1)" "$got" "$want"; then
     return 0
   fi
-  if [ -n "${NORM_EPS:-}" ]; then
-    echo "!!! NORM_EPS=$NORM_EPS but $cfg has rms_norm_eps $want: refusing a recipe whose epsilon matches neither the model nor Megatron's default by accident" >&2
-    return 1
-  fi
-  echo ">>> RECIPE WARNING: Megatron runs RMSNorm eps 1e-05 (default; descriptor sets no NORM_EPS) but the model was trained with rms_norm_eps $want ($cfg). Kept for identity with cleared legs; see DECISIONS 4.55 and the _eps6 descriptor." >&2
-  printf '{"norm_epsilon": {"run": 1e-05, "model_config": %s, "source": "%s", "note": "descriptor sets no NORM_EPS; Megatron default"}}\n' "$want" "$cfg" > "$OUT_DIR/recipe_warnings.json"
+  local src="Megatron default (descriptor sets no NORM_EPS)"
+  [ -n "${NORM_EPS:-}" ] && src="descriptor NORM_EPS"
+  echo ">>> RECIPE NOTE: Megatron runs RMSNorm eps $got ($src) while the model's config says rms_norm_eps $want ($cfg). Deliberate for the production recipe: 1e-6 measured worse (P0-4l, DECISIONS 4.55)." >&2
+  printf '{"norm_epsilon": {"run": %s, "model_config": %s, "source": "%s", "note": "%s"}}\n' "$got" "$want" "$cfg" "$src" > "$OUT_DIR/recipe_warnings.json"
 }
 
 adapter_launch() {
