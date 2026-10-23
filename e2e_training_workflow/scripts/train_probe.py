@@ -83,7 +83,7 @@ class _Probe:
     # Isolated 300-1000 ms steps cost 1-3% of wall time (DECISIONS 4.41). Step time is synchronized
     # across ranks, so the step record alone cannot say WHICH rank stalled or WHY. These per-rank,
     # per-step facts can: Python GC time per generation (gc.callbacks), host time inside the batch
-    # fetch, caching-allocator retries / segment (de)allocations, and host RSS (which also answers
+    # SITE (`batch_site_ms`, see install_megatron -- GPU wait as much as fetch), caching-allocator retries / segment (de)allocations, and host RSS (which also answers
     # whether --manual-gc-interval 0 grows host memory over an epoch). Never enters a digest.
     def _host_init(self):
         self._gc = {"ms": 0.0, "n": [0, 0, 0]}
@@ -108,7 +108,7 @@ class _Probe:
 
     def _host_record(self):
         h = {"gc_ms": round(self._gc["ms"], 2), "gc_n": list(self._gc["n"]),
-             "batch_ms": round(self._batch_ms, 2)}
+             "batch_site_ms": round(self._batch_ms, 2)}
         try:
             with open("/proc/self/statm") as f:
                 h["rss_mb"] = round(int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 2**20, 1)
@@ -518,6 +518,10 @@ def install_megatron():
     _orig_get_batch = _tu.get_batch_on_this_tp_rank
 
     def _probed_get_batch(*a, **kw):
+        # Host time inside get_batch_on_this_tp_rank. NOT the data-loader cost: the site ends with a
+        # stream-ordered H2D copy (and a TP broadcast), which blocks until the GPU has drained the
+        # queued work of the previous step. A long value here is a GPU-side stall as often as a slow
+        # fetch; it was named batch_ms until 2026-10-23 and read as "fetch" (DECISIONS 4.41/4.54).
         t = time.perf_counter()
         batch = _orig_get_batch(*a, **kw)
         PROBE._batch_ms += (time.perf_counter() - t) * 1000.0

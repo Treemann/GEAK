@@ -57,7 +57,7 @@ separate workflow rather than a mode of the inference one.
 | correctness | byte-identical greedy output | **L0** (fwd+bwd op numerics vs a frozen oracle) + **L1** (step-1 forward probe + strict early sign rule; the per-step envelope and step-1 grad_norm are advisory) |
 | concurrency | lanes and the serving slot coexist | **a gate needs the whole box** — lanes drain first |
 | scarce resource | agent time | **gates** (one A/B = two job launches, exclusive) |
-| noise band | 2-3% | **paired per-step ratio; across-job floor 0.25% at 7B** (measured on null pairs) |
+| noise band | 2-3% | **paired per-step ratio, stall-trimmed dispersion; across-job floor 0.30% Megatron / 0.25% HF** (2,072 null pairs, DECISIONS 4.54) |
 
 **`DECISIONS.md` records every framework-level choice with the measurement that forced it.**
 `PLAN.md` carries the narrative; `RUNBOOK.md` the commands.

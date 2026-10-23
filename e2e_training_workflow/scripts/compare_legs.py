@@ -48,6 +48,41 @@ def _per_step(probe_dir, warm, steps):
     return out
 
 
+def _quantile(v, q):
+    """Linearly interpolated quantile of a SORTED list. The old ratios[n // 4] index pick jumped by a
+    whole order statistic when n moved by one -- the quartile-cliff effect windowMatchedLegs documents."""
+    x = q * (len(v) - 1)
+    i = int(x)
+    return v[i] if i + 1 >= len(v) else v[i] + (x - i) * (v[i + 1] - v[i])
+
+
+# A step slower than 1.04x its own leg's median is a stall (GC, recompile, a neighbour's burst), not
+# kernel time: fixed-shape Megatron steps sit within ~0.3% of the median otherwise.
+STALL_FACTOR = 1.04
+
+
+def _stall_trimmed(pa, pb, fixed):
+    """Sorted per-step ratios with the stalled steps of EITHER leg removed, and how many were removed.
+
+    WHY (DECISIONS 4.54). The band is SE_SAFETY x 0.929 x IQR/sqrt(n) of the paired ratio, and one or
+    two stalls per ~25-step leg land on a quartile and inflate that IQR 3-10x. On 525 Megatron bare
+    true-null pairs the raw IQR left 16% of them `inconclusive_noise` and found a +0.5% effect 65% of
+    the time; the trimmed IQR: 6.7% and 81%, with the same false-win count. Only for FIXED step shape:
+    on dynamically padded legs step time follows content (+-25%), so a duration threshold would drop
+    long batches, not stalls -- and the paired ratio there is already tight (HF: same power either way).
+    Falls back to every step when the trim would leave fewer than max(12, n/2)."""
+    allr = sorted(y[0] / x[0] for x, y in zip(pa, pb) if x[0] > 0 and y[0] > 0)
+    if not fixed:
+        return allr, 0
+    ma = _quantile(sorted(x[0] for x in pa), 0.5)
+    mb = _quantile(sorted(y[0] for y in pb), 0.5)
+    keep = sorted(y[0] / x[0] for x, y in zip(pa, pb)
+                  if 0 < x[0] <= STALL_FACTOR * ma and 0 < y[0] <= STALL_FACTOR * mb)
+    if len(keep) < max(12, len(allr) // 2):
+        return allr, 0
+    return keep, len(allr) - len(keep)
+
+
 def compare(ref_probe, cand_probe, tol=0.02):
     a, b = summarize(ref_probe, tol), summarize(cand_probe, tol)
     for x, name in ((a, "ref"), (b, "cand")):
@@ -85,7 +120,7 @@ def compare(ref_probe, cand_probe, tol=0.02):
     wa, wb = A.get("wall_useful_tok_s_per_gpu"), B.get("wall_useful_tok_s_per_gpu")
     out["wall_delta_pct"] = round(100 * (wb - wa) / wa, 4) if wa and wb else None
     out["ref"]["stall_pct"], out["cand"]["stall_pct"] = A.get("stall_pct"), B.get("stall_pct")
-    # ---- PAIRED estimator (added 2026-10-09, reported alongside; not yet what the gate reads) ----
+    # ---- PAIRED estimator (added 2026-10-09; what the gate reads when same_batches holds) ----
     # delta_pct above is median(useful)/median(dur) per leg, each median taken independently. That is
     # robust only when every step has the same SHAPE -- true on Megatron, which pads every sample to
     # SEQ (step-time IQR 0.30%). On a dynamically-padded stack step time follows content (HF TRL:
@@ -100,12 +135,20 @@ def compare(ref_probe, cand_probe, tol=0.02):
         ratios = sorted(y[0] / x[0] for x, y in zip(pa, pb) if x[0] > 0 and y[0] > 0)
         if ratios:
             n = len(ratios)
-            med_r = ratios[n // 2] if n % 2 else 0.5 * (ratios[n // 2 - 1] + ratios[n // 2])
-            q1, q3 = ratios[n // 4], ratios[(3 * n) // 4]
+            med_r = _quantile(ratios, 0.5)
+            disp, dropped = _stall_trimmed(pa, pb, fixed=(A.get("step_shape") == "fixed"
+                                                         and B.get("step_shape") == "fixed"))
             out["paired"] = {
+                # The DELTA stays the untrimmed median: trimming changes which steps it is the
+                # median of, and on true-null pairs that manufactured a 14% delta (DECISIONS 4.54).
                 "delta_pct": round(100 * (1.0 / med_r - 1.0), 4),
-                "ratio_iqr_pct": round(100 * (q3 - q1) / med_r, 4),
-                "steps": n,
+                "ratio_iqr_pct": round(100 * (_quantile(disp, 0.75) - _quantile(disp, 0.25))
+                                       / _quantile(disp, 0.5), 4),
+                "ratio_iqr_raw_pct": round(100 * (_quantile(ratios, 0.75) - _quantile(ratios, 0.25)) / med_r, 4),
+                # n of the sample the dispersion came from -- what the gate divides by.
+                "steps": len(disp),
+                "steps_total": n,
+                "steps_dropped": dropped,
                 # The estimator is only valid if step i really is the same batch on both legs.
                 "same_batches": same_batches,
             }

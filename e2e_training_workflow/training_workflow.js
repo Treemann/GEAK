@@ -190,9 +190,21 @@ let tasksUsed = 0;
 // governs whether a raw number is labelled a REGRESSION, and keeping it sensitive is the useful
 // choice there. Read such a label as a prompt to re-measure with alignment, not as evidence -- the
 // unaligned artifact has been observed at 4.59%, far above this floor.
+//
+// PER-STACK default (DECISIONS 4.54), measured on 867 true-null pairs (realized-arg-table equal,
+// equal impl_digest, schema >= 3) with the stall-trimmed paired dispersion: Megatron bare at 0.25%
+// gave 2 false wins (+0.289% and +0.256%, cross-day and same-day drift); 0.30% gives 0 at the same
+// +0.5%-effect power (81%). HF (paired ratio, n=201) has worst null |delta| 0.142%: 0.25% holds.
+// An explicit --across_job_floor_pct still wins.
 const FLOOR_PCT = { aligned: 0.5, unaligned: 0.5 };
+const STACK_FLOOR_PCT = { megatron: 0.30, hf_trl: 0.25 };
 const ACROSS_JOB_FLOOR_PCT = parseFloat(A.across_job_floor_pct != null ? A.across_job_floor_pct
-                                                                      : FLOOR_PCT.aligned);
+                                        : (STACK_FLOOR_PCT[STACK] != null ? STACK_FLOOR_PCT[STACK] : FLOOR_PCT.aligned));
+// Above this band a sub-band delta is `inconclusive_noise`, not `no_win`. It used to be 4 x the floor,
+// which tied "what counts as a resolvable measurement" to a knob tuned for false wins: raising the
+// floor for safety silently stopped flagging noisy pairs. It is the size of effect the workflow wants
+// to be able to see: a band wider than 1% cannot resolve a 1% candidate (DECISIONS 4.54).
+const INCONCLUSIVE_BAND_PCT = parseFloat(A.inconclusive_band_pct != null ? A.inconclusive_band_pct : 1.0);
 const BAND_SAFETY = parseFloat(A.band_safety != null ? A.band_safety : 2.0);
 // Multiplier on the pair's sampling error. 3 and 4 both give 0/47 on the baseline pairs (the floor
 // binds there); 4 is chosen by the noisy-candidate case, not by these pairs.
@@ -590,7 +602,11 @@ function gateVerdict(spec) {
   // 5%, not 2%: on 2,403 TRUE-NULL pairs (same config + impl digest) peak_reserved differs by up to 4.0%
   // at the 99th percentile and 78 pairs exceed 2%; the gate-based null control then called 24/400
   // identical pairs 'banked_memory' (2026-10-22). A freed-memory claim must clear the null spread.
-  if (memDeltaPct != null && memDeltaPct < -5.0) {
+  // PER STEP SHAPE since 2026-10-23 (DECISIONS 4.54), on 867 clean true-null pairs: Megatron (fixed
+  // shape) |mem delta| p99 1.22%, max 1.33%, none > 2%; HF (variable) max 4.97%, 40/201 > 2%. One 5%
+  // threshold made Megatron unable to bank a real 2-4% saving and left HF with no margin at all.
+  const memThreshPct = variable ? 6.0 : 2.0;
+  if (memDeltaPct != null && memDeltaPct < -memThreshPct) {
     return {
       accepted: false, klass: 'banked_memory', banked_memory_pct: +(-memDeltaPct).toFixed(2),
       reason: mode === 'deep'
@@ -607,16 +623,17 @@ function gateVerdict(spec) {
   // the 0.15% floor and +1.147% a clear win. The legs were the problem and the record blamed the
   // candidate.
   //
-  // 4x is chosen against the accepted cases rather than picked: the two real wins carried bands at
-  // 3.2x and 3.6x the floor, so a lower threshold would start calling sound gates inconclusive. It
-  // can only ever fire where the verdict was already a non-win, so it cannot turn a win into a doubt.
-  const bandDominatedByLegNoise = band > 4 * ACROSS_JOB_FLOOR_PCT;
+  // The threshold is INCONCLUSIVE_BAND_PCT (an absolute resolution), no longer 4x the floor. It can
+  // only ever fire where the verdict was already a non-win, so it cannot turn a win into a doubt.
+  const bandDominatedByLegNoise = band > INCONCLUSIVE_BAND_PCT && band > ACROSS_JOB_FLOOR_PCT;
   if (bandDominatedByLegNoise) {
     return { accepted: false, klass: 'inconclusive_noise', remeasure: true,
-             reason: `${deltaPct.toFixed(2)}% is inside a ${band.toFixed(2)}% band, but that band is ` +
-                     `${(band / ACROSS_JOB_FLOOR_PCT).toFixed(1)}x this workload's floor ` +
-                     `(${ACROSS_JOB_FLOOR_PCT}%) — it was set by leg dispersion, not by the workload. ` +
-                     `This is NOT evidence against the candidate: re-measure the pair on quiet legs.`,
+             reason: `${deltaPct.toFixed(2)}% is inside a ${band.toFixed(2)}% band, wider than the ` +
+                     `${INCONCLUSIVE_BAND_PCT}% this gate must resolve (floor ${ACROSS_JOB_FLOOR_PCT}%) — ` +
+                     `it was set by leg dispersion, not by the workload. This is NOT evidence against the ` +
+                     `candidate. Re-measure with LONGER legs (the band shrinks as 1/sqrt(steps)); if the ` +
+                     `paired report shows many steps_dropped, the stalls are periodic (GC, recompiles) -- ` +
+                     `run with --gc / a persistent TRITON_CACHE_DIR rather than simply repeating the pair.`,
              ...base };
   }
   return { accepted: false, klass: 'no_win', reason: `${deltaPct.toFixed(2)}% within band ${band.toFixed(2)}%`, ...base };

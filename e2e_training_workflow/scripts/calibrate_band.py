@@ -9,19 +9,22 @@ expensive. The legs are already on disk and the pairs can be rebuilt from their 
 
 A pair is a NULL PAIR when both legs carry the same `config_digest` AND the same `impl_digest`: same
 workload, same implementation, so the true throughput delta is zero by construction and ANY
-"win" the band reports is false. That is the whole control.
+"win" the band reports is false. Since 2026-10-23 (DECISIONS 4.54) the two legs must ALSO agree on
+the framework's realized-argument dump in train.log: digests cover only what the snapshot captures,
+and same-digest pairs that differ in an uncaptured argument are reported and excluded, not graded.
 
 WHAT IT IS NOT. It is only the null half. A band that is infinitely wide scores 0 false wins and
 gates nothing, so a null control alone can always be satisfied by making the band bigger. The
-positive half -- that a real win still clears the band -- is not reconstructible from same-identity
-legs and lives in the measured accepted candidates (+1.147%, +7.4348%, +12.36%). Read the two
-together or neither means anything.
+positive half -- that a real win still clears the band -- is approximated by INJECTION: each null
+pair is re-judged with the candidate made exactly +0.5% / +1% faster (see _inject), which keeps the
+pair's real noise and gives the gate's power at that effect. Read the two together or neither means
+anything.
 
   calibrate_band.py                      # judge every null pair with THE GATE ITSELF (default)
-  calibrate_band.py --floor 0.25         # the run's across_job_floor_pct (default 0.25)
+  calibrate_band.py --floor 0.25         # force one across_job_floor_pct (default: the gate's per-stack floor)
   calibrate_band.py --legacy             # the old re-implemented per-leg band (kept for comparison)
   calibrate_band.py --quantile interp    # (legacy only) linear-interpolated quartiles
-  calibrate_band.py --max-pairs 200      # bound the work
+  calibrate_band.py --max-pairs 200      # bound the work (default: every pair; sampled, seed 0)
   runs dir: $GEAK_WORK_DIR/runs (default /home/treemann/geak_train/runs); node: $NODE or `node`.
 
 THE GATE ITSELF (2026-10-22, audit TP-6). This script used to re-implement the band and drifted from
@@ -38,6 +41,7 @@ import glob
 import json
 import math
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -203,9 +207,33 @@ def _node():
     return c[0]
 
 
-def _gate_pair(a_probe, b_probe, floor, node):
-    """compare_legs + the workflow's own gateVerdict on one pair. Returns the verdict dict or None."""
-    import subprocess
+_DUMP = re.compile(r"^\s{2}([a-z0-9_]+) \.{3,}\s(.*)$")
+# Length/naming args that legitimately differ between legs of ONE configuration.
+_REALIZED_IGNORE = ("train_iters", "max_steps", "output_dir", "logging_dir", "run_name", "save", "load",
+                    "tensorboard_dir", "wandb_exp_name")
+
+
+def _realized(leg_dir):
+    """The framework's own realized-argument dump from train.log ('  name ....... value'), minus the
+    length/naming args. None when the log has no such dump. A null pair must agree on THIS table as
+    well as on the digests: digests only cover what the snapshot chose to capture, and a pair that
+    differs in an uncaptured argument (the rope-fusion gap, DECISIONS 4.54) is not a null."""
+    t = {}
+    try:
+        with open(os.path.join(leg_dir, "train.log"), errors="replace") as f:
+            for i, line in enumerate(f):
+                if i > 6000:
+                    break
+                m = _DUMP.match(line.rstrip("\n"))
+                if m and m.group(1) not in _REALIZED_IGNORE:
+                    t[m.group(1)] = m.group(2).strip()
+    except OSError:
+        return None
+    return t if len(t) >= 10 else None
+
+
+def _spec(a_probe, b_probe, floor, stack):
+    """compare_legs + fresh summaries -> the gate_eval spec for one pair, or None (no common window)."""
     from compare_legs import compare
     from probe_summarize import summarize
     cmp = compare(a_probe, b_probe)
@@ -224,47 +252,146 @@ def _gate_pair(a_probe, b_probe, floor, node):
                 s[k] = bs[k]
         s.setdefault("status", "ok")
         legs.append(s)
-    spec = {"ref": legs[0], "cand": legs[1], "comparison": cmp, "mode": "fast",
-            "args": {"across_job_floor_pct": floor}}
-    r = subprocess.run([node, os.path.join(HERE, "gate_eval.js")], input=json.dumps(spec),
-                       capture_output=True, text=True, timeout=60)
+    args = {"stack": stack}
+    if floor is not None:
+        args["across_job_floor_pct"] = floor
+    return {"ref": legs[0], "cand": legs[1], "comparison": cmp, "mode": "fast", "args": args}
+
+
+def _inject(spec, pct):
+    """The same pair with the candidate made exactly pct% faster on every step. Scaling every cand
+    step by 1/(1+pct) scales every per-step ratio, the per-leg median and the rate by the same
+    factor and leaves every relative dispersion (and the stall trim) unchanged -- so this IS the
+    pair the gate would see, without re-reading the probes. Power = how often the gate calls it a win."""
+    f = 1.0 + pct / 100.0
+    s = json.loads(json.dumps(spec))
+    c = s["comparison"]
+    for key in ("delta_pct", "unaligned_delta_pct"):
+        if isinstance(c.get(key), (int, float)):
+            c[key] = 100.0 * (f * (1.0 + c[key] / 100.0) - 1.0)
+    if isinstance(c.get("paired"), dict):
+        c["paired"]["delta_pct"] = 100.0 * (f * (1.0 + c["paired"]["delta_pct"] / 100.0) - 1.0)
+    s["cand"]["useful_tok_s_per_gpu"] = s["cand"]["useful_tok_s_per_gpu"] * f
+    return s
+
+
+def _gate_batch(specs, node):
+    import subprocess
+    r = subprocess.run([node, os.path.join(HERE, "gate_eval.js")], input=json.dumps(specs),
+                       capture_output=True, text=True, timeout=600)
     if r.returncode != 0:
         raise SystemExit(f"gate_eval.js failed: {r.stderr[:400]}")
     return json.loads(r.stdout)
 
 
+POWER_AT_PCT = (0.5, 1.0)
+
+
+def _t0(probe_dir):
+    """Wall-clock start of a leg (its first step record), for the session-gap label."""
+    try:
+        with open(os.path.join(probe_dir, "probe_rank0.jsonl")) as f:
+            for line in f:
+                r = json.loads(line)
+                if r.get("record") == "step":
+                    return r.get("t_wall")
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def main_gate(max_pairs, floor):
+    """Every TRUE-NULL pair on disk through the gate, per stratum (stack x bare/overlay).
+
+    A leg is counted once (realpath: bundles symlink their legs). A null pair has equal
+    config_digest AND impl_digest (schema >= 3) AND an equal realized-argument table where both
+    legs have one. Reports, per stratum: false wins/regressions (must be ~0), the inconclusive rate
+    (how often the gate cannot resolve anything on a null), and POWER -- the same pairs with a
+    +0.5% / +1% effect injected -- because a null control alone is satisfied by an infinite band."""
+    import random
     node = _node()
     runs = os.path.join(os.environ.get("GEAK_WORK_DIR", "/home/treemann/geak_train"), "runs")
-    groups, rejected = collections.defaultdict(list), collections.Counter()
-    for pd in sorted(glob.glob(os.path.join(runs, "*", "probe"))):
-        ok, why = _usable(pd)
+    groups, rejected, seen, meta = collections.defaultdict(list), collections.Counter(), set(), {}
+    for pd in sorted(glob.glob(os.path.join(runs, "*", "probe")) + glob.glob(os.path.join(runs, "*", "*", "probe"))):
+        rp = os.path.realpath(pd)
+        if rp in seen:
+            rejected["duplicate (symlinked) leg"] += 1
+            continue
+        seen.add(rp)
+        ok, why = _usable(rp)
         if not ok:
             rejected[why] += 1
             continue
-        leg = _leg(pd)
+        leg = _leg(rp)
         if not leg or (leg.get("digest_schema") or 0) < 3 or not leg.get("impl_digest"):
             rejected["unreadable, short, or identity schema < v3"] += 1
             continue
-        groups[_identity(leg)].append(pd)
-    pairs = [(m[i], m[j]) for m in groups.values() for i in range(len(m)) for j in range(i + 1, len(m))]
-    print(f"gate-based null control: {len(pairs)} same-identity pairs in {len(groups)} groups "
-          f"(evaluating up to {max_pairs}); floor {floor}%")
-    counts, false_ = collections.Counter(), []
+        bs = json.load(open(os.path.join(os.path.dirname(rp), "bench_summary.json")))
+        impl = bs.get("implementation") or {}
+        stack = "hf_trl" if bs.get("step_shape") == "variable" or "geak-stack" in (bs.get("config") or {}) else "megatron"
+        meta[rp] = (stack, "overlay" if impl.get("GEAK_OVERLAY_SHA") else "bare", _realized(os.path.dirname(rp)))
+        groups[_identity(leg)].append(rp)
+    pairs, split = [], 0
+    for m in groups.values():
+        for i in range(len(m)):
+            for j in range(i + 1, len(m)):
+                ta, tb = meta[m[i]][2], meta[m[j]][2]
+                if ta is not None and tb is not None and ta != tb:
+                    split += 1      # equal digests, different realized args: an identity gap, not a null
+                    continue
+                pairs.append((m[i], m[j]))
+    random.Random(0).shuffle(pairs)   # a --max-pairs cap must not favour the alphabetically-first runs
+    print(f"gate-based null control: {len(seen)} distinct legs, {len(pairs)} true-null pairs in "
+          f"{len(groups)} identity groups; {split} same-digest pairs EXCLUDED for differing realized "
+          f"args; evaluating {min(len(pairs), max_pairs)}; floor "
+          f"{'per-stack default' if floor is None else str(floor) + '%'}")
+    if rejected:
+        print("  legs not used: " + ", ".join(f"{k}={n}" for k, n in rejected.most_common()))
+    strata = collections.defaultdict(lambda: {"n": 0, "verdicts": collections.Counter(), "false": [],
+                                              "power": collections.Counter(), "bands": []})
+    work = []
     for a, b in pairs[:max_pairs]:
-        v = _gate_pair(a, b, floor, node)
-        if v is None:
-            counts["no common window"] += 1
+        sp = _spec(a, b, floor, meta[a][0])
+        if sp is None:
+            rejected["pair without a common window"] += 1
             continue
-        counts[v.get("klass")] += 1
+        work.append(((meta[a][0], meta[a][1]), a, b, sp))
+    batch = []
+    for _, _, _, sp in work:
+        batch += [sp] + [_inject(sp, p) for p in POWER_AT_PCT]
+    verdicts = _gate_batch(batch, node) if batch else []
+    k = 1 + len(POWER_AT_PCT)
+    for idx, (st, a, b, _) in enumerate(work):
+        v, inj = verdicts[k * idx], verdicts[k * idx + 1: k * idx + k]
+        S = strata[st]
+        S["n"] += 1
+        S["verdicts"][v.get("klass")] += 1
+        if isinstance(v.get("band_pct"), (int, float)):
+            S["bands"].append(v["band_pct"])
         if v.get("klass") in ("win", "regression"):
-            false_.append((a, b, v))
-    print("  verdicts: " + ", ".join(f"{k}={n}" for k, n in counts.most_common()))
-    judged = sum(n for k, n in counts.items() if k != "no common window")
-    print(f"\nFALSE WINS/REGRESSIONS (gate): {len(false_)} / {judged}")
-    for a, b, v in false_[:10]:
-        print(f"    {a.split('/')[-2]} vs {b.split('/')[-2]}: {v.get('klass')} {v.get('delta_pct')}% "
-              f"vs band {v.get('band_pct')}% ({v.get('estimator')})")
+            S["false"].append((a, b, v))
+        for p, w in zip(POWER_AT_PCT, inj):
+            S["power"][p] += w.get("klass") == "win"
+    total_false = 0
+    for st in sorted(strata):
+        S = strata[st]
+        n, bands = S["n"], sorted(S["bands"])
+        total_false += len(S["false"])
+        p90 = bands[int(0.9 * (len(bands) - 1))] if bands else float("nan")
+        print(f"\n[{st[0]} / {st[1]}] {n} pairs: false wins/regressions {len(S['false'])}; "
+              f"inconclusive {100.0 * S['verdicts']['inconclusive_noise'] / max(n, 1):.1f}%; "
+              f"band p90 {p90:.3f}%; " +
+              "; ".join(f"power at +{p}% {100.0 * S['power'][p] / max(n, 1):.1f}%" for p in POWER_AT_PCT))
+        print("  verdicts: " + ", ".join(f"{kk}={c}" for kk, c in S["verdicts"].most_common()))
+        for a, b, v in S["false"][:10]:
+            ta, tb = _t0(a), _t0(b)
+            gap = f"{abs(ta - tb) / 3600:.1f} h apart" if ta and tb else "start time unknown"
+            print(f"    FALSE {v.get('klass')}: {a.split('/')[-2]} vs {b.split('/')[-2]}: "
+                  f"{v.get('delta_pct')}% vs band {v.get('band_pct')}% ({v.get('estimator')}; {gap})")
+    # The gate only ever compares a SAME-SESSION pair (roles/integrator.md step 3). Cross-session
+    # nulls are graded too, as the conservative case, but a false call between legs hours apart is
+    # day-scale drift the gate's design keeps out, not a band failure -- the gap printed says which.
+    print(f"\nFALSE WINS/REGRESSIONS (gate), all strata: {total_false} / {sum(S['n'] for S in strata.values())}")
     return 0
 
 
@@ -273,8 +400,8 @@ def main():
         for tok in sys.argv[1:]:
             if tok.startswith("--") and tok not in ("--max-pairs", "--floor"):
                 sys.exit(f"unknown flag {tok!r}; known: --floor, --max-pairs, --legacy")
-        mp = int(sys.argv[sys.argv.index("--max-pairs") + 1]) if "--max-pairs" in sys.argv else 400
-        fl = float(sys.argv[sys.argv.index("--floor") + 1]) if "--floor" in sys.argv else 0.25
+        mp = int(sys.argv[sys.argv.index("--max-pairs") + 1]) if "--max-pairs" in sys.argv else 10 ** 9
+        fl = float(sys.argv[sys.argv.index("--floor") + 1]) if "--floor" in sys.argv else None
         return main_gate(mp, fl)
     sys.argv = [a for a in sys.argv if a != "--legacy"]
     mode = "nearest"

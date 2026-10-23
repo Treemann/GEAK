@@ -6,7 +6,7 @@
 // instead of paired, no identity rules: 6/219 false wins; audit 2026-10-22 TP-6).
 //
 //   echo '{"ref":{...bench_summary...},"cand":{...},"comparison":{...compare_legs...},"mode":"fast",
-//          "args":{"across_job_floor_pct":0.25}}' | node gate_eval.js
+//          "args":{"stack":"megatron"}}' | node gate_eval.js      (or a JSON array of specs)
 const fs = require('fs');
 const path = require('path');
 const src = fs.readFileSync(path.resolve(__dirname, '..', 'training_workflow.js'), 'utf8');
@@ -34,10 +34,13 @@ function constBlock() {
   return src.slice(a, b + 'let runAcrossJobPct = 0;'.length);
 }
 const NAMES = ['windowMatchedLegs', 'noiseBandPct', 'legUsable', 'alignedDelta', 'comparable', 'gateVerdict'];
-const spec = JSON.parse(fs.readFileSync(0, 'utf8'));
-// eslint-disable-next-line no-new-func
-const gate = new Function('A', 'runAcrossJobPctIn',
-  `${constBlock()}\nrunAcrossJobPct = runAcrossJobPctIn || 0;\n${NAMES.map(extract).join('\n')}\nreturn gateVerdict;`)(
-  spec.args || {}, spec.run_across_job_pct || 0);
-process.stdout.write(JSON.stringify(gate({ ref: spec.ref, cand: spec.cand, comparison: spec.comparison,
-  mode: spec.mode || 'fast', l0: spec.l0, l1: spec.l1, allowedImpl: spec.allowedImpl })) + '\n');
+// STACK lives outside the constant block in the workflow (it is read from A.stack there too); the
+// per-stack floor default needs it (DECISIONS 4.54).
+const makeGate = (args, runAcross) => new Function('A', 'runAcrossJobPctIn',
+  `const STACK = A.stack || 'megatron';\n${constBlock()}\nrunAcrossJobPct = runAcrossJobPctIn || 0;\n` +
+  `${NAMES.map(extract).join('\n')}\nreturn gateVerdict;`)(args || {}, runAcross || 0);
+const judge = (spec) => makeGate(spec.args, spec.run_across_job_pct)({ ref: spec.ref, cand: spec.cand,
+  comparison: spec.comparison, mode: spec.mode || 'fast', l0: spec.l0, l1: spec.l1, allowedImpl: spec.allowedImpl });
+// One spec -> one verdict; an ARRAY of specs -> an array of verdicts (calibrate_band batches them).
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+process.stdout.write(JSON.stringify(Array.isArray(input) ? input.map(judge) : judge(input)) + '\n');

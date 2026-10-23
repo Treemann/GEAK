@@ -47,8 +47,8 @@ def leg(root, name, speed, overlay=None, nranks=8, fallback=0, drop_rank=None):
                       open(os.path.join(d, overlay, f"engagement_fused.json.rank{rk}"), "w"))
     return d
 
-def run(ref, cand):
-    r = subprocess.run([sys.executable, VG, ref, cand, "--nproc", "8", "--floor", "0.25"],
+def run(ref, cand, floor=("--floor", "0.25")):
+    r = subprocess.run([sys.executable, VG, ref, cand, "--nproc", "8", *floor],
                        capture_output=True, text=True, timeout=120, env=dict(os.environ, NODE=node))
     return json.loads(r.stdout)
 
@@ -91,6 +91,18 @@ try:
     ok(e2["added"] == ["attn"] and e2["forward"], "a candidate replacing an incumbent overlay in the SAME slot is judged, not refused")
     via_probe = run(os.path.join(ref, "probe"), os.path.join(root, "cand", "probe"))
     ok(via_probe["verdict"]["klass"] == "win", "probe/ paths are accepted as leg paths")
+    # gate_eval's per-stack floor default (DECISIONS 4.54): Megatron 0.30%, HF 0.25%, explicit wins.
+    import subprocess
+    nul = run(ref, leg(root, "null", 1.0), floor=())
+    def band(args):
+        spec = {"ref": nul["ref"], "cand": nul["cand"], "comparison": nul["comparison"], "args": args}
+        r = subprocess.run([node, os.path.join(os.path.dirname(HERE), "gate_eval.js")],
+                           input=json.dumps([spec]), capture_output=True, text=True, timeout=60)
+        return json.loads(r.stdout)[0]["band_pct"]
+    ok(band({"stack": "megatron"}) == 0.3 and band({"stack": "hf_trl"}) == 0.25 and
+       band({"stack": "megatron", "across_job_floor_pct": 0.2}) == 0.2,
+       "gate_eval: per-stack floor (Megatron 0.30%, HF 0.25%); an explicit floor overrides it")
+    ok(nul["verdict"]["band_pct"] == 0.3, "verify_gate without --floor uses the per-stack default")
 finally:
     shutil.rmtree(root, ignore_errors=True)
 print("all checks passed" if not fails else f"{fails} check(s) FAILED")

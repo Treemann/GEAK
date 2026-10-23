@@ -1,4 +1,4 @@
-# Resume notes — updated 2026-10-22
+# Resume notes — updated 2026-10-23
 
 ## State (2026-10-10, after run wf_cc06b402-312 completed)
 Run `wf_cc06b402-312` finished: `rope_fused_qk` +3.89% and `swiglu_bwd_fwd_bw` +3.15% ACCEPTED,
@@ -256,6 +256,10 @@ PermissionError). OPEN, by priority:
   check (G8); training-path fp32 main_grad wgrad of the GEMM overlays is never exercised by a voting gate (G5);
   G7 DONE (4.48: kernel_swap floor 0.25%, 2.0% only with --l0-strictly-better); the 28 frozen template oracles keep the
   missing-output hole (re-generate when a task is reused).
+* DONE 2026-10-23 (review step 2, DECISIONS 4.54): stall-trimmed paired dispersion (delta untrimmed), per-stack floor
+  (Megatron 0.30 / HF 0.25), inconclusive at an absolute 1.0% band, banked_memory by step shape (2% / 6%),
+  `batch_ms` -> `batch_site_ms`, calibrate_band per stratum with injected-effect power over 2,072 true nulls
+  (realpath-deduped, realized-arg-equal): Megatron bare 0/1290 false, 1.1% inconclusive (was 16%), power +0.5% 83%.
 * DONE 2026-10-22: calibrate_band.py now judges null pairs with the gate itself (scripts/gate_eval.js): 400 pairs ->
   0 false wins, 1 floor-level false regression, and 24 false `banked_memory` -> threshold raised 2% -> 5% (null
   peak-memory spread: p99 4.0%). Open measurement hygiene: the unpacked-workload

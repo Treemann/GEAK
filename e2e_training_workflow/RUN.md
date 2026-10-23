@@ -54,7 +54,7 @@ Workflow({ scriptPath: "<REPO>/e2e_training_workflow/training_workflow.js", args
   workflow_dir: "<REPO>/e2e_training_workflow",
   workload: "<REPO>/e2e_training_workflow/workloads/qwen2_5_math_7b_packed_cosine_avg.env",
   stack: "megatron", nproc: 8, gpu_ids: "0,1,2,3,4,5,6,7", iters: 30,
-  budget: 1, max_gates: 2, kernel_budget: 2, across_job_floor_pct: 0.25,
+  budget: 1, max_gates: 2, kernel_budget: 2,   // floor: per-stack default (Megatron 0.30%, HF 0.25%; DECISIONS 4.54)
   time_budget_ms: 21600000, t0_epoch_ms: "<date +%s%3N>" }})
 ```
 **2b. Test M2: gating ON the accepted stack (s8), stop rule included.** About 1.5-3 h.

@@ -51,7 +51,7 @@ function extract(name) {
 // so the band tests below still exercise the DERIVED terms; with the default floor the floor binds
 // on every case and the se term would never be tested. Keep in step with training_workflow.js.
 const CONSTS = 'const FLOOR_PCT = {aligned:0.15,unaligned:0.5}; const ACROSS_JOB_FLOOR_PCT = 0.15, '
-  + 'BAND_SAFETY = 2.0, SE_SAFETY = 4.0; let runAcrossJobPct = 0;';
+  + 'BAND_SAFETY = 2.0, SE_SAFETY = 4.0, INCONCLUSIVE_BAND_PCT = 1.0; let runAcrossJobPct = 0;';
 const load = (names, extra = '') => new Function(
   `${CONSTS}\n${extra}\n${names.map(extract).join('\n')}\nreturn {${names.join(',')}};`)();
 
@@ -242,6 +242,15 @@ const leg = (o = {}) => Object.assign({
   ok(/fast mode has no config knob/.test(m.reason), 'the banked reason names why it is not a win');
   const md = gateVerdict({ ref: leg(), cand: leg({ useful_tok_s_per_gpu: 4762, peak_reserved_mb: 12000 }), mode: 'deep' });
   ok(/proposeMemoryConversion/.test(md.reason), 'in deep mode the same result routes to the converter');
+  // The banked threshold follows the null spread of the STEP SHAPE (DECISIONS 4.54): fixed-shape
+  // Megatron nulls never exceed 1.33%, variable-shape HF nulls reach 4.97%.
+  const m3 = (shape) => v({ ref: leg({ step_shape: shape }),
+    cand: leg({ step_shape: shape, useful_tok_s_per_gpu: 4762, peak_reserved_mb: 14394 * 0.97 }) }).klass;
+  ok(m3('fixed') === 'banked_memory', 'fixed shape: 3% freed is banked (null max 1.33%)');
+  ok(m3('variable') !== 'banked_memory', 'variable shape: 3% freed is inside the null spread, not banked');
+  const m7 = v({ ref: leg({ step_shape: 'variable' }),
+    cand: leg({ step_shape: 'variable', useful_tok_s_per_gpu: 4762, peak_reserved_mb: 14394 * 0.93 }) }).klass;
+  ok(m7 === 'banked_memory', 'variable shape: 7% freed clears the 6% threshold');
 
   // The aligned delta must WIN over the raw ratio when both are present.
   const al = gateVerdict({ ref: leg(), cand: leg({ useful_tok_s_per_gpu: 4776 }), mode: 'fast',

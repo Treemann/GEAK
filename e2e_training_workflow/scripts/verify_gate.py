@@ -14,7 +14,7 @@ produced the verdict. This script is the independent half: given ref and cand le
     cand leg and absent from the ref leg): every rank must show forward AND backward calls, and every
     `fallback*` counter must be 0.
 
-  verify_gate.py <ref_leg_dir> <cand_leg_dir> [--nproc 8] [--floor 0.25] [--kind kernel|config]
+  verify_gate.py <ref_leg_dir> <cand_leg_dir> [--nproc 8] [--floor PCT (default: per-stack)] [--kind kernel|config]
                  [--lever-flags "--flag value ..."]
 
 Prints one JSON object. Exit 0 always when it could judge (the verdict is in the JSON); exit 2 when it
@@ -149,7 +149,7 @@ def main():
         sys.exit(__doc__)
     ref_dir, cand_dir = _leg_dir(args[0]), _leg_dir(args[1])
     opt = lambda k, d: args[args.index(k) + 1] if k in args else d   # noqa: E731
-    nproc, floor = int(opt("--nproc", 8)), float(opt("--floor", 0.25))
+    nproc, floor = int(opt("--nproc", 8)), opt("--floor", None)
     kind, lever = opt("--kind", "kernel"), opt("--lever-flags", "")
     for d in (ref_dir, cand_dir):
         if not os.path.isdir(os.path.join(d, "probe")):
@@ -165,8 +165,15 @@ def main():
     out = {"ref": ref, "cand": cand, "comparison": cmp, "kind": kind, "verdict": None}
     node = _node()
     if node and isinstance(cmp, dict) and not cmp.get("error"):
+        # Without --floor the gate's own PER-STACK default applies (DECISIONS 4.54); the workflow
+        # always passes the run's floor explicitly.
+        stack = "hf_trl" if "variable" in (ref.get("step_shape"), cand.get("step_shape")) or \
+            (ref.get("config") or {}).get("geak-stack") == "hf_trl" else "megatron"
+        gargs = {"stack": stack}
+        if floor is not None:
+            gargs["across_job_floor_pct"] = float(floor)
         spec = {"ref": ref, "cand": cand, "comparison": cmp, "mode": "fast", "allowedImpl": allowed,
-                "args": {"across_job_floor_pct": floor}}
+                "args": gargs}
         r = subprocess.run([node, os.path.join(HERE, "gate_eval.js")], input=json.dumps(spec),
                            capture_output=True, text=True, timeout=60)
         out["verdict"] = json.loads(r.stdout) if r.returncode == 0 else {"error": r.stderr[:400]}
