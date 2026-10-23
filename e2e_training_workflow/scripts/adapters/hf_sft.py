@@ -73,6 +73,16 @@ def parse():
     # Trainer.compute_loss and is untouched. The gathers make every micro-batch a cross-rank barrier:
     # 32.9% of the 7B ZeRO-2 step was ranks waiting there (wf_bda82b0e-152). `off` skips them.
     ap.add_argument("--hf-train-metrics", choices=("on", "off"), default="on")
+    # Loss normalization (WORKLOAD identity, DECISIONS 4.61). `true` (transformers' default) divides the
+    # summed token loss by the token count of the WHOLE optimizer step over ALL ranks; `false` by each
+    # rank's own count, which weights a sample by how many tokens its rank happened to get. Made
+    # explicit because --hf-balance-tokens is only recipe-neutral under `true`.
+    ap.add_argument("--hf-average-tokens-across-devices", choices=("true", "false"), default="true")
+    # Token-balanced rank assignment (IMPLEMENTATION, DECISIONS 4.61). `on` keeps the default sampler's
+    # order and the SAME samples in every optimizer step, and only redistributes them among ranks and
+    # micro-batch slots so every rank gets a similar token cost. Under global loss normalization the
+    # step's gradient is the same sum, so this changes speed, not the recipe.
+    ap.add_argument("--hf-balance-tokens", choices=("off", "on"), default="off")
     ap.add_argument("--weight-decay", type=float, default=0.1)
     ap.add_argument("--clip-grad", type=float, default=1.0)
     ap.add_argument("--adam-beta1", type=float, default=0.9)
@@ -187,6 +197,7 @@ def main():
         dataloader_drop_last=True,
         gradient_checkpointing=False,
         ddp_find_unused_parameters=False,
+        average_tokens_across_devices=(a.hf_average_tokens_across_devices == "true"),
         **({"fsdp": f"{a.hf_fsdp} auto_wrap",
             "fsdp_config": {"transformer_layer_cls_to_wrap": [_decoder_layer_cls(a.load)]}}
            if a.hf_fsdp in ("full_shard", "shard_grad_op") else {}),
@@ -205,6 +216,18 @@ def main():
                 return Trainer.compute_loss(self, model, inputs, return_outputs=return_outputs,
                                             num_items_in_batch=num_items_in_batch)
         trainer_cls = _SFTTrainerNoStepMetrics
+    if a.hf_balance_tokens == "on":
+        if a.hf_average_tokens_across_devices != "true":
+            sys.exit("--hf-balance-tokens on needs --hf-average-tokens-across-devices true: with per-rank "
+                     "loss normalization, moving a sample to another rank changes its weight in the gradient")
+        base_cls = trainer_cls
+
+        class _BalancedTrainer(base_cls):
+            def _get_train_sampler(self, train_dataset=None):
+                d = train_dataset if train_dataset is not None else self.train_dataset
+                return TokenBalancedSampler(d, world, a.micro_batch_size, grad_accum, a.seq_length,
+                                            self.args.data_seed)
+        trainer_cls = _BalancedTrainer
     trainer = trainer_cls(model=model, args=cfg, train_dataset=ds, processing_class=tok,
                           **({"eval_dataset": ev} if ev is not None else {}))
     if a.lr_decay_style == "cosine":
@@ -341,6 +364,65 @@ def main():
             print(f" validation loss at iteration {a.train_iters} on validation set | "
                   f"lm loss value: {m['eval_loss']:.6E} | [hf_sft eval over {len(ev)} conversations]",
                   flush=True)
+
+
+def balanced_window(idx, lengths, world, mbs, ga):
+    """One optimizer step's samples, re-ordered so that accelerate's sharding (global micro-batch b ->
+    rank b % world) gives every rank a similar token COST for the step.
+
+    `idx`: the step's sample indices in the default order (world x mbs x ga of them). Returned: the same
+    indices, permuted. Cost per sample = L x (1 + L / 3800): the linear layers are linear in L, the
+    attention quadratic, and at 7B / hidden 3584 / 28 layers the two are equal near L = 3800.
+    (1) Capacity-constrained LPT: longest first, each sample to the least-loaded rank that still has
+    room (every rank takes exactly ga x mbs). (2) Each rank's samples, longest first, fill its
+    micro-batch slots in order, so slot j holds every rank's j-th longest -- similar across ranks, and
+    similar within a micro-batch when mbs > 1 (less padding). Simulated on lognormal lengths (world 8,
+    ga 8): worst-rank cost / achievable bound 1.51 default -> 1.03 mean, 1.18 worst (v1, slot-first
+    LPT: 1.14 / 1.45; measured +14.7..+16.9% with v1, DECISIONS 4.61)."""
+    cost = lambda i: lengths[i] * (1.0 + lengths[i] / 3800.0)  # noqa: E731
+    cap = ga * mbs
+    load = [0.0] * world
+    members = [[] for _ in range(world)]
+    for i in sorted(idx, key=lambda i: (-cost(i), i)):
+        r = min((q for q in range(world) if len(members[q]) < cap), key=lambda q: (load[q], q))
+        members[r].append(i)
+        load[r] += cost(i)
+    out = [None] * len(idx)
+    for r in range(world):
+        for k, i in enumerate(members[r]):            # already longest first
+            j, m = divmod(k, mbs)
+            out[(j * world + r) * mbs + m] = i
+    return out
+
+
+class TokenBalancedSampler:
+    """The default training order (accelerate's SeedableRandomSampler, built exactly as accelerate builds
+    it from Trainer's RandomSampler), re-arranged WITHIN each optimizer step by balanced_window. Not a
+    RandomSampler subclass on purpose: accelerate would replace it. A trailing partial step keeps the
+    default order."""
+
+    def __init__(self, dataset, world, mbs, ga, max_len, data_seed):
+        from accelerate.data_loader import SeedableRandomSampler
+        self.base = SeedableRandomSampler(data_source=dataset, replacement=False, num_samples=None,
+                                          generator=None, data_seed=data_seed)
+        self.world, self.mbs, self.ga = world, mbs, ga
+        self.lengths = [min(len(x), max_len) for x in dataset["input_ids"]]
+
+    def __len__(self):
+        return len(self.base)
+
+    def set_epoch(self, epoch):
+        self.base.set_epoch(epoch)
+
+    def __iter__(self):
+        win = self.world * self.mbs * self.ga
+        buf = []
+        for i in self.base:
+            buf.append(i)
+            if len(buf) == win:
+                yield from balanced_window(buf, self.lengths, self.world, self.mbs, self.ga)
+                buf = []
+        yield from buf
 
 
 def lr_factor(step, lr, min_lr, warmup, decay_iters):

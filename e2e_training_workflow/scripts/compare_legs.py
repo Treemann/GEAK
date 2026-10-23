@@ -25,8 +25,11 @@ from probe_summarize import MIN_STEADY_FOR_DISPERSION, summarize  # noqa: E402
 def _per_step(probe_dir, warm, steps):
     """(dur_ms, useful_tokens) per step for the SLOWEST rank's view, over the aligned window.
 
-    The step is as slow as its slowest rank, so per step the max duration across ranks is taken;
-    useful_tokens come from rank 0, whose batch order is what `same_batches` is checked against.
+    The step is as slow as its slowest rank, so per step the max duration across ranks is taken.
+    useful_tokens is the step's GLOBAL count (summed over ranks): `same_batches` asks whether both legs
+    trained the same samples in step i, not whether rank 0 got the same ones -- a token-balanced leg
+    (--hf-balance-tokens, DECISIONS 4.61) moves samples between ranks inside a step by design. Until
+    2026-10-23 this was rank 0's count, which no unbalanced pair can tell apart from the global one.
     """
     import glob
     from probe_summarize import load_rank
@@ -44,7 +47,8 @@ def _per_step(probe_dir, warm, steps):
         durs = [r[i].get("dur_ms") for r in per_rank]
         if any(d is None for d in durs):
             return None
-        out.append((max(durs), per_rank[0][i].get("useful_tokens")))
+        toks = [r[i].get("useful_tokens") for r in per_rank]
+        out.append((max(durs), None if any(t is None for t in toks) else sum(toks)))
     return out
 
 

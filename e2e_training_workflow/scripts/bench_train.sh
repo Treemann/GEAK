@@ -162,6 +162,13 @@ run_attempt() {
 
   adapter_launch
   echo ">>> attempt $n: job pid $JOB_PID"
+  # In-leg occupancy samples (review: before/after alone miss a neighbour that comes and goes).
+  rm -f "$OUT_DIR/occupancy_mid.jsonl"
+  ( while kill -0 "$JOB_PID" 2>/dev/null; do
+      sleep 60
+      kill -0 "$JOB_PID" 2>/dev/null && python3 "$GEAK_SCRIPTS/gpu_occupancy.py" mid >> "$OUT_DIR/occupancy_mid.jsonl" 2>/dev/null
+    done ) &
+  OCC_MID=$!
 
 # ---- hang watchdog -------------------------------------------------------------------------
 # A hung collective leaves every rank ALIVE while nobody advances, so process liveness reports
@@ -186,12 +193,12 @@ WATCHDOG=$!
   # run_attempt is consumed through a pipe, so it executes in a SUBSHELL and any variable it sets is
   # lost to the parent. The exit code has to travel through the filesystem, not through a variable.
   echo "$JOB_RC" > "$OUT_DIR/.job_rc"
-  kill "$WATCHDOG" 2>/dev/null
+  kill "$WATCHDOG" "$OCC_MID" 2>/dev/null
   adapter_teardown "$JOB_PID" >/dev/null 2>&1
 
   python3 "$GEAK_SCRIPTS/gpu_occupancy.py" after > "$OUT_DIR/occupancy_after.json" 2>/dev/null
   python3 "$GEAK_SCRIPTS/gpu_occupancy.py" compare "$OUT_DIR/occupancy_before.json" \
-          "$OUT_DIR/occupancy_after.json" "" > "$OUT_DIR/occupancy_verdict.json" 2>/dev/null
+          "$OUT_DIR/occupancy_after.json" "" "$OUT_DIR/occupancy_mid.jsonl" "$NPROC" > "$OUT_DIR/occupancy_verdict.json" 2>/dev/null
   python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('verdict','unknown'))" \
           "$OUT_DIR/occupancy_verdict.json" 2>/dev/null || echo unknown
 }

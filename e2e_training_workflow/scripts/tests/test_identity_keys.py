@@ -110,7 +110,7 @@ def main():
                   "recompute-granularity", "recompute-method", "hf-fsdp",
                   # v5: the accepted DECISIONS 4.25 lever that no list captured, and its neighbours
                   "ddp-average-in-collective", "ddp-bucket-size", "use-distributed-optimizer",
-                  "manual-gc", "manual-gc-interval"):
+                  "manual-gc", "manual-gc-interval", "hf-balance-tokens"):
         ok(lever in captured and lever in set(impl),
            f"Class-A lever `{lever}` is captured AND classed as implementation")
 
@@ -124,6 +124,8 @@ def main():
     ok("--norm-epsilon" in pair and "norm-epsilon" not in set(impl), "`norm-epsilon` is captured as workload identity")
     ok("--no-rope-fusion" not in flag and "rope-fusion" in set(impl),
        "RoPE fusion left the workload half: recorded as implementation key `rope-fusion`")
+    ok("hf-average-tokens-across-devices" in captured and "hf-average-tokens-across-devices" not in set(impl),
+       "HF loss normalization is captured as workload identity (DECISIONS 4.61)")
     for k in ("cross-entropy-loss-fusion", "cross-entropy-fusion-impl"):
         ok(k in captured and k in set(impl), f"`{k}` is captured AND classed as implementation")
     summ = open(os.path.join(SCRIPTS, "probe_summarize.py")).read()

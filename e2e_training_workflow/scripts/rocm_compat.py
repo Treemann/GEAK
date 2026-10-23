@@ -227,6 +227,35 @@ if _os.environ.get("GEAK_PROBE_DIR"):
         raise SystemExit("[rocm_compat] GEAK_OVERLAY is set but the overlay stack did not install "
                          "completely; refusing to run a leg that would measure the original implementation")
 
+# NaN/Inf detection FROM THE GRAD NORM (DECISIONS 4.62, review MEG-6). Megatron's
+# --check-for-nan-in-loss-and-grad computes an extra norm over the WHOLE 7.6 G-element grad buffer
+# before every reduce-scatter (~0.43% of an s8 step), while clip-grad computes the global grad norm
+# anyway: any NaN or Inf in any gradient makes that norm non-finite. With GEAK_NAN_FROM_GRAD_NORM=1
+# (used together with --no-check-for-nan-in-loss-and-grad) a non-finite norm RAISES, as the
+# original check does; only the per-rank attribution of the original message is lost.
+if _os.environ.get("GEAK_NAN_FROM_GRAD_NORM") == "1":
+    import math as _math
+
+    def _nan_guard(fn, where):
+        def wrapped(self, *a, **kw):
+            n = fn(self, *a, **kw)
+            v = float(n.item() if hasattr(n, "item") else n) if n is not None else 0.0
+            if not _math.isfinite(v):
+                raise RuntimeError(f"[geak-nan] non-finite grad norm {v} in {where} "
+                                   "(GEAK_NAN_FROM_GRAD_NORM replaces --check-for-nan-in-loss-and-grad)")
+            return n
+        return wrapped
+
+    from megatron.core.optimizer import optimizer as _mopt
+
+    _mopt.MegatronOptimizer.clip_grad_norm = _nan_guard(_mopt.MegatronOptimizer.clip_grad_norm,
+                                                        "clip_grad_norm")
+    _mopt.MegatronOptimizer.get_grad_norm = _nan_guard(_mopt.MegatronOptimizer.get_grad_norm,
+                                                       "get_grad_norm")
+    _mopt.ChainedOptimizer.get_grad_norm = _nan_guard(_mopt.ChainedOptimizer.get_grad_norm,
+                                                      "ChainedOptimizer.get_grad_norm")
+    print("[geak-nan] NaN/Inf check moved to the grad norm", flush=True)
+
 if len(sys.argv) < 2:
     raise SystemExit("usage: rocm_compat_launch.py <script.py> [args...]")
 target = sys.argv[1]

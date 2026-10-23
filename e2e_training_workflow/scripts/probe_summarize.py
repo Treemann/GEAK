@@ -242,7 +242,11 @@ IMPL_KEYS = ("attention-backend", "GEAK_OVERLAY", "GEAK_OVERLAY_SHA",
              "hf-train-metrics",
              # v6: which kernel applies RoPE / computes cross-entropy -- same math, other kernel.
              # New key NAMES: no pre-v6 sidecar contains them, so listing them moves no old digest.
-             "rope-fusion", "cross-entropy-loss-fusion", "cross-entropy-fusion-impl")
+             "rope-fusion", "cross-entropy-loss-fusion", "cross-entropy-fusion-impl",
+             # HF: WHICH rank / micro-batch slot a sample of the step lands on (DECISIONS 4.61)
+             "hf-balance-tokens",
+             # where the NaN/Inf check runs (DECISIONS 4.62)
+             "no-check-for-nan-in-loss-and-grad")
 # Implementation keys that are LABELS, not implementation: recorded, never digested from v6 on.
 # GEAK_OVERLAY is the manifest file NAMES; GEAK_OVERLAY_SHA is the content. Renaming a manifest moved
 # impl_digest with identical bytes running (audit F8). Schema-aware so a v5 summary keeps its digest.

@@ -390,6 +390,9 @@ _IDENTITY_PAIR_KEYS = (
     "--norm-epsilon",
     # v6, implementation half: which cross-entropy kernel computes the (same) loss.
     "--cross-entropy-fusion-impl",
+    # v6 (HF): loss normalization is WORKLOAD identity (recorded always on HF, realized default
+    # "true"); token-balanced rank assignment is implementation (DECISIONS 4.61).
+    "--hf-average-tokens-across-devices", "--hf-balance-tokens",
 )
 # Presence-only flags (store_true). The old scan read `--flag value` pairs ONLY, so none of these
 # could ever be captured -- a leg run with --bf16 and one without were the same workload to the gate.
@@ -416,6 +419,8 @@ _IDENTITY_FLAG_KEYS = (
     "--grad-reduce-in-bf16", "--calculate-per-token-loss",
     # v6, implementation half: the fused cross-entropy path (same loss, different kernel).
     "--cross-entropy-loss-fusion",
+    # implementation half: the full-buffer NaN check off (paired with GEAK_NAN_FROM_GRAD_NORM, 4.62)
+    "--no-check-for-nan-in-loss-and-grad",
 )
 
 
@@ -439,6 +444,8 @@ _KNOBS = (
     # Not an overlay knob: apex's fused RoPE picks the aiter kernel ("lower precision") unless this is
     # 0. With the v6 rope-fusion lever it selects WHICH fused kernel runs (DECISIONS 4.55).
     "USE_ROCM_AITER_ROPE_BACKEND",
+    # Where the NaN/Inf check runs (rocm_compat, DECISIONS 4.62).
+    "GEAK_NAN_FROM_GRAD_NORM",
 )
 
 
@@ -474,6 +481,8 @@ def _config_snapshot():
         # lever as 'a different workload' (DECISIONS 4.55).
         out["rope-fusion"] = "false" if "--no-rope-fusion" in argv else "true"
         out.setdefault("norm-epsilon", "1e-05")       # Megatron's default (TransformerConfig)
+    else:
+        out.setdefault("hf-average-tokens-across-devices", "true")   # transformers' default (4.55)
     # Version the SNAPSHOT at the capture site, not the summary. A v2 sidecar physically does not
     # contain attention_dropout, so re-summarising it cannot recover the value: stamping a newer
     # schema onto it in probe_summarize would produce a digest that CLAIMS to cover dropout and does
@@ -582,6 +591,9 @@ def install_megatron():
     print(f"[geak-probe] installed (rank {PROBE.rank}/{PROBE.world}) -> {PROBE.path}", flush=True)
 
 
+_HF_LOSS = {}
+
+
 def install_hf(trainer):
     """The HF transformers / TRL binding: Trainer.training_step for batches, a callback for steps.
 
@@ -639,7 +651,11 @@ def install_hf(trainer):
 
         def on_log(self, args, state, control, logs=None, **kw):
             logs = logs or {}
-            loss = logs.get("loss")
+            # The UNROUNDED cross-rank loss (review HF-6): Trainer logs round(loss, 4), which starved
+            # the L1 step-1 and early-sign checks on HF (a 1e-4 resolution on a loss of ~1.5).
+            loss = _HF_LOSS.pop("loss", None)
+            if loss is None:
+                loss = logs.get("loss")
             gn = logs.get("grad_norm")
             self._flush(loss=float(loss) if loss is not None else None,
                         grad_norm=float(gn) if gn is not None else None)
@@ -647,6 +663,32 @@ def install_hf(trainer):
         def on_train_end(self, args, state, control, **kw):
             self._flush()
 
+    # Capture the value Trainer._maybe_log_save_evaluate computes BEFORE it rounds: the same all-gather
+    # and mean it already performs (no extra collective), stashed for on_log. Logged steps only.
+    _orig_mlse, _orig_ng = trainer._maybe_log_save_evaluate, trainer._nested_gather
+    _ctx = {"steps": None}
+
+    def _probed_nested_gather(t, *a, **kw):
+        g = _orig_ng(t, *a, **kw)
+        if _ctx["steps"]:
+            try:
+                _HF_LOSS["loss"] = float(g.mean().item()) / _ctx["steps"]
+            except Exception:
+                pass
+            _ctx["steps"] = None
+        return g
+
+    def _probed_mlse(*a, **kw):
+        st = trainer.state
+        if trainer.control.should_log and st.global_step > trainer._globalstep_last_logged:
+            _ctx["steps"] = st.global_step - trainer._globalstep_last_logged
+        try:
+            return _orig_mlse(*a, **kw)
+        finally:
+            _ctx["steps"] = None
+
+    trainer._nested_gather = _probed_nested_gather
+    trainer._maybe_log_save_evaluate = _probed_mlse
     trainer.add_callback(_StepCallback())
     print(f"[geak-probe] installed HF binding (rank {PROBE.rank}/{PROBE.world}) -> {PROBE.path}",
           flush=True)
