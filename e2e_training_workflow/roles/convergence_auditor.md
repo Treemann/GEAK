@@ -56,8 +56,17 @@ Reported, never voting:
   candidates. `envelope_discriminating: false` in the band is expected.
 
 Known blind spot: a multiplicative dq error of about -0.2% to +2.2% passes L0 on a dq whose incumbent
-is already far from fp32 (attention), and L1 has no voting gradient-scale check. Quote L0's paired
-dq `scale_bias` (candidate vs incumbent bf16) in your verdict; beyond ~1e-3 is a reject (DECISIONS 3.2b).
+is already far from fp32 (attention), and L1 has no voting gradient-scale check. Which check closes it
+depends on whether the candidate is the SAME ALGORITHM FAMILY as the incumbent (DECISIONS 4.51):
+- **Same family** (same algorithm and precision of the backward, e.g. CK FMHA vs TE's CK FMHA): the
+  PAIRED dq `scale_bias` (candidate vs incumbent bf16, same inputs and mask) must be within ~1e-3
+  (DECISIONS 3.2b). Quote it.
+- **Different family** (e.g. aiter asm fp16 bwd vs AOTriton bf16 bwd): the paired number is REPORT-ONLY
+  -- two correct implementations each carry their own systematic error. The gate is TRUTH-anchored and
+  STRATIFIED: the candidate's dq `scale_bias` against the fp32 reference must lie inside the window
+  built from the incumbent's own (`min(0,b)-0.002 .. max(0,b)+0.002`, b = incumbent's) BOTH on all
+  rows AND on the well-conditioned bulk (rows outside the top 1% of reference dq energy). Say which
+  family you judged it as and why. Do NOT relax the 1e-3 number for the same-family case.
 
 ### L2 — soak: **RETIRED 2026-10-08. Always report `l2_recommended: false`.**
 

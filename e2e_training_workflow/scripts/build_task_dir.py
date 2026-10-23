@@ -313,6 +313,15 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
             # a swapped role, x1.004) is far above it or is caught by the bias checks, which are
             # unchanged (negative controls in the task's extract_controls_summary.json).
             "abs_floor_max_ulp": dict(abs_floor_max_ulp or {}),
+            # DEFAULT for every output of a NEW task (2026-10-22, DECISIONS 4.52): an element over the
+            # magnitude limit is forgiven iff its error is <= 1 bf16 ulp of ITS OWN reference value
+            # (faithful rounding: a different but correct summation order flips a value sitting on a
+            # rounding midpoint), and at most max_frac of the elements (>= 1) may be forgiven. Found by
+            # the s8 holdouts (4.47): qkv dbias and rmsnorm dgrad each failed ONE holdout on ONE
+            # element 1 ulp off, because the original happened to be exact there (limit 0). The bias
+            # checks (sign, scale, offset) and exact_labels are NOT relaxed -- a systematic 1-ulp
+            # error (wrong rounding mode) moves thousands of elements one way and is caught there.
+            "ulp1_elementwise": {"enabled": True, "max_frac": 0.001},
             # Outputs that must equal the frozen golden (= the original's output) BITWISE; see
             # build(exact_labels=...). Signed zeros compare equal (-0 == +0); NaN must sit where the
             # golden has NaN. Absent -> [] (every older task unchanged).
@@ -368,6 +377,27 @@ h = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(h)
 if HERE in sys.path:
     sys.path.remove(HERE)          # this file is named unittest.py; unshadow the stdlib module
 import torch
+
+
+def bf16_ulp(ref):
+    """One bf16 ulp of each reference element (2^(exponent-7)); a tiny value for exact zeros."""
+    return torch.where(ref != 0, torch.exp2(torch.floor(torch.log2(ref.abs().clamp_min(2.0 ** -126))) - 7),
+                       torch.full_like(ref, 2.0 ** -133))
+
+
+def ulp1_forgive(d, ref, limit_abs, max_frac=0.001):
+    """acceptance.ulp1_elementwise (DECISIONS 4.52): elements whose |error| exceeds the magnitude limit
+    are forgiven iff EACH is within 1 bf16 ulp of its own reference value AND there are at most
+    max(1, ceil(max_frac * N)) of them. Returns (ok, info). The bias checks are not touched here."""
+    over = d.abs() > limit_abs
+    n_over = int(over.sum())
+    if n_over == 0:
+        return True, {"ulp1_over": 0, "ulp1_forgiven": 0}
+    within = bool((d.abs()[over] <= bf16_ulp(ref)[over] * (1 + 1e-6)).all())
+    cap = max(1, int(math.ceil(max_frac * d.numel())))
+    ok = within and n_over <= cap
+    return ok, {"ulp1_over": n_over, "ulp1_cap": cap, "ulp1_all_within_1ulp": within,
+                "ulp1_forgiven": n_over if ok else 0}
 
 META = json.load(open(os.path.join(HERE, "meta.json")))
 
@@ -544,6 +574,15 @@ def main():
                     st["floor_max_ulp"] = _fl * 2.0 ** (math.floor(math.log2(_m)) - 7)
                     lim = max(lim, st["floor_max_ulp"])
             mag_ok = st["max_abs"] <= lim
+            # Per-element faithful-rounding allowance (acceptance.ulp1_elementwise, DECISIONS 4.52).
+            # Absent from older metas -> disabled, so every frozen task judges exactly as before.
+            _u1 = acc.get("ulp1_elementwise") or {}
+            def _forgive(limit_abs):
+                fok, info = ulp1_forgive(d, rr, limit_abs, float(_u1.get("max_frac", 0.001)))
+                st.update(info)
+                return fok, info["ulp1_over"]
+            if _u1.get("enabled") and not mag_ok and label not in acc.get("ulp_labels", []):
+                mag_ok, _ = _forgive(lim)
             if label in acc.get("ulp_labels", []):
                 # Magnitude in bf16 ulps of the (bf16-rounded) reference; see acceptance.ulp_labels.
                 ulp = torch.where(rr != 0,
@@ -554,6 +593,9 @@ def main():
                               float(acc.get("ulp_floor", {}).get(label, 0.0)))
                 st["limit_ulp"] = lim_ulp
                 mag_ok = st["max_ulp_bf16"] <= lim_ulp
+                if _u1.get("enabled") and not mag_ok:
+                    # the same allowance in ulp units: elements over the ulp limit but <= 1 ulp, capped
+                    mag_ok, _ = _forgive(lim_ulp * bf16_ulp(rr))
             # Significance guard (acceptance.sign_min_z): a few one-sided disagreements on a near-exact
             # output are not a bias. Absent from older metas -> 0.0, i.e. the old behaviour.
             sign_sig = abs(npos - nz / 2.0) > acc.get("sign_min_z", 0.0) * (nz ** 0.5) / 2.0
@@ -597,6 +639,9 @@ def main():
                                              (' offset-bias', not offset_ok),
                                              (f" NOT-BITWISE({st.get('exact_mismatch')} elems)",
                                               not exact_ok)) if bad)
+            if st.get("ulp1_forgiven"):
+                print(f"  [L0]{tag} {label}: {st['ulp1_forgiven']} element(s) over the limit, each <= 1 ulp "
+                      f"of its reference (cap {st['ulp1_cap']}): faithful rounding, forgiven (4.52)")
             mag_txt = (f"max_ulp={st['max_ulp_bf16']:.3g} (limit {st['limit_ulp']:.3g} ulp, original "
                        f"{base[label]['max_ulp_bf16']:.3g}) max_abs={st['max_abs']:.4g}"
                        if "limit_ulp" in st else
