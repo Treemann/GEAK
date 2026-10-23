@@ -256,6 +256,14 @@ PermissionError). OPEN, by priority:
   check (G8); training-path fp32 main_grad wgrad of the GEMM overlays is never exercised by a voting gate (G5);
   G7 DONE (4.48: kernel_swap floor 0.25%, 2.0% only with --l0-strictly-better); the 28 frozen template oracles keep the
   missing-output hole (re-generate when a task is reused).
+* DONE 2026-10-23 (review step 3, DECISIONS 4.55): identity snapshot v6 (norm-epsilon = workload identity,
+  rope-fusion = implementation, manifest labels out of impl_digest); verify_gate `carried` check (a lever
+  may not switch off an accepted overlay); eps 1e-6 recipe + s8eps built, gated (L0 on a new eps-1e-6
+  oracle, L1, +0.34/+0.31%) and outcome-tested (P0-4l, runs/qabeps6_1023_073707_*): s8eps CLEARED on
+  eps 1e-6, but eps 1e-6 LOSES to 1e-5 (held-out +0.0067, 5/5 seeds, 1 catastrophic) -> production keeps
+  _cosine_avg / eps 1e-5. Fused RoPE: +3.7% on BARE (L1 kernel_swap PASS), -0.33% on s8 (disables the rope
+  overlay) -> not adopted. finalize_bundle_1021_s8_cosine_avg re-pinned to v6 (runs/repin1021_v6_*, all
+  checks pass; harness git 3337c13e). finalize_bundle_1023_s8eps_eps6 kept, marked NOT the deliverable.
 * DONE 2026-10-23 (review step 2, DECISIONS 4.54): stall-trimmed paired dispersion (delta untrimmed), per-stack floor
   (Megatron 0.30 / HF 0.25), inconclusive at an absolute 1.0% band, banked_memory by step shape (2% / 6%),
   `batch_ms` -> `batch_site_ms`, calibrate_band per stratum with injected-effect power over 2,072 true nulls
