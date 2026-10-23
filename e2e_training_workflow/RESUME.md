@@ -22,6 +22,8 @@ P3 reuse HF QualityGate ref/ctrl70 legs, mid-leg occupancy sampling, HF L1 backw
 * P1(6) DONE 2026-10-23 (DECISIONS 4.60): L0 must name its oracle; pre-v2 template oracles refused; 8 HF oracles
   rebuilt into tasks_v2/ (base_error reproduced exactly); the six shipped HF kernels pass them.
 * P1(7) DONE 2026-10-23: README states the cross-stack recipe difference (eps, packing) next to the HF headline.
+* P2 HF balance DONE 2026-10-23 (DECISIONS 4.61): +15.2..+15.9% paired on hf8, P0-4m CLEARED; recommended HF config
+  = hf8 + --hf-balance-tokens on. P3 QualityGate reuse DONE (4.63), mid-leg occupancy DONE, HF unrounded loss DONE.
 
 ## State (2026-10-10, after run wf_cc06b402-312 completed)
 Run `wf_cc06b402-312` finished: `rope_fused_qk` +3.89% and `swiglu_bwd_fwd_bw` +3.15% ACCEPTED,

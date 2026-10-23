@@ -17,7 +17,8 @@ Every number is useful (non-pad, loss-unmasked) tokens. Per-change deltas are pa
 reference; the cumulative multipliers (4.18x, 2.42x) are cross-session medians (audit 2026-10-22, F7).
 
 Second stack (HF TRL, 7B, unpacked): **1,083 -> 2,618 useful tok/s/GPU (2.42x)**, cleared for
-training (DECISIONS 4.40). These are corrected figures (4.33): an earlier "2,269 / 2.07x" for hf3
+training (DECISIONS 4.40); with token-balanced rank assignment (`--hf-balance-tokens on`, same samples per
+step) **+15.2..+15.9% paired on top**, cleared by outcome test P0-4m (DECISIONS 4.61). These are corrected figures (4.33): an earlier "2,269 / 2.07x" for hf3
 came from a warmup detector that over-trimmed variable-shape legs. The two stacks do NOT run the
 same recipe and their tok/s are not a framework comparison: HF is unpacked with dynamic padding and
 RMSNorm eps 1e-6 (the model's); Megatron is packed with eps 1e-5 (measured better there, P0-4l,

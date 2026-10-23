@@ -2047,3 +2047,13 @@ change to a cleared stack still needs the outcome test.
 * `quality_ab_final.py <prefix> --base hf8 --cand cand --ctrl ctrl70` (rule noninf). CLEARED iff
   PASS-quality and PASS-stability. If INCONCLUSIVE: one extension, seeds 6666, 7777, 8888, 9999, 1212,
   with fresh hf8 and cand arms.
+
+### P0-4m RESULT (2026-10-23): **CLEARED** — token-balanced rank assignment on hf8 is safe to train with
+
+* Legs: cand `runs/qabhfbal_1023_143846_cand_seed*` (balance v2, capacity-constrained LPT); `hf8` and `ctrl70`
+  are symlinks to P0-4k's legs. `quality_reuse.py check`: valid on all 5 seeds -- the realized argument
+  tables differ ONLY in hf_balance_tokens (off -> on).
+* Held-out d (cand - hf8): -0.00013 / +0.00002 / +0.00005 / -0.00008 / +0.00028, mean **+0.00003** (t 0.38),
+  upper 95% +0.00018 <= 0.00162. Control ctrl70 - hf8 +0.00648 (t 122.6). Stability: max10 0 on every leg.
+* Engagement on the cand legs: all 8 hf8 overlays, 8/8 ranks, training fallback 0.
+* **CLEARED.** The recommended HF configuration becomes hf8 + `--hf-balance-tokens on` (DECISIONS 4.61).
