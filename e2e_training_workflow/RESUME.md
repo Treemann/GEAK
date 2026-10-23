@@ -13,6 +13,8 @@ P3 reuse HF QualityGate ref/ctrl70 legs, mid-leg occupancy sampling, HF L1 backw
   envelope was RETIRED from voting on evidence (DECISIONS 3.4b), so no leg count makes it vote. Fixed the
   stale text that said ">=5 legs restore a blocking envelope" and the band label "BLOCKING" that
   contradicted verdict().
+* (1) DONE 2026-10-23 (DECISIONS 4.56): scripts/main_grad_contract.{py,sh} gate every kernel candidate's fp32
+  main_grad accumulation (fail closed); reproduces G5 on the four s8 GEMM overlays.
 
 ## State (2026-10-10, after run wf_cc06b402-312 completed)
 Run `wf_cc06b402-312` finished: `rope_fused_qk` +3.89% and `swiglu_bwd_fwd_bw` +3.15% ACCEPTED,

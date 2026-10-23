@@ -48,6 +48,7 @@ const refShaFrom = (prompt) => {
 let INTEG_N = 0;
 let AUDIT_OVERRIDE;
 let QUALITY_SEQ = null;                    // queued quality-phase replies (extension tests)
+let MGC_OVERRIDE;                          // the Auditor's main_grad_contract block; undefined = applicable + passed
 let CARRIED_OVERRIDE;                      // the verifier's `carried` block; undefined = all carried overlays engaged
 let VERIFY_OVERRIDE;                       // (refDir, candDir) -> verdict klass; undefined = 'win'                        // undefined = normal stub; null = the Auditor failed
 let ENG_OVERRIDE;
@@ -130,6 +131,7 @@ function stubFor(prompt) {
   if (is('PHASE=gate')) {
     if (AUDIT_OVERRIDE !== undefined) return AUDIT_OVERRIDE;
     return { l0: { pass: true }, l1: { pass: true }, l2_recommended: false, risk_class: 'low',
+             main_grad_contract: MGC_OVERRIDE !== undefined ? MGC_OVERRIDE : { applicable: true, passed: true },
              kb_rejection_card: null };
   }
   if (is('PHASE=finalize')) return { overlay: '/work/ovl', patch: 'p', launch: 'l',
@@ -459,6 +461,17 @@ async function dryRun(args) {
     const { result: r5 } = await dryRun(base);
     ok(r5.accepted.length === 0, 'a verifier reply without the carried-overlay check cannot accept');
     CARRIED_OVERRIDE = undefined;
+    // DECISIONS 4.56: the fp32 main_grad accumulation contract gates GEMM overlays, fail closed.
+    MGC_OVERRIDE = { applicable: true, passed: false, why: 'linearity 3638 ulp32 > 906' };
+    const { result: m1 } = await dryRun(base);
+    ok(m1.accepted.length === 0, 'an applicable main_grad contract that did not pass blocks the accept');
+    MGC_OVERRIDE = null;
+    const { result: m2 } = await dryRun(base);
+    ok(m2.accepted.length === 0, 'no main_grad_contract result -> no accept (fail closed)');
+    MGC_OVERRIDE = { applicable: false, passed: null, why: 'not a fused-wgrad GEMM site' };
+    const { result: m3 } = await dryRun(base);
+    ok(m3.accepted.length > 0, 'a not-applicable contract (decided by the script) does not block');
+    MGC_OVERRIDE = undefined;
   } catch (e) {
     ok(false, `verifier cases threw: ${e && e.message}`);
   }

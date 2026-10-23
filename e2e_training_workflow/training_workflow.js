@@ -912,11 +912,16 @@ const INTEGRATE_SCHEMA = obj({ ref: LEG, cand: LEG,
   legs_measured: obj({ refs: { type: 'array', items: { type: 'string' }, minItems: 1 },
                        cands: { type: 'array', items: { type: 'string' }, minItems: 1 } }, ['refs', 'cands']) },
   ['ref', 'cand', 'comparison', 'engagement', 'overlay_path', 'legs_measured']);
-const AUDIT_SCHEMA = obj({ l0: VERDICT, l1: VERDICT,
+// main_grad_contract.sh's own fields, copied verbatim (DECISIONS 4.56): `applicable` is decided by the
+// script from the task's rebind target, never by the agent.
+const MGC = obj({ applicable: { type: 'boolean' }, passed: { type: ['boolean', 'null'] },
+  head: { type: ['string', 'null'] }, why: { type: ['string', 'null'] }, result: { type: ['string', 'null'] } },
+  ['applicable', 'passed']);
+const AUDIT_SCHEMA = obj({ l0: VERDICT, l1: VERDICT, main_grad_contract: MGC,
   l2_recommended: { type: 'boolean' }, risk_class: { type: 'string' },
   // Path of the KB card written back to the kernel layer on a reject, or null on a pass. Declared so
   // the Auditor is asked for it; a rejection the KB never hears about is re-derived from zero next run.
-  kb_rejection_card: { type: ['string', 'null'] } }, ['l0', 'l1']);
+  kb_rejection_card: { type: ['string', 'null'] } }, ['l0', 'l1', 'main_grad_contract']);
 const FINALIZE_SCHEMA = obj({ overlay: { type: 'string' }, patch: { type: 'string' },
   launch: { type: 'string' }, engagement_recheck: PROOF_OR_NULL }, ['engagement_recheck']);
 const CONFIG_SCHEMA = obj({ lever: { type: 'string' }, flags_added: { type: 'array' },
@@ -1453,10 +1458,12 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
   const audit = await safeAgentStub('convergence_auditor', 'gate',
     { TASK: optimized.ext, REF_PROBE: integ.ref && integ.ref.probe_dir,
       CAND_PROBE: integ.cand && integ.cand.probe_dir,
-      BAND: wfReturn.bands.trajectory_band_path,
+      BAND: wfReturn.bands.trajectory_band_path, OVERLAY_IMPL: integ.overlay_path || null,
+      GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts`,
       INTEGRATOR_NOTES: integ.notes || null,
       CAND_USABLE: !!(integ.cand && legUsable(integ.cand).ok) },
-    'Run L0 (out/dgrad/wgrad vs fp32, magnitude AND sign) and L1 (step-indexed envelope). ' +
+    'Run L0 (out/dgrad/wgrad vs fp32, magnitude AND sign), the main_grad accumulation contract ' +
+    '(GEAK_SCRIPTS/main_grad_contract.sh, its fields copied verbatim) and L1 (step-indexed envelope). ' +
     'If CAND_USABLE is false the candidate never produced a measurable leg — read INTEGRATOR_NOTES ' +
     'and record THAT as the finding; a candidate that diverges is a stronger result than one that ' +
     'is merely slow.');
@@ -1490,6 +1497,16 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
   }
   if (v.accepted && !carried.ok) {
     Object.assign(v, { accepted: false, klass: 'incomparable', reason: carried.why });
+  }
+  // The fp32 main_grad accumulation contract (DECISIONS 4.50 / 4.56): L0 cannot see that path, and the
+  // oracle-style limit passes a bf16-rounded wgrad. Fail closed on a missing result, an applicable
+  // failure, or a run whose deliberately wrong controls did not fail (passed=false covers that too).
+  const mgc = audit && audit.main_grad_contract;
+  if (v.accepted && !(mgc && typeof mgc.applicable === 'boolean' &&
+                      (mgc.applicable === false || mgc.passed === true))) {
+    Object.assign(v, { accepted: false, klass: mgc && mgc.applicable ? 'numerics' : 'no_correctness_gate',
+      reason: mgc ? `main_grad accumulation contract not passed: ${mgc.why || 'passed=' + mgc.passed}`
+                  : 'no main_grad_contract result: the fused-wgrad accumulation path was not checked' });
   }
   // L0/L1 can only reject -- but ABSENT is not a pass (audit G1: an Auditor that failed three times
   // returned null, and the kernel path accepted on throughput alone; the config path never did).

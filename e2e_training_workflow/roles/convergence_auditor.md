@@ -16,6 +16,22 @@ Run the extracted task's oracle against the candidate kernel: `out`, `dgrad`, `w
 Report magnitude AND sign distribution. A pass with a one-sided error distribution is a finding, not
 a pass: say so.
 
+### L0b — the fp32 main_grad accumulation contract (every candidate; DECISIONS 4.50, 4.56)
+Under gradient_accumulation_fusion a GEMM's weight gradient is ADDED into a persistent fp32
+`main_grad`, which the L0 oracle never sees; a bf16-rounded wgrad added in fp32 even passes the
+oracle-style limit. Run, for EVERY candidate (the script decides applicability from the task):
+
+```bash
+GEAK_SCRIPTS/main_grad_contract.sh <TASK dir> <OVERLAY_IMPL>/impl.py <TASK dir>/main_grad_contract.json --gpu 0
+```
+
+Copy its printed `applicable`, `passed`, `head`, `why` verbatim into `main_grad_contract`, plus
+`result` = the JSON path. Do not decide applicability yourself and do not re-run until it passes.
+`passed` is true only if the candidate keeps the incumbent's contract AND all three deliberately wrong
+accumulators (overwrite, bf16 accumulator, bf16-rounded wgrad) FAIL -- a run that cannot tell them
+from a correct kernel proves nothing. The orchestrator refuses a candidate whose field is missing, or
+applicable and not passed. A failure here is an L0-class (numerics) finding: write the KB card.
+
 ### L1 — trajectory level
 `python3 scripts/trajectory_gate.py compare <ref_probe> <cand_probe> --band <band.json> --kind <overlay|kernel_swap> [--l0-strictly-better]`
 
@@ -140,6 +156,8 @@ Return JSON:
 ```json
 {"l0": {"pass": true, "reason": "...", "sign_balance": 0.0},   // pass MUST be a boolean; absent = no accept
  "l1": {"pass": true, "reason": "...", "checks": {...}},
+ "main_grad_contract": {"applicable": true, "passed": true, "head": "LNLinearHead", "why": null,
+                        "result": "<TASK>/main_grad_contract.json"},   // copied from the script; absent = no accept
  "l2_recommended": false, "risk_class": "low|backward|optimizer|reduction|precision",
  "kb_rejection_card": "<path written, or null when the candidate passed>"}
 ```
