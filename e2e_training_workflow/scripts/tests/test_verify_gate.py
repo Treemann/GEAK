@@ -66,6 +66,29 @@ try:
     none = run(ref, leg(root, "cand_none", 0.97))
     ok(none["engagement"]["forward"] is False and "no overlay proof" in none["engagement"].get("why", ""),
        "a cand that adds no proof is not engaged")
+    # A wrapper that DELEGATES every call: wrapper forward/backward > 0 but the kernel's own counters 0.
+    dlg = leg(root, "cand_dlg", 0.97, overlay="attn")
+    for f in glob.glob(os.path.join(dlg, "attn", "engagement_fused.json.rank*")):
+        r = json.load(open(f)); r["candidate_fwd"] = r["candidate_bwd"] = 0; json.dump(r, open(f, "w"))
+    ok(run(ref, dlg)["engagement"]["forward"] is False,
+       "a wrapper whose kernel never ran (candidate counters 0) is NOT engaged (wrapper counts are not summed in)")
+    # HF naming: <slot>/engagement_<slot>_cand.json.rank* with wrapper-only counters.
+    hf = leg(root, "cand_hf", 0.97)
+    os.makedirs(os.path.join(hf, "qkvo"))
+    for rk in range(8):
+        json.dump({"rank": rk, "replacement": "/work/overlays/x/hf_attn_qkvo_proj/impl.py:entry", "forward": 56, "backward": 56},
+                  open(os.path.join(hf, "qkvo", f"engagement_qkvo_cand.json.rank{rk}"), "w"))
+    e = run(ref, hf)["engagement"]
+    ok(e["forward"] and e["added"] == ["qkvo"], "HF proof naming (engagement_<slot>_cand.json.rank*) is read")
+    # Same-slot REPLACEMENT: the ref already has an 'attn' proof from a different overlay.
+    ref_inc = leg(root, "ref_inc", 1.0, overlay="attn")
+    for f in glob.glob(os.path.join(ref_inc, "attn", "engagement.json.rank*")):
+        r = json.load(open(f)); r["replacement"] = "/work/overlays/old/attn_v1/impl.py:entry"; json.dump(r, open(f, "w"))
+    cand_new = leg(root, "cand_new", 0.97, overlay="attn")
+    for f in glob.glob(os.path.join(cand_new, "attn", "engagement.json.rank*")):
+        r = json.load(open(f)); r["replacement"] = "/work/overlays/new/attn_v2/impl.py:entry"; json.dump(r, open(f, "w"))
+    e2 = run(ref_inc, cand_new)["engagement"]
+    ok(e2["added"] == ["attn"] and e2["forward"], "a candidate replacing an incumbent overlay in the SAME slot is judged, not refused")
     via_probe = run(os.path.join(ref, "probe"), os.path.join(root, "cand", "probe"))
     ok(via_probe["verdict"]["klass"] == "win", "probe/ paths are accepted as leg paths")
 finally:

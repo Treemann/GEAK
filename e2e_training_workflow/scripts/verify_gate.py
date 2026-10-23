@@ -62,49 +62,74 @@ def _leg(d):
     return s
 
 
-def _proof_dirs(d):
-    """Overlay proof subdirs of a leg: those holding engagement*.json.rank* files."""
-    out = set()
+def _proofs(d):
+    """{slot: {rank: [proof dicts]}} for every engagement*.json.rank* under <leg>/<slot>/. Covers both
+    layouts: Megatron (engagement.json.rank* = overlay_train wrapper, engagement_fused.json.rank* = the
+    kernel's own proof) and HF (engagement_<slot>_cand.json.rank*, either kind)."""
+    out = {}
     for f in glob.glob(os.path.join(d, "*", "engagement*.json.rank*")):
-        out.add(os.path.basename(os.path.dirname(f)))
+        try:
+            r = json.load(open(f))
+        except (OSError, ValueError):
+            continue
+        rk = r.get("rank", f.rsplit("rank", 1)[-1])
+        out.setdefault(os.path.basename(os.path.dirname(f)), {}).setdefault(str(rk), []).append(r)
     return out
 
 
-def _engagement(ref_dir, cand_dir, nproc):
-    added = sorted(_proof_dirs(cand_dir) - _proof_dirs(ref_dir))
-    res = {"overlays": {}, "added": added}
-    if not added:
-        res.update(forward=False, backward=False,
-                   why="the candidate leg carries no overlay proof that the reference lacks")
-        return res
-    fwd_all = bwd_all = True
-    for sub in added:
-        o = {"ranks_generic": 0, "ranks_fused": 0, "fallback_total": 0, "forward": True, "backward": True}
-        per_rank_f, per_rank_b = {}, {}
-        for f in glob.glob(os.path.join(cand_dir, sub, "engagement.json.rank*")):
-            r = json.load(open(f))
-            rk = r.get("rank")
-            o["ranks_generic"] += 1
-            per_rank_f[rk] = per_rank_f.get(rk, 0) + int(r.get("forward") or 0)
-            per_rank_b[rk] = per_rank_b.get(rk, 0) + int(r.get("backward") or 0)
-        for f in glob.glob(os.path.join(cand_dir, sub, "engagement_fused.json.rank*")):
-            r = json.load(open(f))
-            rk = r.get("rank")
-            o["ranks_fused"] += 1
-            # the overlay's own proof: candidate_fwd/_bwd (or fwd/bwd) counts
-            per_rank_f[rk] = per_rank_f.get(rk, 0) + int(r.get("candidate_fwd") or r.get("fwd") or 0)
-            per_rank_b[rk] = per_rank_b.get(rk, 0) + int(r.get("candidate_bwd") or r.get("bwd") or 0)
+def _identity(proofs_by_rank):
+    """What overlay a slot runs: its replacement / manifest / kernel hashes, from any rank's proofs."""
+    ids = set()
+    for plist in proofs_by_rank.values():
+        for r in plist:
+            for k in ("replacement", "manifest", "kernel_sha256", "impl_sha256"):
+                if k in r:
+                    v = r[k]
+                    if k in ("replacement", "manifest"):
+                        v = os.path.basename(os.path.dirname(str(v).split(":")[0]))   # overlay dir name, not install path
+                    ids.add((k, json.dumps(v, sort_keys=True)))
+        break
+    return ids
+
+
+def _slot_engaged(plist_by_rank, nproc):
+    """A slot is engaged iff on >= nproc ranks forward AND backward ran on the CANDIDATE path and no
+    fallback counter is non-zero. The kernel's own counters (candidate_fwd/_bwd) are the evidence when
+    present; the wrapper's forward/backward count only when they are the ONLY proof (an overlay whose
+    impl IS the entry). Summing the two (2026-10-22 review MEG-M1) let a wrapper that delegated every
+    call read as engaged."""
+    o = {"ranks": len(plist_by_rank), "fallback_total": 0, "evidence": None}
+    fwd, bwd = {}, {}
+    for rk, plist in plist_by_rank.items():
+        fused = [r for r in plist if "candidate_fwd" in r or "candidate_bwd" in r]
+        use = fused or [r for r in plist if "forward" in r or "backward" in r]
+        o["evidence"] = "candidate counters" if fused else "wrapper counters"
+        fwd[rk] = sum(int(r.get("candidate_fwd", r.get("forward", 0)) or 0) for r in use)
+        bwd[rk] = sum(int(r.get("candidate_bwd", r.get("backward", 0)) or 0) for r in use)
+        for r in plist:
             for k, v in r.items():
                 if k.startswith("fallback") and isinstance(v, (int, float)) and v:
                     o["fallback_total"] += v
-        o["forward"] = len(per_rank_f) >= nproc and all(v > 0 for v in per_rank_f.values())
-        o["backward"] = len(per_rank_b) >= nproc and all(v > 0 for v in per_rank_b.values())
-        if o["fallback_total"]:
-            o["forward"] = o["backward"] = False
-        res["overlays"][sub] = o
-        fwd_all &= o["forward"]
-        bwd_all &= o["backward"]
-    res.update(forward=bool(fwd_all), backward=bool(bwd_all), ranks=nproc)
+    o["forward"] = len(fwd) >= nproc and all(v > 0 for v in fwd.values()) and not o["fallback_total"]
+    o["backward"] = len(bwd) >= nproc and all(v > 0 for v in bwd.values()) and not o["fallback_total"]
+    return o
+
+
+def _engagement(ref_dir, cand_dir, nproc):
+    rp, cp = _proofs(ref_dir), _proofs(cand_dir)
+    # Judge every slot that is NEW in the cand, or whose overlay identity CHANGED (a candidate that
+    # replaces an incumbent overlay in the same slot was always refused before).
+    judged = sorted(s for s in cp if s not in rp or _identity(cp[s]) != _identity(rp[s]))
+    res = {"overlays": {}, "added": judged}
+    if not judged:
+        res.update(forward=False, backward=False,
+                   why="the candidate leg carries no overlay proof that is new or changed vs the reference "
+                       "(expected <leg>/<slot>/engagement*.json.rank*)")
+        return res
+    for sub in judged:
+        res["overlays"][sub] = _slot_engaged(cp[sub], nproc)
+    res.update(forward=all(o["forward"] for o in res["overlays"].values()),
+               backward=all(o["backward"] for o in res["overlays"].values()), ranks=nproc)
     return res
 
 

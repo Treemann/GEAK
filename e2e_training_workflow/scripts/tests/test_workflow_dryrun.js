@@ -419,6 +419,10 @@ async function dryRun(args) {
                    { cleared: false, quality: 'INCONCLUSIVE-quality: still', stability: 'PASS-stability: 0', legs_prefix: '/q' }];
     const { calls: cq2 } = await dryRun({ ...base, quality_gate: 'true' });
     ok(cq2.prompts.filter((p) => p.includes('PHASE=quality')).length === 2, 'never more than ONE extension');
+    QUALITY_SEQ = [{ cleared: false, quality: 'INCONCLUSIVE-quality: the positive control was not detected', stability: 'PASS-stability: 0', legs_prefix: '/p' }];
+    const { calls: cqc } = await dryRun({ ...base, quality_gate: 'true', quality_ctrl: 'ctrl70' });
+    ok(cqc.prompts.filter((p) => p.includes('PHASE=quality')).length === 1,
+      'an undetected positive control is NOT extended (more seeds of a dead control prove nothing)');
     QUALITY_SEQ = [{ cleared: false, quality: 'FAIL-quality: worse', stability: 'PASS-stability: 0', legs_prefix: '/p' }];
     const { calls: cq3 } = await dryRun({ ...base, quality_gate: 'true' });
     ok(cq3.prompts.filter((p) => p.includes('PHASE=quality')).length === 1, 'a FAIL is not extended');
@@ -462,6 +466,12 @@ async function dryRun(args) {
     const { calls: cc } = await dryRun({ ...base, quality_gate: 'true', quality_ctrl: 'ctrl70' });
     ok(cc.prompts.filter((p) => p.includes('PHASE=quality'))[0].includes('"QUALITY_CTRL": "ctrl70"'),
       'quality_ctrl passes an in-run positive-control arm to the outcome test');
+    // HF runs default to the pre-registered HF protocol (P0-4g): _q descriptor, hf_trl stack, ctrl70 control.
+    const { calls: ch } = await dryRun({ ...base, stack: 'hf_trl', workload: '/x/workloads/qwen2_5_math_7b_hf_cosine_zero2_nm.env', quality_gate: 'true' });
+    const hq = ch.prompts.filter((p) => p.includes('PHASE=quality'))[0] || '';
+    ok(hq.includes('"QUALITY_WORKLOAD": "/x/workloads/qwen2_5_math_7b_hf_cosine_zero2_nm_q.env"') &&
+       hq.includes('"QUALITY_CTRL": "ctrl70"') && hq.includes('"QUALITY_STACK": "hf_trl"'),
+      'an HF QualityGate defaults to the _q descriptor, the hf_trl stack and the in-run ctrl70 control');
     const { calls: cq } = await dryRun({ ...base, quality_gate: 'true', quality_workload: '/x/workloads/sched.env' });
     ok(cq.prompts.filter((p) => p.includes('PHASE=quality'))[0].includes('"QUALITY_WORKLOAD": "/x/workloads/sched.env"'),
       'an explicit quality_workload overrides the default');

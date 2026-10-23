@@ -148,13 +148,16 @@ pass before it is called safe to train with.
      (warmup + decay, DECISIONS 4.22-4.24): if the descriptor has no `LR_DECAY_ITERS` /
      `LR_DECAY_STYLE` other than constant, do NOT run; return `cleared: null` and say the run must
      pass a scheduled `quality_workload`.
-2. **Run** `QUALITY_SCRIPT --workload QUALITY_WORKLOAD --seeds QUALITY_SEEDS --arms ref,cand
-   --cand-cmd "<your script>" [--cand-train-args "<flags_added>"] --name qgate`. That is one epoch per leg on the train19k pack, with
+2. **Run** `QUALITY_SCRIPT --workload QUALITY_WORKLOAD --stack QUALITY_STACK --nproc NPROC --gpus GPU_IDS
+   --seeds QUALITY_SEEDS --arms ref,cand[,QUALITY_CTRL] --cand-cmd "<your script>"
+   [--cand-train-args "<flags_added>"] --name qgate`. On `hf_trl` the defaults reproduce the pre-registered
+   HF protocol (P0-4g): the `_q` descriptor (296 iterations), unpacked train19k / held-out 1k data, and the
+   in-run `ctrl70` control -- HF has no fixed yardstick, so never judge an HF run without `--ctrl`. That is one epoch per leg on the train19k pack, with
    the held-out evaluation at the end. Do not change iterations, data or seeds: the verdict rules
    were pre-registered for exactly this protocol (knowledge/gate_convergence.md, P0-4e).
 3. **Verify engagement** on every cand leg: per overlay, the training buckets show fallback 0. The
    eval-mode fallbacks of rope / swiglu / attn / lmhead are expected (no_grad path).
-4. **Judge** with `QUALITY_VERDICT <prefix> --cand cand`. Return its `cleared`, `quality` and
+4. **Judge** with `QUALITY_VERDICT <prefix> --cand cand` (plus `--ctrl QUALITY_CTRL` when set). Return its `cleared`, `quality` and
    `stability` VERBATIM, plus `legs_prefix`. Do not soften a NOT CLEARED. A NOT CLEARED stack still
    ships its throughput number, but must be labelled not cleared for production training.
    * If `QUALITY_CTRL` is set (e.g. `ctrl70`), add it as a third arm (`--arms ref,cand,QUALITY_CTRL`) and

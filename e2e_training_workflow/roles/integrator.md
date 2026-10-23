@@ -95,6 +95,11 @@ Return JSON:
                  window_artifact_pct, dispersion_reliable, window...},
  "engagement": {"forward": true, "backward": true, "evidence": "..."},   // booleans; anything else is 'not proven'
  "legs_measured": {"refs": ["<host leg dir>", ...], "cands": ["<host leg dir>", ...]},
+ // ENGAGEMENT PROOF LAYOUT the verifier reads (scripts/verify_gate.py): one SUBDIR per overlay slot,
+ // <leg>/<slot>/engagement*.json.rank<r>, one file per rank, each with "rank". Either the kernel's own
+ // counters ("candidate_fwd", "candidate_bwd", any "fallback*" = 0) or -- only for an overlay whose impl
+ // IS the entry -- the wrapper's "forward"/"backward" with "replacement". Proofs at the leg ROOT are not
+ // read. The judged slot must be new in the cand or carry a different overlay identity than the ref's.
  // EVERY leg you took for this gate, not just the reported pair: a gate verifier recomputes every
  // ref x cand pairing from these dirs (scripts/verify_gate.py). The reported pair must win on the
  // recomputed numbers and no pairing may be a regression -- re-measuring a noisy leg is fine, hiding it is not.

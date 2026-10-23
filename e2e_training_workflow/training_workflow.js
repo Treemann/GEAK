@@ -47,13 +47,19 @@ const QUALITY_SEEDS = String(A.quality_seeds || '5567,6678,7789,8890,9901');
 const QUALITY_EXTEND_SEEDS = String(A.quality_extend_seeds || '7013,8124,9235,1346,2457');
 // Optional IN-RUN positive control arm (audit G4): e.g. 'ctrl70' (the schedule scaled x0.7). The yardstick
 // is then measured in this run instead of the fixed P0-4d value, at +50% legs. Off by default.
-const QUALITY_CTRL = A.quality_ctrl ? String(A.quality_ctrl) : null;
+// HF has NO fixed yardstick (the P0-4d +0.0206 is Megatron's): its pre-registered protocol (P0-4g) measures
+// the yardstick in-run from ctrl70, so on hf_trl the control arm is the DEFAULT (2026-10-23 review F1).
+const QUALITY_CTRL = A.quality_ctrl ? (String(A.quality_ctrl) === 'none' ? null : String(A.quality_ctrl))
+  : ((A.stack || 'megatron') === 'hf_trl' ? 'ctrl70' : null);
 // Default = THIS RUN's workload: the outcome test must judge the stack the run built, on the recipe it
 // built it on. A fixed default (`_cosine_avg`, 2026-10-20..22) broke the moment a run's own lever was
 // --ddp-average-in-collective on `_cosine`: the REF arm would already carry the lever and REF == cand.
 // The protocol needs a SCHEDULED recipe (warmup + decay, DECISIONS 4.22-4.24); a constant-LR run must
 // pass quality_workload explicitly, and the Director says so if it is not scheduled.
-const QUALITY_WORKLOAD = String(A.quality_workload || A.workload || "");
+// HF's outcome-test recipe is the run's descriptor with a `_q` suffix (same recipe, LR_DECAY_ITERS = one
+// epoch of the train19k split = 296 iterations, P0-4g); Megatron's is the run's own descriptor.
+const QUALITY_WORKLOAD = String(A.quality_workload ||
+  ((A.stack || 'megatron') === 'hf_trl' ? String(A.workload || '').replace(/(_q)?\.env$/, '_q.env') : (A.workload || '')));
 
 // ===========================================================================
 // SKELETON STATUS — read this before trusting a result from this file.
@@ -423,9 +429,11 @@ function overlayShaCheck(expectedRef, ref, cand) {
 // on EVERY ref x cand leg the measuring agent took. Accept only if the REPORTED pair is a win on the
 // recomputed numbers, its engagement is proven from the proof files (kernel gates), and NO pairing is
 // a regression. Legs are matched by directory basename (agents mix host and container paths).
+// The LAST TWO path components (agents mix host /home/... and container /work/... paths): a basename
+// collided on the HF `<gate>/ref`, `<gate>/cand` layout (2026-10-23 review LEGBASE-COLLISION).
 const legBase = (l) => {
   const d = typeof l === 'string' ? l : (l && (l.dir || l.probe_dir));
-  return d ? String(d).replace(/\/+$/, '').replace(/\/probe$/, '').split('/').pop() : null;
+  return d ? String(d).replace(/\/+$/, '').replace(/\/probe$/, '').split('/').slice(-2).join('/') : null;
 };
 function verifyDecision(ver, refLegOrDir, candLegOrDir, needEngagement) {
   const pairs = (ver && Array.isArray(ver.pairs)) ? ver.pairs : null;
@@ -1622,24 +1630,28 @@ if (QUALITY_GATE && stackChanged) {
   phase('QualityGate');
   const q = await safeAgentStub('training_director', 'quality',
     { ...benchInputs(curConfig, 'quality'), FINAL: fin, OVERLAY: curOverlay,
-      ACCEPTED_CONFIG: qConfig, QUALITY_SEEDS, QUALITY_WORKLOAD, QUALITY_CTRL,
+      ACCEPTED_CONFIG: qConfig, QUALITY_SEEDS, QUALITY_WORKLOAD, QUALITY_CTRL, QUALITY_STACK: STACK,
       QUALITY_SCRIPT: `${WORKFLOW_DIR}/scripts/quality_ab.sh`,
       QUALITY_VERDICT: `${WORKFLOW_DIR}/scripts/quality_ab_final.py` },
     'Run the one-epoch outcome test of the final stack against REF and return the verdict of ' +
     'quality_ab_final.py VERBATIM (cleared, quality, stability). Do not reinterpret it.');
   wfReturn.quality_gate = q || { cleared: false, quality: 'not run', stability: 'not run' };
-  if (q && /^INCONCLUSIVE-quality/.test(String(q.quality || '')) && !/^FAIL/.test(String(q.stability || '')) &&
+  // Extend only when the verdict is INCONCLUSIVE because the sample is too small -- NOT when the positive
+  // control itself was not detected (more seeds of an undetected control prove nothing; review QEXT).
+  if (q && /^INCONCLUSIVE-quality/.test(String(q.quality || '')) &&
+      !/positive control was not detected/.test(String(q.quality || '')) && !/^FAIL/.test(String(q.stability || '')) &&
       QUALITY_EXTEND_SEEDS !== 'none' && q.legs_prefix) {
     log0(`quality gate INCONCLUSIVE (${q.quality}) -- running the ONE pre-registered extension: seeds ${QUALITY_EXTEND_SEEDS}`);
     const qx = await safeAgentStub('training_director', 'quality',
       { ...benchInputs(curConfig, 'quality_ext'), FINAL: fin, OVERLAY: curOverlay,
-        ACCEPTED_CONFIG: qConfig, QUALITY_SEEDS: QUALITY_EXTEND_SEEDS, QUALITY_WORKLOAD, QUALITY_CTRL,
+        ACCEPTED_CONFIG: qConfig, QUALITY_SEEDS: QUALITY_EXTEND_SEEDS, QUALITY_WORKLOAD, QUALITY_CTRL, QUALITY_STACK: STACK,
         EXTENSION_OF: q.legs_prefix,
         QUALITY_SCRIPT: `${WORKFLOW_DIR}/scripts/quality_ab.sh`,
         QUALITY_VERDICT: `${WORKFLOW_DIR}/scripts/quality_ab_final.py` },
       'This is the ONE pre-registered seed extension of an INCONCLUSIVE outcome test. Run the SAME protocol ' +
-      '(same cand command, arms, workload) for QUALITY_SEEDS only, then judge the COMBINED sample with ' +
-      '`QUALITY_VERDICT EXTENSION_OF <your new prefix> --cand cand` and return that verdict VERBATIM. It is final.');
+      '(same cand command, arms -- including QUALITY_CTRL if set -- stack and workload) for QUALITY_SEEDS only, then ' +
+      'judge the COMBINED sample with `QUALITY_VERDICT EXTENSION_OF <your new prefix> --cand cand` plus ' +
+      '`--ctrl QUALITY_CTRL` when it is set, and return that verdict VERBATIM. It is final.');
     wfReturn.quality_gate = Object.assign({}, qx || { cleared: false, quality: 'extension not run', stability: 'not run' },
       { first_verdict: q, extended: true });
   }

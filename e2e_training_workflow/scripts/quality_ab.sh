@@ -16,7 +16,7 @@
 set -euo pipefail
 GEAK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_HOST="${GEAK_WORK_DIR:-/home/treemann/geak_train}"
-SEEDS="1234,2345,3456"; ARMS="ref,s8,ctrl"; ITERS=""; NAME=qab
+SEEDS="1234,2345,3456"; ARMS="ref,s8,ctrl"; ITERS=""; NAME=qab; NPROC=8; GPUS=""
 # Default = the CLEARED production recipe (audit 2026-10-22 G4: it was the constant-LR packed.env, which
 # is NOT cleared and which no outcome test since P0-4d should run on).
 WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed_cosine_avg.env"; CAND_CMD=""; CAND_TARGS=""
@@ -25,7 +25,9 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --seeds) SEEDS="$2"; shift 2;;
     --arms) ARMS="$2"; shift 2;;
-    --iters) ITERS="$2"; shift 2;;    # default: the descriptor's LR_DECAY_ITERS (its planned run = one epoch)
+    --iters) ITERS="$2"; shift 2;;
+    --nproc) NPROC="$2"; shift 2;;    # the run's process count (was hard-coded 8; review QAB-GPUS)
+    --gpus) GPUS="$2"; shift 2;;      # the run's gpu_ids, passed to bench_train --gpus    # default: the descriptor's LR_DECAY_ITERS (its planned run = one epoch)
     --name) NAME="$2"; shift 2;;
     --workload) WORKLOAD="$2"; shift 2;;
     --cand-cmd) CAND_CMD="$2"; shift 2;;
@@ -87,7 +89,7 @@ for SEED in ${SEEDS//,/ }; do
       *) echo "unknown arm: $ARM" >&2; exit 2;;
     esac
     echo ">>> $(date +%H:%M:%S) leg $LEG -> $OUT_HOST"
-    "$GEAK_ROOT/scripts/bench_train.sh" --workload "$WORKLOAD" --stack "$STACK" --nproc 8 \
+    "$GEAK_ROOT/scripts/bench_train.sh" --workload "$WORKLOAD" --stack "$STACK" --nproc "$NPROC" ${GPUS:+--gpus "$GPUS"} \
       --iters "$ITERS" --data "$TRAIN" --out "$OUT_HOST" --tag "${NAME}_${LEG}" \
       --extra-train-args "$TARGS" ${EXTRA:+--extra-env "$EXTRA"} || echo "!!! leg $LEG returned non-zero"
   done

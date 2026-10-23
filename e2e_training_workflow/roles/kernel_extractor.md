@@ -12,6 +12,11 @@ to cheat. Read `knowledge/gate_convergence.md` (L0) before you build the oracle.
    - a reference `grad_output` of the right shape/scale, captured from the live run;
    - reference outputs for `out`, `dgrad` and `wgrad`, computed in **fp32**.
 
+1b. **Reusing an existing task dir?** Only if its `meta.json` has `"template_version" >= 2`. An older
+   template-built oracle silently skips a candidate's missing trailing gradient and has no 1-ulp rule
+   (DECISIONS 4.42, 4.52): REBUILD it from its capture with the current `build_task_dir.py` (same
+   reference / layout / acceptance arguments, recorded in the old meta) into a NEW task dir, and say so.
+   A custom (non-template) oracle is reused only if you confirm it scores every output.
 2. **Freeze the oracle.** Write `reference_io.pt` + `unittest.py` + `meta.json` into a task dir and do
    not let anything downstream regenerate them. The kernel layer must be scored against inputs it
    cannot influence.

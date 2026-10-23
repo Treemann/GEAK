@@ -270,6 +270,10 @@ def build(capture_path, task_dir, reference="rmsnorm_linear", name=None, const=N
         "opaque_note": ("runtime handles from the live call. They are CONTEXT, not inputs: the task is "
                         "the pure-tensor operation, and a candidate is not expected to reproduce them."),
         "base_error": base_error,
+        # Version of the GENERATED unittest's rules. 2 (2026-10-22/23): every output is scored (count,
+        # coverage and shape gated) and ulp1_elementwise exists. A reused task dir without it predates
+        # those fixes and must be REBUILT from its capture before a lane uses it (review F2).
+        "template_version": 2,
         "acceptance": {
             "rule": ("a candidate is correct iff, for every output, it is no further from the fp32 "
                      "reference than the ORIGINAL is (x margin), and its error is not one-sided"),
