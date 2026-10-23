@@ -164,10 +164,14 @@ validation, and bundle delivery.
 The HF TRL adapter runs the same workflow and gates unchanged: eight overlays accepted and the final
 configuration cleared for training (DECISIONS 4.27-4.40).
 
-Open, in priority order (`RESUME.md`, "MEGATRON REVIEW"):
-* ConfigSweep merging accepted levers and carrying them into later legs (P1-C);
-* QualityGate exercised inside a workflow run;
-* MoE / TP > 1 (P3).
+Open, in priority order (2026-10-23; full list with rationale in `RESUME.md`, "OPEN AFTER THE 2026-10-23 REVIEW"):
+* correctness coverage: the GEMM overlays' fp32 main_grad wgrad path in L0 (G5); mid-depth oracle
+  captures (all are layer 0); HF L1 backward check;
+* identity: rocm_compat / harness version outside the digest (OVL-6);
+* throughput: HF token-balanced rank assignment; the 1022 attention and the NaN-check / zero_ passes on s8;
+* MoE / TP > 1 (P3, deferred by the owner).
+Done since the last version of this list: ConfigSweep merges and carries accepted levers (P1-C); the
+QualityGate runs inside a workflow (wf_b4b35fd3, 2026-10-22), including its seed extension.
 
 ## Launching a full `fast` run from Claude Code
 

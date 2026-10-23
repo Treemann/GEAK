@@ -1,5 +1,15 @@
 # Resume notes — updated 2026-10-23
 
+## OPEN AFTER THE 2026-10-23 REVIEW (owner: do all, in this order; status kept current)
+
+Order: (8) stale records -> (3) >= 3 baseline legs so the L1 envelope votes -> (1) main_grad contract in L0 ->
+(2) 30-step headline with the unstable first steps excluded (owner: NOT a full-epoch headline) -> P0-4 HF
+attention mid-depth oracles -> P1 (5) harness/rocm_compat identity, (6) template-oracle output hole, (7) eps
+cross-stack note -> P2 HF token-balanced ranks, 1022 attention into s8, NaN-check/zero_ passes, --gc default ->
+P3 reuse HF QualityGate ref/ctrl70 legs, mid-leg occupancy sampling, HF L1 backward check.
+* (8) DONE 2026-10-23: comm-sweep arm C record corrected (crash, AssertionError in start_param_sync, not
+  "degenerate"); README open list refreshed (P1-C and in-workflow QualityGate were already done).
+
 ## State (2026-10-10, after run wf_cc06b402-312 completed)
 Run `wf_cc06b402-312` finished: `rope_fused_qk` +3.89% and `swiglu_bwd_fwd_bw` +3.15% ACCEPTED,
 validated together at +7.19% (2,874.2 -> 3,081.8 useful tok/s/GPU); bundle

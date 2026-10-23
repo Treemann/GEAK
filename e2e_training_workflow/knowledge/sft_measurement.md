@@ -1283,7 +1283,7 @@ driver `geak_train/scratch/comm_sweep_1016.sh`). Paired against A, the current c
 | arm | flags | paired vs A | note |
 |---|---|---|---|
 | B | `--overlap-grad-reduce` | −1.47 / −0.97% | +900 MB; worse, as on the bare stack |
-| C | B + `--overlap-param-gather` | unusable (~520 tok/s) | runs degenerate or stall, no error logged; not pursued |
+| C | B + `--overlap-param-gather` | CRASHED (both reps) | AssertionError `self.param_gather_handle is None` in Megatron's `start_param_sync` (param_and_grad_buffer.py:314) at step 3, job rc 1; the ~520 tok/s was 2 steps before the crash [CORRECTED 2026-10-23: first recorded as 'degenerate or stall, no error logged'] |
 | D | B + `--ddp-bucket-size 2e8` | −0.42 / −0.33% | fewer, larger buckets are still not a win |
 | **E** | `--ddp-average-in-collective` | **+0.86 / +0.92%** (IQR 0.62 / 0.13%) | the 1/DP scaling moves into the reduce-scatter |
 
