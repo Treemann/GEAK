@@ -31,6 +31,8 @@ P3 reuse HF QualityGate ref/ctrl70 legs, mid-leg occupancy sampling, HF L1 backw
   comparability (4.67); 1022 attribution withdrawn after code diff + 2 healthy re-runs (4.69); HF bundle default bal,
   re-pinned (4.68); fast default CLEARED by P0-4o at n = 10 (4.70). Open next: a fresh pre-registered outcome test
   if the 1022 kernel is to be folded into s8; the L0 p=0 tier of the 1020/1022 oracles tests the incumbent.
+* 2026-10-24 (later) DONE: 1022 L0 evidence widened (8 live + 144 synthetic, bit-identical to 1013 except dq atomic
+  order, 4.71); fresh outcome test P0-4p CLEARED -> deliverable = finalize_bundle_1024_s8a22 (fast default, 4.72).
 
 ## State (2026-10-10, after run wf_cc06b402-312 completed)
 Run `wf_cc06b402-312` finished: `rope_fused_qk` +3.89% and `swiglu_bwd_fwd_bw` +3.15% ACCEPTED,
