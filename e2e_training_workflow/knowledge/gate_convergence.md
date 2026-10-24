@@ -2101,3 +2101,17 @@ This closes that gap.
   arm of DECISIONS 4.66). CLEARED iff PASS-quality and PASS-stability. If INCONCLUSIVE (and not FAIL): one
   extension, seeds 7013, 8124, 9235, 1346, 2457, with fresh s8 and cand arms. If NOT CLEARED, the bundle default
   reverts to `--plain`.
+
+### P0-4n CORRECTION (2026-10-24): the attribution to the 1022 kernel is withdrawn (DECISIONS 4.69)
+Seed 4680 re-run twice with the 1022 kernel (`runs/qaba22r_1024_040138_cand_seed4680` = s8a22 alone,
+`runs/qabs9r_1024_041744_cand_seed4680` = s9 exactly): held-out 1.2959 and 1.2958 (s8: 1.2958), no drift. The
+P0-4n divergence was one chaotic realisation (the fp32-atomic summation order differs per run); the code
+diff shows the two kernels compute the same thing. P0-4n stays NOT CLEARED as recorded; folding the kernel
+needs a fresh pre-registered test.
+
+### P0-4o RESULT, first sample (2026-10-24): INCONCLUSIVE -> the pre-registered extension is running
+`runs/qabfast_1024_061114_*` (cand 4680 linked from qabs8n4680; base = P0-4f s8 legs; reuse check valid --
+only check_for_nan_in_loss_and_grad and manual_gc differ). d +0.01070 / -0.00546 / -0.00074 / -0.00293 /
++0.00385, mean +0.00108, upper 95% +0.00716 > 0.00515; stability PASS (0 severe, 0 catastrophic).
+Extension: `runs/qabfastx_1024_074442_*`, fresh s8 and cand arms, seeds 7013, 8124, 9235, 1346, 2457; the
+combined n = 10 verdict is final. Until then the bundle keeps `fast` as default; NOT CLEARED reverts it.
