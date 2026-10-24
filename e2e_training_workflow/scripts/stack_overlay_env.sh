@@ -134,7 +134,9 @@ HF_QKVO_BUNDLE="$WORK_HOST/runs/finalize_bundle_1019_hf5_qkvo"
 # hf6: fused lm_head + causal-LM loss (Qwen2ForCausalLM.forward), gated ON hf5 (wf_39ac0dc6-211, 4.37).
 # Its manifest carries a `sources` list (relative to the overlay dir, gated order): GEAK_OVERLAY_SHA, and
 # so impl_digest, hashes those bytes.
-HF_LMCE_BUNDLE="$WORK_HOST/runs/finalize_bundle_1019_hf6_lmce"
+# hf6 lmce overlay: the 1024 argfix bundle (only impl.py differs from finalize_bundle_1019_hf6_lmce: argparse-correct
+# --hf-train-metrics parsing, DECISIONS 4.65)
+HF_LMCE_BUNDLE="$WORK_HOST/runs/finalize_bundle_1024_hf_lmce_argfix"
 # hf7: + FSDP flat-grad accumulation (FlatParamHandle._get_unflat_views_aligned); hf8: + bf16-exact RoPE.
 # Both gated ON hf6 in wf_02793feb-78a (DECISIONS 4.39), both bitwise to the original.
 HF_FLATROPE_BUNDLE="$WORK_HOST/runs/finalize_bundle_1020_hf6_flat_rope"
