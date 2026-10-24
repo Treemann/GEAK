@@ -2124,3 +2124,19 @@ d per seed -0.00066 / +0.01070 / -0.00992 / -0.00546 / -0.00074 / -0.00293 / +0.
 Stated: seed 8124's d -0.0285 comes from the s8 BASE leg running poorly (held-out 1.3212); without that seed the
 mean is -0.00042 and the upper bound +0.0033, still inside the margin. `fast` (s8 + --gc + the NaN check from the
 grad norm) is cleared by its own outcome test, no longer only by the "numerically inert" argument.
+
+## P0-4p PRE-REGISTRATION (2026-10-24, before any P0-4p leg): fold the 1022 attention kernel into the deliverable
+
+P0-4n (s9 = s8 + 1022 + NaN move + GC) is NOT CLEARED as recorded; its seed-4680 divergence was later shown to be a
+chaotic event (DECISIONS 4.69). This is a FRESH test; no P0-4n leg is counted.
+* base = `fast` (the cleared deliverable default: s8 + `--manual-gc --manual-gc-interval 0` +
+  `--no-check-for-nan-in-loss-and-grad`, GEAK_NAN_FROM_GRAD_NORM=1); cand = the same with the attention overlay
+  replaced by the 1022 kernel (`stack_overlay_env.sh --cond s8a22`). The two arms differ ONLY in the attention kernel.
+* workload `_cosine_avg`, 358 iterations, FRESH seeds 3141, 2718, 1618, 1414, 1732; both arms run fresh, interleaved
+  per seed (base then cand). Legs linked into one prefix as arms `fast` and `cand` with quality_reuse.py (check:
+  realized argument tables identical).
+* `quality_ab_final.py <prefix> --base fast --cand cand` (noninf, fixed yardstick 0.0206, stability with the
+  held-out arm of 4.66). CLEARED iff PASS-quality and PASS-stability. If INCONCLUSIVE (not FAIL): one extension,
+  fresh seeds 6021, 6107, 6211, 6311, 6421, both arms; the combined n = 10 verdict is final.
+* If CLEARED: the Megatron bundle's `fast` default carries the 1022 kernel (a new bundle version). If not: s8
+  keeps the 1013 kernel.
