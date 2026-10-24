@@ -27,6 +27,10 @@ P3 reuse HF QualityGate ref/ctrl70 legs, mid-leg occupancy sampling, HF L1 backw
 * P2 rest DONE 2026-10-23: NaN check moved to the grad norm ACCEPTED (+0.62%, 4.62); 1022 attention NOT folded into
   s8 (P0-4n NOT CLEARED, late divergence on seed 4680 attributed to it, 4.64); --gc + NaN move = the deliverable's
   default mode `fast` (bundle re-run in fast/plain/bare, re-pinned). ALL ITEMS OF THE 2026-10-23 LIST ARE DONE.
+* 2026-10-24 list (owner order 1-6) DONE: lmce argv fix (4.65); held-out stability arm (4.66); hf_sft.py in
+  comparability (4.67); 1022 attribution withdrawn after code diff + 2 healthy re-runs (4.69); HF bundle default bal,
+  re-pinned (4.68); fast default CLEARED by P0-4o at n = 10 (4.70). Open next: a fresh pre-registered outcome test
+  if the 1022 kernel is to be folded into s8; the L0 p=0 tier of the 1020/1022 oracles tests the incumbent.
 
 ## State (2026-10-10, after run wf_cc06b402-312 completed)
 Run `wf_cc06b402-312` finished: `rope_fused_qk` +3.89% and `swiglu_bwd_fwd_bw` +3.15% ACCEPTED,

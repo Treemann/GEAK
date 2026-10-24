@@ -2115,3 +2115,12 @@ only check_for_nan_in_loss_and_grad and manual_gc differ). d +0.01070 / -0.00546
 +0.00385, mean +0.00108, upper 95% +0.00716 > 0.00515; stability PASS (0 severe, 0 catastrophic).
 Extension: `runs/qabfastx_1024_074442_*`, fresh s8 and cand arms, seeds 7013, 8124, 9235, 1346, 2457; the
 combined n = 10 verdict is final. Until then the bundle keeps `fast` as default; NOT CLEARED reverts it.
+
+### P0-4o RESULT (2026-10-24): **CLEARED** at the pre-registered n = 10 — the `fast` default stays
+Combined `runs/qabfast_1024_061114_*` + `runs/qabfastx_1024_074442_*` (`quality_ab_final.py` with both prefixes):
+d per seed -0.00066 / +0.01070 / -0.00992 / -0.00546 / -0.00074 / -0.00293 / +0.00385 / -0.00145 / -0.02849 /
++0.00286, mean -0.00323, upper 95% +0.00284 <= 0.00515 -> PASS-quality; stability PASS (1 severe: seed 1346 max10
+0.494, a training-loss excursion with normal held-out d -0.0007; 0 catastrophic; held-out arm of 4.66: none).
+Stated: seed 8124's d -0.0285 comes from the s8 BASE leg running poorly (held-out 1.3212); without that seed the
+mean is -0.00042 and the upper bound +0.0033, still inside the margin. `fast` (s8 + --gc + the NaN check from the
+grad norm) is cleared by its own outcome test, no longer only by the "numerically inert" argument.
