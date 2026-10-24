@@ -8,9 +8,10 @@ x0.7 schedule moved it +0.0206 (P0-4d, all five seeds positive). That +0.0206 is
   quality   PASS iff |mean d| <= 0.25 x 0.0206 (= 0.00515) and NOT (mean d > 0 and t >= 2.776)
             FAIL iff mean d > 0.00515 and t >= 2.776;  otherwise INCONCLUSIVE
             d_k = held-out(S8)_k - held-out(REF)_k, paired by seed, n = 5
-  stability FAIL iff any S8 leg has max10 > 1.0 (catastrophic)
-            PASS iff no catastrophic and at most 1 S8 leg with max10 > 0.25 (severe)
+  stability FAIL iff any S8 leg is catastrophic: max10 > 1.0, or its held-out d > 5 x yardstick
+            PASS iff no catastrophic and at most 1 S8 leg severe: max10 > 0.25, or held-out d > 1 x yardstick
             otherwise INCONCLUSIVE.  max10: largest 10-step mean of loss(S8) - loss(REF) after step 150.
+            (the held-out arm of both thresholds added 2026-10-24, DECISIONS 4.66)
   CLEARED iff both PASS.
 
 RULES. `--rule point` (above) is the PRE-REGISTERED rule of every outcome test up to 2026-10-22 and
@@ -37,6 +38,8 @@ import statistics
 
 YARDSTICK = 0.0206
 MARGIN = 0.25 * YARDSTICK
+# Per-seed held-out thresholds, in units of the yardstick (DECISIONS 4.66).
+HELDOUT_SEVERE_Y, HELDOUT_CATASTROPHIC_Y = 1.0, 5.0
 T_CRIT = 2.776   # two-sided 95% t, df 4: the pre-registered 5-seed protocol
 # The critical value for OTHER seed counts (review 2026-10-20). It was a constant: a 3-seed run judged
 # with 2.776 instead of 4.303 is anti-conservative, and nothing checked the count. df -> t(0.975, df).
@@ -161,7 +164,16 @@ def main():
     qual = _noninf() if a.rule == "noninf" else _point()
     other = _point() if a.rule == "noninf" else _noninf()
     print(f"RULE: {a.rule}   (the other rule would say: {other.split(':')[0]})")
-    n_cat, n_sev = sum(x > CATASTROPHIC for x in sev), sum(x > SEVERE for x in sev)
+    # A seed is also severe / catastrophic by its HELD-OUT loss alone (DECISIONS 4.66). max10 looks for
+    # SPIKES in the training-loss difference; a sustained moderate divergence slips under it: P0-4n seed 4680
+    # trained to a held-out +0.273 (13x the yardstick) at max10 0.145. Thresholds in yardstick units, so
+    # they hold for HF's in-run yardstick too: severe = one seed worse than the whole x0.7-LR recipe
+    # change; catastrophic = 5x that. Calibrated on every outcome test on disk: no cleared test has a seed
+    # above +0.0112 (0.54 yardstick); every seed above 1 yardstick belongs to a test already NOT CLEARED.
+    d_sev = [x > HELDOUT_SEVERE_Y * yard for x in d]
+    d_cat = [x > HELDOUT_CATASTROPHIC_Y * yard for x in d]
+    n_cat = sum((x > CATASTROPHIC) or c for x, c in zip(sev, d_cat))
+    n_sev = sum((x > SEVERE) or ds for x, ds in zip(sev, d_sev))
     if n_cat:
         stab = f"FAIL-stability: {n_cat} catastrophic leg(s)"
     elif n_sev <= 1:
@@ -174,7 +186,8 @@ def main():
     print("OVERALL:  ", "CLEARED" if cleared else "NOT CLEARED")
     print(json.dumps({"rule": a.rule, "upper95": round(upper, 6), "seeds": seeds, "d": [round(x, 6) for x in d],
                       "mean": round(m, 6), "t": round(t, 3),
-                      "max10": [round(x, 3) for x in sev], "quality": qual, "stability": stab, "cleared": cleared}))
+                      "max10": [round(x, 3) for x in sev], "heldout_severe": d_sev, "heldout_catastrophic": d_cat,
+                      "quality": qual, "stability": stab, "cleared": cleared}))
 
 
 if __name__ == "__main__":
