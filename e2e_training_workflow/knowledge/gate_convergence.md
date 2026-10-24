@@ -2140,3 +2140,12 @@ chaotic event (DECISIONS 4.69). This is a FRESH test; no P0-4n leg is counted.
   fresh seeds 6021, 6107, 6211, 6311, 6421, both arms; the combined n = 10 verdict is final.
 * If CLEARED: the Megatron bundle's `fast` default carries the 1022 kernel (a new bundle version). If not: s8
   keeps the 1013 kernel.
+
+### P0-4p RESULT (2026-10-24): **CLEARED** — the 1022 attention kernel is folded into the deliverable
+Legs `runs/qabp4fast_1024_*` (base, `fast`) and `runs/qabp4a22_1024_*` (cand, `fast` + 1022), interleaved per seed,
+linked as `runs/qabp4_1024_combined_{fast,cand}_seed*`; realized argument tables identical on all 5 seeds; every
+leg ok / occupancy clean. Held-out d (cand - fast): -0.00528 / -0.00287 / +0.00042 / +0.00309 / +0.00600
+(seeds 1414 / 1618 / 1732 / 2718 / 3141), mean +0.00027, upper 95% +0.00458 <= 0.00515 -> PASS-quality.
+Stability PASS: 1 severe (seed 3141 max10 0.275, held-out d +0.006 < 1 yardstick), 0 catastrophic.
+Engagement: the 1022 kernel served every training call on every rank (candidate_fwd = candidate_bwd = 20,048 per
+rank on 358 steps); its only fallbacks are the end-of-training eval pass (dropout_p0, by design).
