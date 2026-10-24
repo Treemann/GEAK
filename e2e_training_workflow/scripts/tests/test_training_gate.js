@@ -336,6 +336,11 @@ const leg = (o = {}) => Object.assign({
   ok(!hr.ok && /different runtime code/.test(hr.why) && /rocm_compat/.test(hr.why), 'harness: a different rocm_compat is refused');
   ok(!comparable(leg({ digest_schema: 6, harness: H }), leg({ digest_schema: 6, harness: { ...H, image_id: 'sha256:y' } })).ok,
     'harness: a different image is refused');
+  const HH = { ...H, 'hf_sft.py': 'eee' };
+  ok(!comparable(leg({ digest_schema: 6, harness: HH }), leg({ digest_schema: 6, harness: { ...HH, 'hf_sft.py': 'fff' } })).ok,
+    'harness: HF legs that ran a different hf_sft.py (the HF training loop) are refused');
+  ok(!comparable(leg({ digest_schema: 6, harness: H }), leg({ digest_schema: 6, harness: HH })).ok,
+    'harness: an HF leg recorded before hf_sft.py was tracked is not comparable with one after');
   ok(!comparable(leg({ digest_schema: 6 }), leg({ digest_schema: 6, harness: H })).ok,
     'harness: a schema-6 leg without its harness record is refused (fail closed)');
   const dOnly = comparable(leg(), leg({ config_digest: 'other' }));

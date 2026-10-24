@@ -555,7 +555,8 @@ function comparable(ref, cand, allowedImpl) {
   // here rather than digested, so no schema bump re-measures every leg. FAIL CLOSED from schema 6 (every
   // v6 leg records it); older legs cannot carry it and are refused by the schema check above anyway
   // unless both are old.
-  const HARNESS_KEYS = ['rocm_compat.py', 'overlay_train.py', 'image_id'];
+  // hf_sft.py: the HF training loop (recorded on HF legs only, DECISIONS 4.67); absent on both Megatron legs.
+  const HARNESS_KEYS = ['rocm_compat.py', 'overlay_train.py', 'hf_sft.py', 'image_id'];
   const rh = ref.harness, ch = cand.harness;
   if (!(rh && ch)) {
     if (Math.max(Number(ref.digest_schema) || 0, Number(cand.digest_schema) || 0) >= 6) {

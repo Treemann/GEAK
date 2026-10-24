@@ -270,6 +270,16 @@ def _harness_shas():
                 out[f] = hashlib.sha256(fh.read()).hexdigest()[:16]
         except OSError:
             out[f] = None
+    # HF legs: the training loop itself lives in adapters/hf_sft.py (sampler, loss normalization, the
+    # Trainer subclass) -- the HF counterpart of rocm_compat, and the file --hf-balance-tokens changed
+    # (review HF-9, DECISIONS 4.67). Recorded on HF legs only, so a Megatron leg's record is unchanged.
+    import sys as _sys
+    if any(a == "--geak-stack" or a.startswith("--geak-stack=") for a in _sys.argv):
+        try:
+            with open(os.path.join(here, "adapters", "hf_sft.py"), "rb") as fh:
+                out["hf_sft.py"] = hashlib.sha256(fh.read()).hexdigest()[:16]
+        except OSError:
+            out["hf_sft.py"] = None
     out["image"] = os.environ.get("GEAK_IMAGE")
     out["image_id"] = os.environ.get("GEAK_IMAGE_ID")
     return out
