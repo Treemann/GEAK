@@ -2086,3 +2086,18 @@ change to a cleared stack still needs the outcome test.
   healthy (held-out 1.2929 vs s8 1.2958; late grad norm median 1.41). The divergence comes with the 1022 attention
   on s8. (On bare, the 1022 kernel cleared at n = 10 after one outlier seed, 4.45.)
 * Consequence: the 1022 attention is NOT folded into s8 (DECISIONS 4.64).
+
+## P0-4o PRE-REGISTRATION (2026-10-24, before any new P0-4o leg): outcome test of the deliverable's `fast` default
+
+`fast` = s8 + `--manual-gc --manual-gc-interval 0` + `--no-check-for-nan-in-loss-and-grad` with
+`GEAK_NAN_FROM_GRAD_NORM=1` (DECISIONS 4.62 / 4.64), shipped on the "numerically inert" argument plus one seed.
+This closes that gap.
+* cand: `fast`, workload `_cosine_avg`, 358 iterations, seeds 1357, 2468, 3579, 4680, 5791 (P0-4f's). Seed 4680
+  REUSES the leg already run with exactly this configuration on 2026-10-23 (`runs/qabs8n4680_1023_191833_cand_seed4680`,
+  run before this pre-registration, recorded here as such); the other four are new.
+* BASE = P0-4f's s8 legs (`runs/qabavg_1016_175311_cand_seed*`), linked as arm `s8`; `quality_reuse.py check`
+  must show only check_for_nan_in_loss_and_grad and manual_gc(+_interval) differing.
+* `quality_ab_final.py <prefix> --base s8 --cand cand` (noninf, fixed yardstick, stability incl. the held-out
+  arm of DECISIONS 4.66). CLEARED iff PASS-quality and PASS-stability. If INCONCLUSIVE (and not FAIL): one
+  extension, seeds 7013, 8124, 9235, 1346, 2457, with fresh s8 and cand arms. If NOT CLEARED, the bundle default
+  reverts to `--plain`.
