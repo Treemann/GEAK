@@ -51,6 +51,7 @@ let QUALITY_SEQ = null;                    // queued quality-phase replies (exte
 let REUSEV_OVERRIDE;                       // quality_reuse.py check result (KIND quality_reuse); undefined = valid
 let PACKV_OVERRIDE;                        // verify_gate --kind packing result; undefined = confirms
 let ORACLE_OVERRIDE;                       // the Auditor's l0.oracle block; undefined = template v2
+let MGCA_OVERRIDE;                         // the verifier's mgc_applicability; undefined = not applicable
 let MGC_OVERRIDE;                          // the Auditor's main_grad_contract block; undefined = applicable + passed
 let CARRIED_OVERRIDE;                      // the verifier's `carried` block; undefined = all carried overlays engaged
 let VERIFY_OVERRIDE;                       // (refDir, candDir) -> verdict klass; undefined = 'win'                        // undefined = normal stub; null = the Auditor failed
@@ -137,7 +138,8 @@ function stubFor(prompt) {
                    carried: CARRIED_OVERRIDE !== undefined ? CARRIED_OVERRIDE : { ok: true, lost: [], slots: {} },
                    error: null });
     }
-    return { pairs };
+    return { pairs, ...(prompt.includes('"MGC_TASK"') ? { mgc_applicability: MGCA_OVERRIDE !== undefined ? MGCA_OVERRIDE
+      : { head: null, applicable: false, evidence: [] } } : {}) };
   }
   if (is('PHASE=gate')) {
     if (AUDIT_OVERRIDE !== undefined) return AUDIT_OVERRIDE;
@@ -538,6 +540,17 @@ async function dryRun(args) {
     MGC_OVERRIDE = { applicable: false, passed: null, why: 'not a fused-wgrad GEMM site' };
     const { result: m3 } = await dryRun(base);
     ok(m3.accepted.length > 0, 'a not-applicable contract (decided by the script) does not block');
+    // audit 2026-10-25 G-1: "not applicable" counts only when the verifier's independent check agrees.
+    MGCA_OVERRIDE = { head: null, applicable: true, evidence: ['target: _LayerNormLinear', 'impl code: main_grad'] };
+    const { result: m4 } = await dryRun(base);
+    ok(m4.accepted.length === 0, 'a composite site the Auditor called not applicable but which touches main_grad is refused');
+    MGCA_OVERRIDE = null;
+    const { result: m5 } = await dryRun(base);
+    ok(m5.accepted.length === 0, 'not applicable with no independent applicability check -> no accept (fail closed)');
+    MGCA_OVERRIDE = undefined;
+    MGC_OVERRIDE = { applicable: true, passed: false, head: null, why: 'touches main_grad, no head models this site' };
+    const { result: m6 } = await dryRun(base);
+    ok(m6.accepted.length === 0, 'an applicable site with no head is not passed');
     MGC_OVERRIDE = undefined;
     // DECISIONS 4.60: the L0 oracle must score every output.
     ORACLE_OVERRIDE = { kind: 'template', template_version: 1, scores_every_output: true };

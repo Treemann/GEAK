@@ -26,7 +26,9 @@ base_error equals the old one).
 ### L0b — the fp32 main_grad accumulation contract (every candidate; DECISIONS 4.50, 4.56)
 Under gradient_accumulation_fusion a GEMM's weight gradient is ADDED into a persistent fp32
 `main_grad`, which the L0 oracle never sees; a bf16-rounded wgrad added in fp32 even passes the
-oracle-style limit. Run, for EVERY candidate (the script decides applicability from the task):
+oracle-style limit. Run, for EVERY candidate (the script decides applicability from the task's target
+AND the overlay's code -- an unmapped / composite site that touches main_grad is applicable with
+`head: null` and not passed, audit G-1; the gate_verifier recomputes applicability independently):
 
 ```bash
 GEAK_SCRIPTS/main_grad_contract.sh <TASK dir> <OVERLAY_IMPL>/impl.py <TASK dir>/main_grad_contract.json --gpu 0

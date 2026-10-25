@@ -18,6 +18,15 @@ python3 GEAK_SCRIPTS/verify_gate.py <ref_dir> <cand_dir> --nproc NPROC --floor F
         [--lever-flags "LEVER_FLAGS"] [--lever-env LEVER_ENV]
 ```
 
+With `KIND` = `kernel` and `MGC_TASK` / `MGC_IMPL` given, ALSO run once (torch-free, host):
+
+```bash
+python3 GEAK_SCRIPTS/mgc_applicability.py --task MGC_TASK --impl MGC_IMPL
+```
+
+and return its printed JSON verbatim as the top-level `mgc_applicability` (audit G-1: whether the fp32
+main_grad contract applies is recomputed, not taken from the Auditor). On an error return `null`.
+
 With `KIND` = `packing` (a Class-B packing lever) run instead, for the one ref x cand pairing:
 
 ```bash

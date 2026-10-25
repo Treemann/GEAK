@@ -16,7 +16,8 @@ PASS iff the candidate passes both AND every control fails both-combined (else t
 discriminate, and it is reported as not passed). Promoted from scratch/oracle_gaps_1022 (g5_harness).
 
   main_grad_contract.py --task <L0 task dir> --impl <overlay impl.py> [--attr name] --out result.json
-Runs inside rocm/primus (TE + Megatron on PYTHONPATH), one GPU. exit 0 = passed or not applicable.
+Runs inside rocm/primus (TE + Megatron on PYTHONPATH), one GPU. exit 0 = passed or not applicable;
+1 = not passed (incl. an unmapped site that touches main_grad: applicable, no head -- mgc_applicability.py).
 """
 from __future__ import annotations
 
@@ -31,6 +32,9 @@ import types
 sys.dont_write_bytecode = True
 
 import torch  # noqa: E402  (torch BEFORE transformer_engine: LLVM option clash otherwise)
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mgc_applicability import applicability  # noqa: E402
 
 MARGIN, SIGN_TOL, SCALE_TOL, OFFSET_TOL = 1.25, 0.15, 0.002, 0.01
 DEV = "cuda"
@@ -432,16 +436,10 @@ def contract_verdict(c, base):
 
 
 def head_for(meta):
-    """Which accumulation path the task's op runs, from its rebind target. None = not a fused-wgrad
-    GEMM: the contract does not apply (and the caller must say so explicitly)."""
-    t = str(meta.get("target_callable") or "")
-    if "layernorm_linear:_LayerNormLinear" in t:
-        return LNLinearHead
-    if "module.linear:_Linear" in t:
-        return LinearHead
-    if "GPTModel._postprocess" in t:
-        return LMHead
-    return None
+    """Which accumulation path the task's op runs, from its rebind target (mgc_applicability.HEADS).
+    None = no head models this site; whether the contract then APPLIES is mgc_applicability's call."""
+    name = applicability(meta, "")[0]
+    return {"LNLinearHead": LNLinearHead, "LinearHead": LinearHead, "LMHead": LMHead}.get(name)
 
 
 CONTROLS = ("overwrite", "bf16_accum", "bf16_wgrad")
@@ -458,8 +456,19 @@ def main():
     Head = head_for(meta)
     res = {"task": os.path.abspath(a.task), "impl": os.path.abspath(a.impl), "torch": torch.__version__}
     if Head is None:
-        res.update(applicable=False, passed=None,
-                   why=f"target {meta.get('target_callable')!r} is not a fused-wgrad GEMM site")
+        _, appl, ev = applicability(meta, open(a.impl, errors="replace").read())
+        if appl:
+            # Audit 2026-10-25 G-1: a composite / unmapped site that touches the fused-wgrad path is NOT
+            # "not applicable" -- that read as a pass. Fail closed until a head models it.
+            res.update(applicable=True, passed=False, head=None, evidence=ev,
+                       why=f"target {meta.get('target_callable')!r} touches the fused-wgrad / main_grad path "
+                           f"({', '.join(ev)}) but no head models this site: write a head or decompose the overlay")
+            json.dump(res, open(a.out, "w"), indent=1)
+            log("applicable, no head:", res["why"])
+            return 1
+        res.update(applicable=False, passed=None, evidence=[],
+                   why=f"target {meta.get('target_callable')!r} is not a fused-wgrad GEMM site and the overlay "
+                       f"code does not touch main_grad")
         json.dump(res, open(a.out, "w"), indent=1)
         log("not applicable:", res["why"])
         return 0

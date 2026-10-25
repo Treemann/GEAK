@@ -1014,7 +1014,9 @@ const VERIFY_SCHEMA = obj({ pairs: { type: 'array', minItems: 1, items: obj({
   reuse_check: { type: ['object', 'null'] },   // quality_reuse.py check (KIND quality_reuse)
   engagement: { type: ['object', 'null'] }, comparison: { type: ['object', 'null'] },
   carried: { type: ['object', 'null'] },
-  error: { type: ['string', 'null'] } }, ['ref_dir', 'cand_dir']) } }, ['pairs']);
+  error: { type: ['string', 'null'] } }, ['ref_dir', 'cand_dir']) },
+  // mgc_applicability.py on the kernel's task + overlay (MGC_TASK / MGC_IMPL given), verbatim
+  mgc_applicability: { type: ['object', 'null'] } }, ['pairs']);
 
 const PHASE_SCHEMA = {
   quality: QUALITY_SCHEMA,
@@ -1548,15 +1550,19 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
                           l0: audit && audit.l0, l1: audit && audit.l1,
                           mode: DEEP_MODE ? 'deep' : 'fast', allowedImpl: KERNEL_IMPL_DELTA });
   // INDEPENDENT RECOMPUTATION of every pairing the Integrator measured (audit ORCH-1).
+  let mgcAppl = null;   // the verifier's mgc_applicability.py (audit 2026-10-25 G-1)
   if (v.accepted) {
     const lm = integ.legs_measured || {};
     const ver = await safeAgentStub('gate_verifier', 'verify',
       { REF_DIRS: [...new Set([integ.ref.dir || integ.ref.probe_dir, ...(lm.refs || [])].filter(Boolean))],
         CAND_DIRS: [...new Set([integ.cand.dir || integ.cand.probe_dir, ...(lm.cands || [])].filter(Boolean))],
-        KIND: 'kernel', FLOOR: runFloor, NPROC, GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts` },
+        KIND: 'kernel', FLOOR: runFloor, NPROC, GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts`,
+        MGC_TASK: optimized.ext.task_dir || null, MGC_IMPL: integ.overlay_path || null },
       'Run verify_gate.py on EVERY ref x cand pairing and return its output verbatim. You are a script runner.');
     const vd = verifyDecision(ver, integ.ref, integ.cand, true);
     v.verifier = vd;
+    mgcAppl = ver && ver.mgc_applicability && typeof ver.mgc_applicability.applicable === 'boolean'
+      ? ver.mgc_applicability : null;
     if (!vd.ok) Object.assign(v, { accepted: false, klass: 'verifier_refused', reason: vd.why });
   }
   // The reference must BE the carried stack, and the candidate that stack plus this head's overlay
@@ -1585,12 +1591,22 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
   // The fp32 main_grad accumulation contract (DECISIONS 4.50 / 4.56): L0 cannot see that path, and the
   // oracle-style limit passes a bf16-rounded wgrad. Fail closed on a missing result, an applicable
   // failure, or a run whose deliberately wrong controls did not fail (passed=false covers that too).
+  // "Not applicable" is a pass only when the INDEPENDENT applicability check agrees (audit 2026-10-25
+  // G-1: a composite overlay -- RMSNorm+fc1 GEMM+SwiGLU -- matched no head substring and came back
+  // not applicable, though it accumulates into main_grad). An applicable site with no head is not passed.
   const mgc = audit && audit.main_grad_contract;
   if (v.accepted && !(mgc && typeof mgc.applicable === 'boolean' &&
                       (mgc.applicable === false || mgc.passed === true))) {
-    Object.assign(v, { accepted: false, klass: mgc && mgc.applicable ? 'numerics' : 'no_correctness_gate',
+    const noHead = !!(mgc && mgc.applicable && !mgc.head);
+    Object.assign(v, { accepted: false, klass: mgc && mgc.applicable && !noHead ? 'numerics' : 'no_correctness_gate',
       reason: mgc ? `main_grad accumulation contract not passed: ${mgc.why || 'passed=' + mgc.passed}`
                   : 'no main_grad_contract result: the fused-wgrad accumulation path was not checked' });
+  }
+  if (v.accepted && mgc && mgc.applicable === false && !(mgcAppl && mgcAppl.applicable === false)) {
+    Object.assign(v, { accepted: false, klass: 'no_correctness_gate',
+      reason: mgcAppl ? `main_grad_contract reported not applicable, but the site touches the fused-wgrad path ` +
+                        `(${(mgcAppl.evidence || []).join(', ')}): it must be checked, not skipped`
+                      : 'main_grad_contract reported not applicable and no independent applicability check confirmed it' });
   }
   // L0/L1 can only reject -- but ABSENT is not a pass (audit G1: an Auditor that failed three times
   // returned null, and the kernel path accepted on throughput alone; the config path never did).
