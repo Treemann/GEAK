@@ -27,7 +27,17 @@ python3 GEAK_SCRIPTS/verify_gate.py <ref_dir> <cand_dir> --kind packing --pack-g
 and return its `packing` object as the pair's `packing` field (it carries the recomputed equal-useful-token
 delta, the workflow's own legUsable verdict on both legs, and the pack_gate verdict read from its file).
 
-and collect the printed JSON. Do not edit, round, re-order, summarise or drop anything, and do not
+With `KIND` = `quality_reuse` (a reused outcome-test REF/control, DECISIONS 4.75) there are no leg pairs to
+gate: run exactly
+
+```bash
+python3 GEAK_SCRIPTS/quality_reuse.py <REUSE_ARGS, each element one argv token, in order>
+```
+
+and return `{"pairs": [{"ref_dir": "<the --prefix value>_ref", "cand_dir": "<the --prefix value>_cand",
+"reuse_check": <its printed JSON verbatim>}]}` -- also when it exits 1 (`valid: false`). Add no argument.
+
+For the gate kinds, collect the printed JSON. Do not edit, round, re-order, summarise or drop anything, and do not
 run anything else. If a pairing exits non-zero, record `{"ref": ..., "cand": ..., "error": <stdout>}`.
 
 Return JSON:

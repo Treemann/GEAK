@@ -157,12 +157,12 @@ pass before it is called safe to train with.
    were pre-registered for exactly this protocol (knowledge/gate_convergence.md, P0-4e).
 2b. **If `QUALITY_REUSE` is set** (`{prefix, ref_arm, ctrl_arm}`, DECISIONS 4.63): run ONLY the cand arm
    (`--arms cand`) with `QUALITY_SEEDS` (they are the reused test's seeds). Then, with `<new>` = your new
-   prefix, link the reused legs and prove them valid:
+   prefix, link the reused legs:
    `QUALITY_REUSE_TOOL link --old-prefix <prefix> --old-arm <ref_arm> --new-prefix <new> --new-arm ref --seeds QUALITY_SEEDS`
-   (and the same for `<ctrl_arm>` -> `QUALITY_CTRL` when both are set), then
-   `QUALITY_REUSE_TOOL check --prefix <new> --base ref --cand cand --seeds QUALITY_SEEDS --allow "<the
-   flags_added names, underscores>"`. Return its JSON VERBATIM as `reuse_check`. If `valid` is false, the
-   verdict is NOT CLEARED whatever quality_ab_final says: the reused legs trained a different recipe.
+   (and the same for `<ctrl_arm>` -> `QUALITY_CTRL` when both are set). Return `legs_prefix` = `<new>`.
+   Do NOT judge the reuse yourself: the orchestrator has the gate_verifier run `QUALITY_REUSE_TOOL check`
+   with the allowances derived from what was accepted (DECISIONS 4.75), and an unproven reuse is NOT
+   CLEARED whatever quality_ab_final says. You may run the check for your own information; it is not used.
 3. **Verify engagement** on every cand leg: per overlay, the training buckets show fallback 0. The
    eval-mode fallbacks of rope / swiglu / attn / lmhead are expected (no_grad path).
 4. **Judge** with `QUALITY_VERDICT <prefix> --cand cand` (plus `--ctrl QUALITY_CTRL` when set). Return its `cleared`, `quality` and

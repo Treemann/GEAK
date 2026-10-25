@@ -61,7 +61,10 @@ const QUALITY_CTRL = A.quality_ctrl ? (String(A.quality_ctrl) === 'none' ? null 
 // REUSE an earlier outcome test's REF (and control) legs (review P3, DECISIONS 4.63): {prefix, ref_arm,
 // ctrl_arm}. Only the cand arm is run; scripts/quality_reuse.py links the reused legs and must prove,
 // seed by seed, that their realized argument tables equal the new cand legs' apart from the change under
-// test. The seeds are the reused test's, so quality_seeds must be given explicitly.
+// test. The seeds are the reused test's, so quality_seeds must be given explicitly. Optional keys
+// (DECISIONS 4.75): `allow` / `allow_impl` = extra realized / implementation keys the reused REF may
+// differ in beyond the accepted levers and overlay (pre-declared, e.g. "env:GEAK_NAN_FROM_GRAD_NORM"),
+// `accept_unknown_harness: true` = accept legs that predate the harness record (reported, not silent).
 const QUALITY_REUSE = (() => {
   const r = A.quality_reuse;
   if (!r) return null;
@@ -1008,6 +1011,7 @@ const QUALITY_SCHEMA = obj({ cleared: { type: 'boolean' }, quality: { type: 'str
 const VERIFY_SCHEMA = obj({ pairs: { type: 'array', minItems: 1, items: obj({
   ref_dir: { type: 'string' }, cand_dir: { type: 'string' }, verdict: { type: ['object', 'null'] },
   packing: { type: ['object', 'null'] },   // verify_gate --kind packing
+  reuse_check: { type: ['object', 'null'] },   // quality_reuse.py check (KIND quality_reuse)
   engagement: { type: ['object', 'null'] }, comparison: { type: ['object', 'null'] },
   carried: { type: ['object', 'null'] },
   error: { type: ['string', 'null'] } }, ['ref_dir', 'cand_dir']) } }, ['pairs']);
@@ -1767,11 +1771,39 @@ if (QUALITY_GATE && stackChanged) {
   // to the first verdict, to the decision to extend, and to the extended verdict: the combined n = 10 sample
   // pools the first sample's reused legs, so an unproven reuse must not be laundered by an extension (audit
   // 2026-10-25 ORCH-A3: the extension replaced the guarded verdict wholesale and could report CLEARED).
-  const reuseOk = !QUALITY_REUSE || !!(q && q.reuse_check && q.reuse_check.valid === true);
-  const reuseRefusal = (v) => Object.assign({}, v, { cleared: false,
+  // The proof is the gate_verifier's run of quality_reuse.py check with arguments the ORCHESTRATOR builds
+  // from what it accepted (audit 2026-10-25 ID-3/HFC-1): the Director's own `reuse_check` was a
+  // self-report whose --allow it chose itself, and the old check compared the realized table only, so a
+  // bare REF reused for a stacked cand passed. What may differ: the accepted levers' flags (realized and
+  // implementation keys), the overlay content when kernels were accepted, and only what the user
+  // pre-declared in quality_reuse.{allow, allow_impl}. Legs predating the harness record are refused
+  // unless quality_reuse.accept_unknown_harness is set (recorded in the result).
+  let reuseCheck = null;
+  if (QUALITY_REUSE && q && q.legs_prefix) {
+    const cfgKeys = qConfig ? leverImplDelta(qConfig.flags_added) : [];
+    const csv = (x) => (Array.isArray(x) ? x : String(x || '').split(',')).map((k) => String(k).trim()).filter(Boolean);
+    const allow = [...new Set([...cfgKeys.map((k) => k.replace(/-/g, '_')), ...csv(QUALITY_REUSE.allow)])];
+    const allowImpl = [...new Set([...cfgKeys, ...(wfReturn.accepted.length ? ['GEAK_OVERLAY_SHA'] : []),
+                                   ...csv(QUALITY_REUSE.allow_impl)])];
+    const checkArgs = ['check', '--prefix', String(q.legs_prefix), '--base', 'ref', '--cand', 'cand',
+      '--seeds', String(QUALITY_SEEDS), '--allow', allow.join(','), '--allow-impl', allowImpl.join(','),
+      ...(QUALITY_REUSE.ctrl_arm && QUALITY_CTRL ? ['--ctrl', String(QUALITY_CTRL)] : []),
+      ...(QUALITY_REUSE.accept_unknown_harness === true ? ['--accept-unknown-harness'] : [])];
+    const ver = await safeAgentStub('gate_verifier', 'verify',
+      { KIND: 'quality_reuse', REUSE_ARGS: checkArgs, GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts` },
+      'Run quality_reuse.py with exactly REUSE_ARGS and return its JSON verbatim as pairs[0].reuse_check. ' +
+      'You are a script runner.');
+    const p0 = ver && Array.isArray(ver.pairs) ? ver.pairs[0] : null;
+    reuseCheck = p0 && p0.reuse_check && typeof p0.reuse_check === 'object' ? p0.reuse_check : null;
+    if (reuseCheck && reuseCheck.allow_impl && csv(reuseCheck.allow_impl).join() !== [...allowImpl].sort().join()) reuseCheck = null;
+  }
+  const reuseOk = !QUALITY_REUSE || !!(reuseCheck && reuseCheck.valid === true);
+  const reuseRefusal = (v) => Object.assign({}, v, { cleared: false, reuse_check: reuseCheck,
     quality: `NOT CLEARED: the reused legs of ${QUALITY_REUSE.prefix} were not proven to train the cand's ` +
-             `recipe (quality_reuse.py check valid=${q && q.reuse_check && q.reuse_check.valid})` });
+             `recipe (independent quality_reuse.py check valid=${reuseCheck && reuseCheck.valid}` +
+             `${q && !q.legs_prefix ? '; the Director returned no legs_prefix' : ''})` });
   if (q && !reuseOk) wfReturn.quality_gate = reuseRefusal(q);
+  else if (q && reuseCheck) wfReturn.quality_gate = Object.assign({}, q, { reuse_check: reuseCheck });
   // Extend only when the verdict is INCONCLUSIVE because the sample is too small -- NOT when the positive
   // control itself was not detected (more seeds of an undetected control prove nothing; review QEXT) and
   // NOT when the reused legs were not proven (above).

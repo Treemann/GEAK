@@ -48,6 +48,7 @@ const refShaFrom = (prompt) => {
 let INTEG_N = 0;
 let AUDIT_OVERRIDE;
 let QUALITY_SEQ = null;                    // queued quality-phase replies (extension tests)
+let REUSEV_OVERRIDE;                       // quality_reuse.py check result (KIND quality_reuse); undefined = valid
 let PACKV_OVERRIDE;                        // verify_gate --kind packing result; undefined = confirms
 let ORACLE_OVERRIDE;                       // the Auditor's l0.oracle block; undefined = template v2
 let MGC_OVERRIDE;                          // the Auditor's main_grad_contract block; undefined = applicable + passed
@@ -118,6 +119,10 @@ function stubFor(prompt) {
   }
   if (is('PHASE=verify')) {
     if (VERIFY_OVERRIDE === null) return null;
+    if (prompt.includes('"KIND": "quality_reuse"')) {   // audit 2026-10-25 ID-3: the reuse proof is recomputed
+      return { pairs: [{ ref_dir: '/p_ref', cand_dir: '/p_cand',
+        reuse_check: REUSEV_OVERRIDE !== undefined ? REUSEV_OVERRIDE : { valid: true, seeds: [] } }] };
+    }
     if (prompt.includes('"KIND": "packing"')) {       // verify_gate --kind packing (audit ORCH-A4)
       return { pairs: [{ ref_dir: '/work/runs/pr', cand_dir: '/work/runs/pc', packing: PACKV_OVERRIDE !== undefined
         ? PACKV_OVERRIDE : { delta_pct: 265.9, pack_gate_pass: true, data_matches: true, legs_usable: true, why: [] } }] };
@@ -443,24 +448,44 @@ async function dryRun(args) {
                    { cleared: false, quality: 'INCONCLUSIVE-quality: still', stability: 'PASS-stability: 0', legs_prefix: '/q' }];
     const { calls: cq2 } = await dryRun({ ...base, quality_gate: 'true' });
     ok(cq2.prompts.filter((p) => p.includes('PHASE=quality')).length === 2, 'never more than ONE extension');
-    // DECISIONS 4.63: reused REF/control legs count only when quality_reuse.py proved them valid.
+    // DECISIONS 4.63/4.75: reused REF/control legs count only when quality_reuse.py check, run by the
+    // gate_verifier with orchestrator-built arguments, proved them valid. The Director's own reuse_check is ignored.
     const reuse = { quality_gate: 'true', quality_seeds: '1111,2222', quality_reuse: { prefix: 'qabhf8_old', ref_arm: 'cand', ctrl_arm: 'ctrl70' } };
     QUALITY_SEQ = [{ cleared: true, quality: 'PASS-quality: ok', stability: 'PASS-stability: 0', legs_prefix: '/p',
-                     reuse_check: { valid: false } }];
+                     reuse_check: { valid: true } }];
+    REUSEV_OVERRIDE = { valid: false, seeds: [{ why: ['implementation (overlay / env knobs) differs beyond --allow-impl'] }] };
     const { result: ru1, calls: cru } = await dryRun({ ...base, ...reuse });
     ok(ru1.quality_gate.cleared === false && /not proven/.test(ru1.quality_gate.quality),
-      'quality_reuse: an invalid reuse check makes the gate NOT CLEARED whatever the verdict says');
+      'quality_reuse: the verifier\'s invalid check makes the gate NOT CLEARED although the Director claimed valid');
     ok(cru.prompts.some((p) => p.includes('PHASE=quality') && p.includes('qabhf8_old') && p.includes('quality_reuse.py')),
       'quality_reuse: the Director gets the reused prefix and the tool');
+    const rv = cru.prompts.find((p) => p.includes('"KIND": "quality_reuse"')) || '';
+    ok(rv.includes('"--prefix"') && rv.includes('"/p"') && rv.includes('"--seeds"') && rv.includes('"1111,2222"') &&
+       !rv.includes('--accept-unknown-harness'),
+      'quality_reuse: the check is built by the orchestrator (prefix, seeds; unknown harness NOT accepted by default)');
+    REUSEV_OVERRIDE = undefined;
+    QUALITY_SEQ = [{ cleared: true, quality: 'PASS-quality: ok', stability: 'PASS-stability: 0', legs_prefix: '/p',
+                     reuse_check: { valid: false } }];
+    const { result: ru2 } = await dryRun({ ...base, ...reuse });
+    ok(ru2.quality_gate.cleared === true && ru2.quality_gate.reuse_check && ru2.quality_gate.reuse_check.valid === true,
+      'quality_reuse: a valid independent check keeps the verdict (the Director\'s self-report does not decide)');
+    REUSEV_OVERRIDE = null;
     QUALITY_SEQ = [{ cleared: true, quality: 'PASS-quality: ok', stability: 'PASS-stability: 0', legs_prefix: '/p',
                      reuse_check: { valid: true } }];
-    const { result: ru2 } = await dryRun({ ...base, ...reuse });
-    ok(ru2.quality_gate.cleared === true, 'quality_reuse: a valid reuse check keeps the verdict');
+    const { result: ru4 } = await dryRun({ ...base, ...reuse });
+    ok(ru4.quality_gate.cleared === false, 'quality_reuse: no independent check result = NOT CLEARED');
+    QUALITY_SEQ = [{ cleared: true, quality: 'PASS-quality: ok', stability: 'PASS-stability: 0' }];
+    const { result: ru5 } = await dryRun({ ...base, ...reuse });
+    REUSEV_OVERRIDE = undefined;
+    ok(ru5.quality_gate.cleared === false && /no legs_prefix/.test(ru5.quality_gate.quality),
+      'quality_reuse: a Director that returns no legs_prefix cannot be checked = NOT CLEARED');
     // audit 2026-10-25 ORCH-A3: an INCONCLUSIVE first verdict with an UNPROVEN reuse must not extend into CLEARED.
+    REUSEV_OVERRIDE = { valid: false, seeds: [] };
     QUALITY_SEQ = [{ cleared: false, quality: 'INCONCLUSIVE-quality: upper > margin', stability: 'PASS-stability: 0',
-                     legs_prefix: '/p', reuse_check: { valid: false } },
+                     legs_prefix: '/p' },
                    { cleared: true, quality: 'PASS-quality: n=10', stability: 'PASS-stability: 0', legs_prefix: '/q' }];
     const { result: ru3, calls: cru3 } = await dryRun({ ...base, ...reuse });
+    REUSEV_OVERRIDE = undefined;
     ok(ru3.quality_gate.cleared === false && cru3.prompts.filter((p) => p.includes('PHASE=quality')).length === 1,
       'quality_reuse: an unproven reuse is NOT extended, and the verdict stays NOT CLEARED');
     let threw = false;
