@@ -68,8 +68,20 @@ VAL_RE = re.compile(r"validation loss at .*? lm loss value: ([0-9.Ee+-]+)")
 
 
 def steps(d):
+    """Step records of rank 0. A leg killed mid-write (a crash, a divergence exit) leaves a truncated last
+    line: skip unparsable lines instead of crashing with no verdict (found on real legs, 2026-10-25)."""
     p = os.path.join(d, "probe", "probe_rank0.jsonl")
-    return [r for r in (json.loads(l) for l in open(p)) if r.get("record") == "step"] if os.path.exists(p) else []
+    if not os.path.exists(p):
+        return []
+    out = []
+    for line in open(p, errors="replace"):
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get("record") == "step":
+            out.append(r)
+    return out
 
 
 # A cand leg that STOPPED early because training diverged (non-finite loss; Megatron's NaN check /

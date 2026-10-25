@@ -49,9 +49,11 @@ try:
         for i in range(120):
             f.write(json.dumps({"record": "step", "step": i + 1, "loss": 1.5 if i < 119 else float("nan")}) + "\n")
     open(os.path.join(d, "train.log"), "w").write(" iteration 120 | lm loss: nan |\n")
+    with open(os.path.join(d, "probe", "probe_rank0.jsonl"), "a") as f:
+        f.write('{"record": "step", "step": 121, "lo')          # killed mid-write
     v = run(root)
     ok(v["stability"].startswith("FAIL-stability") and "DIVERGED" in v["stability"] and v["cleared"] is False,
-       f"a cand leg that stopped on NaN is FAIL-stability with JSON: {v['stability']}")
+       f"a cand leg that stopped on NaN (probe line truncated) is FAIL-stability with JSON: {v['stability']}")
     open(os.path.join(d, "train.log"), "w").write(" iteration 120 | lm loss: 1.5 |\n")
     with open(os.path.join(d, "probe", "probe_rank0.jsonl"), "w") as f:
         for i in range(120):
