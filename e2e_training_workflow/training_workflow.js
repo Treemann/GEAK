@@ -1970,7 +1970,9 @@ if (QUALITY_GATE && stackChanged) {
                                ...Object.keys(qConfig.env_added || {}).map((k) => `env:${k}`)] : [];
     const csv = (x) => (Array.isArray(x) ? x : String(x || '').split(',')).map((k) => String(k).trim()).filter(Boolean);
     const allow = [...new Set([...cfgKeys.filter((k) => !k.startsWith('env:')).map((k) => k.replace(/-/g, '_')), ...csv(QUALITY_REUSE.allow)])];
-    const allowImpl = [...new Set([...cfgKeys, ...(wfReturn.accepted.length ? ['GEAK_OVERLAY_SHA'] : []),
+    // The cand arm runs the base stack (BASE_OVERLAY_CMD) and/or this run's accepted kernels, the REF arm no
+    // overlay: either makes the overlay content a declared difference.
+    const allowImpl = [...new Set([...cfgKeys, ...(wfReturn.accepted.length || BASE_OVERLAY_CMD ? ['GEAK_OVERLAY_SHA'] : []),
                                    ...csv(QUALITY_REUSE.allow_impl)])];
     const checkArgs = ['check', '--prefix', String(q.legs_prefix), '--base', 'ref', '--cand', 'cand',
       '--seeds', String(QUALITY_SEEDS), '--allow', allow.join(','), '--allow-impl', allowImpl.join(','),

@@ -520,6 +520,15 @@ async function dryRun(args) {
     ok(rv.includes('"--prefix"') && rv.includes('"/p"') && rv.includes('"--seeds"') && rv.includes('"1111,2222"') &&
        !rv.includes('--accept-unknown-harness'),
       'quality_reuse: the check is built by the orchestrator (prefix, seeds; unknown harness NOT accepted by default)');
+    const rvKernel = /"REUSE_ARGS": (\[[^\]]*\])/.exec(rv);
+    ok(rvKernel && JSON.parse(rvKernel[1]).join(' ').includes('GEAK_OVERLAY_SHA'),
+      'quality_reuse: accepted kernels make the overlay a declared difference');
+    QUALITY_SEQ = [{ cleared: true, quality: 'PASS-quality: ok', stability: 'PASS-stability: 0', legs_prefix: '/p' }];
+    const { calls: cbo } = await dryRun({ ...base, ...reuse, deep_mode: 'true', budget: 0,
+                                          baseline_overlay: '/x/stack_overlay_env.sh --cond s8a22' });
+    const rvb = /"REUSE_ARGS": (\[[^\]]*\])/.exec(cbo.prompts.find((p) => p.includes('"KIND": "quality_reuse"')) || '');
+    ok(rvb && JSON.parse(rvb[1]).join(' ').includes('GEAK_OVERLAY_SHA'),
+      'quality_reuse: a stacked baseline (config-only accept) also declares the overlay (the cand arm runs the base stack)');
     REUSEV_OVERRIDE = undefined;
     QUALITY_SEQ = [{ cleared: true, quality: 'PASS-quality: ok', stability: 'PASS-stability: 0', legs_prefix: '/p',
                      reuse_check: { valid: false } }];
