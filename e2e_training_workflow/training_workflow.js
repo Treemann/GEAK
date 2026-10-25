@@ -1969,7 +1969,10 @@ if (QUALITY_GATE && stackChanged) {
     const cfgKeys = qConfig ? [...leverImplDelta(qConfig.flags_added),
                                ...Object.keys(qConfig.env_added || {}).map((k) => `env:${k}`)] : [];
     const csv = (x) => (Array.isArray(x) ? x : String(x || '').split(',')).map((k) => String(k).trim()).filter(Boolean);
-    const allow = [...new Set([...cfgKeys.filter((k) => !k.startsWith('env:')).map((k) => k.replace(/-/g, '_')), ...csv(QUALITY_REUSE.allow)])];
+    // Realized-table names: a `--no-X` flag shows up as X (argparse dest), e.g. check_for_nan_in_loss_and_grad.
+    const allow = [...new Set([...cfgKeys.filter((k) => !k.startsWith('env:'))
+      .flatMap((k) => (k.startsWith('no-') ? [k, k.slice(3)] : [k])).map((k) => k.replace(/-/g, '_')),
+      ...csv(QUALITY_REUSE.allow)])];
     // The cand arm runs the base stack (BASE_OVERLAY_CMD) and/or this run's accepted kernels, the REF arm no
     // overlay: either makes the overlay content a declared difference.
     const allowImpl = [...new Set([...cfgKeys, ...(wfReturn.accepted.length || BASE_OVERLAY_CMD ? ['GEAK_OVERLAY_SHA'] : []),

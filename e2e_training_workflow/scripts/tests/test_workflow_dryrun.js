@@ -529,6 +529,18 @@ async function dryRun(args) {
     const rvb = /"REUSE_ARGS": (\[[^\]]*\])/.exec(cbo.prompts.find((p) => p.includes('"KIND": "quality_reuse"')) || '');
     ok(rvb && JSON.parse(rvb[1]).join(' ').includes('GEAK_OVERLAY_SHA'),
       'quality_reuse: a stacked baseline (config-only accept) also declares the overlay (the cand arm runs the base stack)');
+    CONFIG_OVERRIDE = { lever: 'nan_from_grad_norm', flags_added: ['--no-check-for-nan-in-loss-and-grad'],
+      env_added: { GEAK_NAN_FROM_GRAD_NORM: '1' },
+      cand: leg({ useful_tok_s_per_gpu: 866, impl_digest: 'fast', implementation: Object.assign({}, leg().implementation,
+        { 'no-check-for-nan-in-loss-and-grad': 'true', 'env:GEAK_NAN_FROM_GRAD_NORM': '1' }) }) };
+    QUALITY_SEQ = [{ cleared: true, quality: 'PASS-quality: ok', stability: 'PASS-stability: 0', legs_prefix: '/p' }];
+    const { calls: cnan } = await dryRun({ ...base, ...reuse, deep_mode: 'true', budget: 0 });
+    CONFIG_OVERRIDE = null;
+    const rvn = /"REUSE_ARGS": (\[[^\]]*\])/.exec(cnan.prompts.find((p) => p.includes('"KIND": "quality_reuse"')) || '');
+    const an = rvn ? JSON.parse(rvn[1]) : [];
+    const allowArg = an[an.indexOf('--allow') + 1] || '', implArg = an[an.indexOf('--allow-impl') + 1] || '';
+    ok(allowArg.split(',').includes('check_for_nan_in_loss_and_grad') && implArg.split(',').includes('env:GEAK_NAN_FROM_GRAD_NORM'),
+      `quality_reuse: a --no-X lever allows realized X, and its env is an allowed impl key (${allowArg} | ${implArg})`);
     REUSEV_OVERRIDE = undefined;
     QUALITY_SEQ = [{ cleared: true, quality: 'PASS-quality: ok', stability: 'PASS-stability: 0', legs_prefix: '/p',
                      reuse_check: { valid: false } }];
