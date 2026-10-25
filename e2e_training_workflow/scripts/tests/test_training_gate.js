@@ -343,6 +343,23 @@ const leg = (o = {}) => Object.assign({
     'harness: an HF leg recorded before hf_sft.py was tracked is not comparable with one after');
   ok(!comparable(leg({ digest_schema: 6 }), leg({ digest_schema: 6, harness: H })).ok,
     'harness: a schema-6 leg without its harness record is refused (fail closed)');
+  // audit 2026-10-25 ID-1: settings nobody classified are compared, fail closed.
+  const U = { argv: { normalization: 'RMSNorm', 'transformer-impl': 'transformer_engine' }, env: { NCCL_ALGO: 'Ring' } };
+  const uleg = (u, o = {}) => leg({ digest_schema: 6, harness: H, unmapped: u, unmapped_ranks_agree: true,
+                                    implementation: { 'attention-backend': 'fused' }, ...o });
+  ok(comparable(uleg(U), uleg(JSON.parse(JSON.stringify(U)))).ok, 'unmapped: identical unclassified settings are comparable');
+  for (const [lbl, u] of [['--fp8-format hybrid', { ...U, argv: { ...U.argv, 'fp8-format': 'hybrid' } }],
+                          ['--optimizer sgd', { ...U, argv: { ...U.argv, optimizer: 'sgd' } }],
+                          ['env NCCL_ALGO=Tree', { ...U, env: { NCCL_ALGO: 'Tree' } }],
+                          ['env PYTORCH_TUNABLEOP_ENABLED=1', { ...U, env: { ...U.env, PYTORCH_TUNABLEOP_ENABLED: '1' } }],
+                          ['env NVTE_CK_USES_BWD_V3=0', { ...U, env: { ...U.env, NVTE_CK_USES_BWD_V3: '0' } }]]) {
+    const r = comparable(uleg(U), uleg(u), ['GEAK_OVERLAY', 'GEAK_OVERLAY_SHA', 'NVTE_CK_USES_BWD_V3']);
+    ok(!r.ok && /UNCLASSIFIED/.test(r.why), `unmapped: ${lbl} on one leg is refused even when allowedImpl names it`);
+  }
+  const mixed = comparable(uleg(null), uleg(U));
+  ok(!mixed.ok && mixed.stale, 'unmapped: a leg with the full capture vs one without is refused (re-measure)');
+  ok(comparable(uleg(null), uleg(null)).ok, 'unmapped: two legs that both predate the capture are judged as before');
+  ok(!comparable(uleg(U, { unmapped_ranks_agree: false }), uleg(U)).ok, 'unmapped: ranks that disagree are refused');
   const dOnly = comparable(leg(), leg({ config_digest: 'other' }));
   ok(!dOnly.ok && dOnly.digestOnly === true, 'a pair differing only in config_digest is flagged digestOnly');
   const notOnly = comparable(leg({ implementation: IMPL }), leg({ config_digest: 'other',

@@ -275,6 +275,62 @@ def is_impl_key(k):
     return k in IMPL_KEYS or k.startswith("NVTE_") or k.startswith("env:")
 
 
+# ---- full-capture classification (audit 2026-10-25 ID-1) ------------------------------------------
+# The header's `coverage` holds EVERY trainer flag and every env var of the kernel / collective /
+# allocator / compiler families (train_probe._coverage). A key is MAPPED when the snapshot already
+# captures it (train_probe's two identity lists, the env knobs, the 3 NVTE backends, the overlay) --
+# its difference is then judged by the digests; IGNORED when it legitimately differs between two legs
+# of one comparison (run length, logging, output / cache paths, which GPUs); otherwise UNMAPPED. The gate
+# refuses a pair whose UNMAPPED keys differ: classify the key first (workload -> _IDENTITY_*; how-it-runs
+# -> also IMPL_KEYS), never let it vary silently.
+COVERAGE_IGNORE_ARGV = {
+    "train-iters", "train-samples", "eval-interval", "eval-iters", "save", "save-interval", "ckpt-format",
+    "async-save", "no-save-optim", "no-save-rng", "exit-interval", "exit-duration-in-mins", "exit-signal-handler",
+    "distributed-timeout-minutes", "data-cache-path", "tensorboard-dir", "profile", "use-pytorch-profiler",
+    "profile-step-start", "profile-step-end", "profile-ranks", "output-dir", "logging-dir", "run-name",
+    "logging-steps", "save-steps", "valid-data-path", "log-throughput", "timing-log-level", "timing-log-option"}
+COVERAGE_IGNORE_ARGV_PREFIXES = ("log-", "wandb-", "tensorboard-")
+COVERAGE_IGNORE_ENV = {"HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL",
+                       "GEAK_IMAGE", "GEAK_IMAGE_ID",   # compared via the harness record
+                       "GEAK_IN_CONTAINER", "GEAK_HOST_WORK", "GEAK_SCRIPTS", "GEAK_KERNEL_WF", "NCCL_DEBUG",
+                       "NCCL_DEBUG_SUBSYS", "NCCL_DEBUG_FILE", "TORCH_CPP_LOG_LEVEL", "TORCH_SHOW_CPP_STACKTRACES",
+                       "TORCH_DISTRIBUTED_DEBUG", "TRANSFORMERS_VERBOSITY", "HF_HUB_OFFLINE", "TOKENIZERS_PARALLELISM"}
+COVERAGE_IGNORE_ENV_SUFFIXES = ("_DIR", "_PATH", "_HOME", "_ROOT", "_FILE", "_CACHE", "_WORK")
+_MAPPED_ENV = {"NVTE_FLASH_ATTN", "NVTE_FUSED_ATTN", "NVTE_USE_HIPBLASLT", "GEAK_OVERLAY", "GEAK_OVERLAY_SHA"}
+_CAPTURED = None
+
+
+def _captured_names():
+    """(argv names, env knob names) the snapshot captures, read from train_probe.py's own lists (AST: the
+    probe imports torch, the host may not have it). One source, like test_identity_keys."""
+    global _CAPTURED
+    if _CAPTURED is None:
+        import ast
+        tree = ast.parse(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "train_probe.py")).read())
+        lists = {}
+        for n in tree.body:
+            if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name) and \
+                    n.targets[0].id in ("_IDENTITY_PAIR_KEYS", "_IDENTITY_FLAG_KEYS", "_KNOBS"):
+                lists[n.targets[0].id] = [e.value for e in n.value.elts]
+        argv = {k.lstrip("-") for k in lists["_IDENTITY_PAIR_KEYS"] + lists["_IDENTITY_FLAG_KEYS"]}
+        argv |= {"rope-fusion", "no-rope-fusion"}      # captured as the derived `rope-fusion`
+        _CAPTURED = (argv, set(lists["_KNOBS"]))
+    return _CAPTURED
+
+
+def unmapped_of(coverage):
+    """{'argv': {...}, 'env': {...}} of the keys nobody classified, or None for a leg without the capture."""
+    if not coverage or coverage.get("v") is None:
+        return None
+    argv_names, knobs = _captured_names()
+    ua = {k: str(_norm(v)) for k, v in (coverage.get("argv") or {}).items()
+          if k not in argv_names and k not in COVERAGE_IGNORE_ARGV and not k.startswith(COVERAGE_IGNORE_ARGV_PREFIXES)}
+    ue = {k: v for k, v in (coverage.get("env") or {}).items()
+          if k not in knobs and k not in _MAPPED_ENV and k not in COVERAGE_IGNORE_ENV
+          and not k.endswith(COVERAGE_IGNORE_ENV_SUFFIXES)}
+    return {"argv": ua, "env": ue}
+
+
 def snapshot_schema(cfg):
     """digest_schema of a captured config: 'vN' -> N, absent -> 2. The ONE parser; trajectory_gate
     imports it. A fixed {'v5': 5, ...} lookup silently read any newer value as 2."""
@@ -401,6 +457,11 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         # (compare_legs' per-step ratio, 0.26% on an identical pair) separates noise from signal.
         "step_shape": _step_shape(per_rank_tokens),
         "identity_vs_realized": identity_vs_realized(dirpath, cfg),
+        # Every flag / env var the snapshot does not classify (audit ID-1); None = the leg predates the
+        # full capture. Ranks must agree on it (argv_hash covers argv; env is per process).
+        "unmapped": unmapped_of(headers[0].get("coverage")),
+        "unmapped_ranks_agree": len({json.dumps(unmapped_of(h.get("coverage")), sort_keys=True)
+                                     for h in headers}) == 1,
         # Report-only: which harness code ran inside the leg (rocm_compat/overlay_train/train_probe).
         "harness": headers[0].get("harness"),
         "total_tokens_cv_pct": _cv_pct(per_rank_tokens),

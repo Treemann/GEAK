@@ -32,7 +32,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from probe_summarize import _norm, is_impl_key, snapshot_schema  # noqa: E402  (the ONE realized-value normaliser / impl classifier)
+from probe_summarize import _norm, is_impl_key, snapshot_schema, unmapped_of  # noqa: E402  (the ONE realized-value normaliser / impl classifier)
 
 RUNS = os.path.join(os.environ.get("GEAK_WORK_DIR", "/home/treemann/geak_train"), "runs")
 # Runtime code + image that must match between a reused leg and the new one (as comparable(), 4.59 / 4.67).
@@ -145,6 +145,19 @@ def _compare(b, c, allow, allow_impl, accept_unknown_harness):
         r["impl_unverifiable"] = unverifiable
         if accept_unknown_harness:
             idiff = {k: v for k, v in idiff.items() if k not in unverifiable}
+    # Unclassified env knobs (full capture, audit ID-1): NCCL_ALGO, PYTORCH_TUNABLEOP_*, NVTE_CK_* ... are in
+    # neither the realized table nor the snapshot. Compared when both legs carry the capture; a leg without
+    # it is unverifiable for these, like a missing harness record.
+    ub = unmapped_of((hb or {}).get("coverage")) if hb else None
+    uc = unmapped_of((hc or {}).get("coverage")) if hc else None
+    if ub is not None and uc is not None:
+        for k in sorted(set(ub["env"]) | set(uc["env"])):
+            if ub["env"].get(k) != uc["env"].get(k):
+                idiff["env " + k] = (ub["env"].get(k), uc["env"].get(k))
+    elif not accept_unknown_harness:
+        r["why"].append("a leg predates the full env capture (unclassified env knobs unknown); "
+                        "pass --accept-unknown-harness to accept that explicitly")
+    r["env_capture"] = [ub is not None, uc is not None]
     r["impl_differs_allowed"] = {k: v for k, v in idiff.items() if k in allow_impl}
     r["impl_differs_other"] = {k: v for k, v in idiff.items() if k not in allow_impl}
     gb, gc = (hb or {}).get("harness"), (hc or {}).get("harness")

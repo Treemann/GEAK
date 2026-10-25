@@ -21,13 +21,14 @@ def ok(c, m):
     print(("  ok: " if c else "  FAIL: ") + m); fails += 0 if c else 1
 
 IMPL = {"attention-backend": "fused", "NVTE_FUSED_ATTN": "1"}
-def leg(root, name, speed, overlay=None, nranks=8, fallback=0, drop_rank=None, loss_rel=0.0):
+def leg(root, name, speed, overlay=None, nranks=8, fallback=0, drop_rank=None, loss_rel=0.0, coverage=None):
     d = os.path.join(root, name); os.makedirs(os.path.join(d, "probe"))
     impl = dict(IMPL, **({"GEAK_OVERLAY": "m.json", "GEAK_OVERLAY_SHA": "k1"} if overlay else {}))
     cfg = {"seq-length": "4096", "snapshot_keys": "v5", **impl}
     for rk in range(nranks):
         with open(os.path.join(d, "probe", f"probe_rank{rk}.jsonl"), "w") as f:
-            f.write(json.dumps({"record": "header", "rank": rk, "world_size": nranks, "argv_hash": "a", "config": cfg}) + "\n")
+            f.write(json.dumps({"record": "header", "rank": rk, "world_size": nranks, "argv_hash": "a", "config": cfg,
+                                **({"coverage": coverage} if coverage else {})}) + "\n")
             t = 0.0
             for i in range(30):
                 dur = (40000 if i == 0 else 2300 + 7 * ((i * 37) % 5)) * speed
@@ -139,6 +140,21 @@ try:
     ok("l1" not in run(ref, cand), "no --l1-kind -> no l1 field (the orchestrator then refuses)")
     bad = run(ref, cand, ("--floor", "0.25", "--l1-kind", "kernel_swap", "--l1-band", os.path.join(root, "nope.json")))
     ok(bad["l1"]["pass"] is False and "error" in bad["l1"], "an unreadable band is a refusal, not a pass")
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+# Audit 2026-10-25 ID-1, end to end: the full capture flows through probe_summarize into the workflow's own
+# comparable(). An unclassified env knob differing between the legs makes the pair incomparable.
+root = tempfile.mkdtemp(prefix="vgtest_")
+try:
+    C = {"v": 1, "argv": {"normalization": "RMSNorm", "train-iters": "30"}, "env": {"NCCL_ALGO": "Ring"}}
+    ref = leg(root, "ref", 1.0, coverage=C)
+    same = run(ref, leg(root, "cand", 0.97, overlay="attn", coverage={**C, "argv": {**C["argv"], "train-iters": "40"}}))
+    ok(same["verdict"]["klass"] == "win", f"same unclassified settings (train-iters ignored) -> win ({same['verdict'].get('klass')})")
+    diff = run(ref, leg(root, "cand_nccl", 0.97, overlay="attn", coverage={**C, "env": {"NCCL_ALGO": "Tree"}}))
+    ok(diff["verdict"]["klass"] == "incomparable" and "UNCLASSIFIED" in diff["verdict"].get("reason", ""),
+       f"NCCL_ALGO Ring vs Tree (moves no digest) -> incomparable ({diff['verdict'].get('klass')})")
+    mixed = run(leg(root, "ref_old", 1.0), leg(root, "cand_new", 0.97, overlay="attn", coverage=C))
+    ok(mixed["verdict"]["klass"] != "win", f"a leg with the capture vs one without is not a win ({mixed['verdict'].get('klass')})")
 finally:
     shutil.rmtree(root, ignore_errors=True)
 print("all checks passed" if not fails else f"{fails} check(s) FAILED")

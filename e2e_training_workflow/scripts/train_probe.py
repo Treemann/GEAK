@@ -74,7 +74,8 @@ class _Probe:
                     "local_rank": self.local_rank, "t_wall": time.time(),
                     "device": torch.cuda.get_device_name(self.local_rank)
                     if torch.cuda.is_available() else "cpu",
-                    "argv_hash": _argv_hash(), "config": _config_snapshot(), "harness": _harness_shas()})
+                    "argv_hash": _argv_hash(), "config": _config_snapshot(), "harness": _harness_shas(),
+                    "coverage": _coverage()})
 
     def _emit(self, obj):
         self.fh.write(json.dumps(obj) + "\n")
@@ -457,6 +458,37 @@ _KNOBS = (
     # Where the NaN/Inf check runs (rocm_compat, DECISIONS 4.62).
     "GEAK_NAN_FROM_GRAD_NORM",
 )
+
+
+# FULL CAPTURE (audit 2026-10-25 ID-1). The two lists above are an ALLOWLIST: a flag or env knob no one
+# thought to list -- `--fp8-format hybrid`, `--tp-comm-overlap`, `--optimizer sgd`,
+# `NVTE_CK_USES_BWD_V3=0`, `PYTORCH_TUNABLEOP_ENABLED=1`, `NCCL_ALGO=Tree` were all reproduced -- moved
+# NEITHER digest, and v4, v5 and v6 each fixed one key after it bit. So the header ALSO records every
+# trainer flag (argparse semantics: last occurrence wins, a valueless flag is "true") and every env var
+# of the families that select kernels, collectives, allocators or compilation. Nothing here is digested:
+# probe_summarize classifies it at summary time (so the classification can improve without a re-capture)
+# and the gate refuses a pair that differs in ANY key nobody has classified (fail closed).
+_COVERAGE_ENV_PREFIXES = (
+    "NVTE_", "NCCL_", "RCCL_", "HSA_", "HIP_", "ROCM_", "ROCR_", "AMD_", "GPU_", "MIOPEN_", "ROCBLAS_",
+    "HIPBLASLT_", "TENSILE_", "CK_", "AITER_", "TE_", "PYTORCH_", "TORCH_", "TORCHINDUCTOR_", "TRITON_",
+    "CUDA_", "CUBLAS_", "OMP_", "MKL_", "USE_ROCM_", "GEAK_", "HF_", "TRANSFORMERS_", "ACCELERATE_",
+    "TOKENIZERS_",
+    # the overlay knob families (_KNOBS), so a NEW knob of an existing family is seen before it is listed
+    "KCK_", "FC1_", "FC2OP_", "LMHEAD_", "QKV_", "RMSN_", "ROPE_", "SWIGLU_")
+
+
+def _coverage():
+    import sys
+    flags, cur = {}, None
+    for tok in sys.argv[1:]:
+        if tok.startswith("--"):
+            k, eq, v = tok[2:].partition("=")
+            flags[k] = v if eq else "true"            # last occurrence wins, like argparse
+            cur = None if eq else k
+        elif cur is not None:
+            flags[cur] = tok if flags[cur] == "true" else f"{flags[cur]} {tok}"   # nargs="+" values
+    env = {k: v for k, v in os.environ.items() if k.startswith(_COVERAGE_ENV_PREFIXES)}
+    return {"v": 1, "argv": flags, "env": env}
 
 
 def _config_snapshot():

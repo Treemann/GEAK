@@ -22,7 +22,7 @@ BASE_ARGS = {f"arg_{i}": str(i) for i in range(12)}
 HARNESS = {"rocm_compat.py": "a", "overlay_train.py": "b", "hf_sft.py": "c", "image_id": "d"}
 
 
-def leg(root, name, args=None, cfg=None, harness=HARNESS, heldout=True):
+def leg(root, name, args=None, cfg=None, harness=HARNESS, heldout=True, env=None):
     d = os.path.join(root, "runs", name)
     os.makedirs(os.path.join(d, "probe"))
     with open(os.path.join(d, "train.log"), "w") as f:
@@ -33,6 +33,8 @@ def leg(root, name, args=None, cfg=None, harness=HARNESS, heldout=True):
     hdr = {"record": "header", "config": {"snapshot_keys": "v6", **(cfg or {})}}
     if harness is not None:
         hdr["harness"] = harness
+    if env is not False:
+        hdr["coverage"] = {"v": 1, "argv": {}, "env": env or {}}
     with open(os.path.join(d, "probe", "probe_rank0.jsonl"), "w") as f:
         f.write(json.dumps(hdr) + "\n")
 
@@ -78,6 +80,12 @@ results = [
     case("a different harness always fails", {}, {"harness": {**HARNESS, "image_id": "z"}},
          ("--accept-unknown-harness",), expect=False),
     case("a leg without a held-out evaluation fails", {}, {"heldout": False}, expect=False),
+    case("an unclassified env knob differing (NCCL_ALGO Ring vs Tree) is INVALID", {"env": {"NCCL_ALGO": "Ring"}},
+         {"env": {"NCCL_ALGO": "Tree"}}, expect=False),
+    case("... and valid when pre-declared", {"env": {"NCCL_ALGO": "Ring"}}, {"env": {"NCCL_ALGO": "Tree"}},
+         ("--allow-impl", "env NCCL_ALGO")),
+    case("a leg without the full env capture fails by default", {"env": False}, {}, expect=False),
+    case("... and passes with --accept-unknown-harness", {"env": False}, {}, ("--accept-unknown-harness",)),
     case("a ctrl arm that is the base + lr is valid", {}, {}, ("--ctrl", "ctrl70"),
          ctrl={"args": {"lr": "7e-6"}}),
     case("a ctrl arm on another implementation is INVALID", {}, {}, ("--ctrl", "ctrl70"),

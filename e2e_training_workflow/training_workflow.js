@@ -613,6 +613,33 @@ function comparable(ref, cand, allowedImpl) {
         `${ch[k] || '-'}`).join('; ')}): re-measure the reference with the current harness` };
     }
   }
+  // EVERY flag / env knob the snapshot does not classify (audit 2026-10-25 ID-1: --fp8-format, --optimizer,
+  // NVTE_CK_USES_BWD_V3, PYTORCH_TUNABLEOP_ENABLED, NCCL_ALGO ... moved neither digest). probe_summarize
+  // lists them as `unmapped`; a pair that differs in one is refused, whatever allowedImpl says -- classify
+  // the key (workload or implementation) first. FAIL CLOSED on a mixed pair: a leg with the full capture
+  // against one without cannot show the older leg did not differ. Two legs that both predate it (`null`)
+  // are judged as before (historic pairs; every leg measured from now on carries it).
+  const ru = ref.unmapped, cu = cand.unmapped;
+  if ((ru == null) !== (cu == null)) {
+    return { ok: false, stale: true, why: 'one leg predates the full argv/env capture (unmapped keys unknown): ' +
+                                         're-measure it with the current probe' };
+  }
+  if (ref.unmapped_ranks_agree === false || cand.unmapped_ranks_agree === false) {
+    return { ok: false, why: 'ranks within one leg ran different unclassified flags / env' };
+  }
+  if (ru && cu) {
+    const ud = [];
+    for (const part of ['argv', 'env']) {
+      const a = ru[part] || {}, b = cu[part] || {};
+      for (const k of [...new Set([...Object.keys(a), ...Object.keys(b)])].sort()) {
+        if (a[k] !== b[k]) ud.push(`${part === 'env' ? 'env ' : '--'}${k}: ${a[k] === undefined ? '-' : a[k]} vs ${b[k] === undefined ? '-' : b[k]}`);
+      }
+    }
+    if (ud.length) {
+      return { ok: false, why: `the legs differ in UNCLASSIFIED setting(s) (${ud.join('; ')}): classify each as ` +
+        'workload or implementation (train_probe identity lists / probe_summarize IMPL_KEYS) before gating on it' };
+    }
+  }
   // The digest check runs LAST and says so (`digestOnly`), so ConfigSweep can re-gate a lever that is
   // supposed to move identity WITHOUT skipping the rank and implementation checks above. Before
   // 2026-10-22 it ran first and ConfigSweep re-gated on any 'incomparable' (audit G2/ORCH-6).
@@ -961,7 +988,10 @@ const LEG = obj({ implementation: { type: 'object' }, workload_identity: { type:
   step_shape: { type: 'string', enum: ['fixed', 'variable'] }, ranks_agree_on_argv: { type: 'boolean' },
   probe_dir: { type: 'string' },
   // runtime code + image the leg ran (comparable() requires it from schema 6; copy it verbatim)
-  harness: { type: ['object', 'null'] } },
+  harness: { type: ['object', 'null'] },
+  // every flag / env knob nobody classified (probe_summarize, audit ID-1); null = predates the capture.
+  // Not required (historic legs); the gate_verifier recomputes it from the probe either way.
+  unmapped: { type: ['object', 'null'] }, unmapped_ranks_agree: { type: ['boolean', 'null'] } },
   LEG_REQUIRED);
 const PROOF = obj({ forward: { type: 'boolean' }, backward: { type: 'boolean' } }, ['forward', 'backward']);
 // Finalize runs even when no kernel was accepted; then there is nothing to re-check and null is honest.

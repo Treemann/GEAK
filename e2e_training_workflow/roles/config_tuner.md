@@ -129,8 +129,11 @@ Return JSON:
  "ref": {"...bench_summary..."}, "cand": {"...bench_summary..."},   // bench_summary.json VERBATIM, plus "probe_dir"
  // Required by the orchestrator (it fails closed on a trimmed leg): implementation, workload_identity,
  // occupancy_verdict, hang_detected, dispersion_reliable, worst_iqr_spread_pct, min_steady_steps,
- // step_shape, ranks_agree_on_argv, probe_dir (host path of <leg>/probe). A lever whose flags move
- // workload_identity (not just implementation) is refused as `recipe_change`.
+ // step_shape, ranks_agree_on_argv, probe_dir (host path of <leg>/probe), and `unmapped` /
+ // `unmapped_ranks_agree` (bench_summary carries them). A lever whose flags move workload_identity (not
+ // just implementation) is refused as `recipe_change`. A lever whose flag or env knob is UNCLASSIFIED
+ // (absent from train_probe's identity lists / _KNOBS, so it shows up in `unmapped`) is refused as
+ // incomparable (audit ID-1, DECISIONS 4.78): say so in `notes` -- it must be classified before it can be gated.
  "comparison": {"...compare_legs.py stdout verbatim, MUST contain a numeric delta_pct..."},
  "config_digest_delta": {"key": "overlap-grad-reduce", "ref": null, "cand": "true"},
  "peak_reserved_mb": {"ref": 80578, "cand": 80578},
