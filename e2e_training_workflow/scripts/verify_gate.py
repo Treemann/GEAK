@@ -19,6 +19,11 @@ produced the verdict. This script is the independent half: given ref and cand le
   verify_gate.py <ref_leg_dir> <cand_leg_dir> [--nproc 8] [--floor PCT (default: per-stack)] [--kind kernel|config]
                  [--lever-flags "--flag value ..."] [--lever-env KNOB1,KNOB2]
   verify_gate.py <ref> <cand> --kind packing --pack-gate-result <pack_gate --out json>   (Class-B packing)
+  verify_gate.py <ref> <cand> --kind stack --lever-flags ... [--lever-env ...]   (Validate: overlays + levers)
+  any kind but packing: [--l1-kind overlay|kernel_swap [--l1-band band.json] [--l1-l0-strictly-better]]
+      also recomputes L1 (trajectory_gate.verdict) on the pair with the kind / band the ORCHESTRATOR
+      derived (audit 2026-10-25 G-3: the Auditor / Tuner chose --kind, --band and the 8x looser
+      --l0-strictly-better floor themselves, and nobody re-ran this pure host computation).
 
 Prints one JSON object. Exit 0 always when it could judge (the verdict is in the JSON); exit 2 when it
 could not (missing dirs or probes) -- the caller must then fail closed.
@@ -229,10 +234,11 @@ def main():
                           "packing": _packing(ref, cand, ref_dir, cand_dir, pack_gate_result, _node())}))
         return
     cmp = compare(ref["probe_dir"], cand["probe_dir"])
-    if kind == "kernel":
-        allowed = ["GEAK_OVERLAY", "GEAK_OVERLAY_SHA"]
-    else:
-        allowed = [t.lstrip("-").split("=")[0] for t in lever.split() if t.startswith("--")]
+    allowed = []
+    if kind in ("kernel", "stack"):
+        allowed += ["GEAK_OVERLAY", "GEAK_OVERLAY_SHA"]
+    if kind in ("config", "stack"):
+        allowed += [t.lstrip("-").split("=")[0] for t in lever.split() if t.startswith("--")]
         allowed += ["env:" + k for k in lever_env]
         allowed += [k for k in {**ref.get("implementation", {}), **cand.get("implementation", {})} if k.startswith("NVTE_")]
     out = {"ref": ref, "cand": cand, "comparison": cmp, "kind": kind, "verdict": None}
@@ -255,7 +261,30 @@ def main():
     if kind == "kernel":
         out["engagement"] = _engagement(ref_dir, cand_dir, nproc)
     out["carried"] = _carried(ref_dir, cand_dir, nproc)
+    l1_kind = opt("--l1-kind", None)
+    if l1_kind:
+        out["l1"] = _l1(ref["probe_dir"], cand["probe_dir"], l1_kind, opt("--l1-band", None),
+                        "--l1-l0-strictly-better" in args)
     print(json.dumps(out))
+
+
+def _l1(ref_probe, cand_probe, kind, band_path, l0_better):
+    """trajectory_gate.verdict on the pair, with the caller's (orchestrator-derived) kind and band."""
+    import trajectory_gate as tg
+    if kind not in tg.STEP1_FLOOR_PCT:
+        return {"pass": False, "error": f"unknown L1 kind {kind!r}"}
+    try:
+        band = json.load(open(_leg_dir(band_path))) if band_path else {"limits": {}}   # /work/... -> host
+    except (OSError, ValueError) as e:
+        return {"pass": False, "error": f"band {band_path}: {e}"}
+    try:
+        import contextlib
+        with contextlib.redirect_stdout(sys.stderr):   # its warnings must not corrupt the one JSON line
+            v = tg.verdict(ref_probe, cand_probe, band, kind, l0_better)
+    except Exception as e:   # noqa: BLE001  a crash is a refusal, never a pass
+        return {"pass": False, "error": f"trajectory_gate: {type(e).__name__}: {e}"}
+    v["recomputed"] = {"kind": kind, "band": band_path, "l0_strictly_better": bool(l0_better)}
+    return v
 
 
 if __name__ == "__main__":

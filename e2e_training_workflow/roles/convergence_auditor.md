@@ -51,6 +51,11 @@ whose step-1 floor (0.05%) is 5x tighter than `kernel_swap`'s (0.25%; 2.0% only 
 - `kernel_swap`: anything else -- the forward numerics changed, however slightly.
 State the kind and its evidence in your `l1` reason. Pass `--l0-strictly-better` only when your own
 L0 run rates the candidate strictly more accurate than the incumbent on EVERY output.
+**Also return the evidence in `l0`** (audit G-3): `out_bit_identical` (true only when L0's paired block
+shows the forward `out` bit-identical to the incumbent) and `per_output` = `{<output>: {"cand_err": x,
+"base_err": y}}` copied from the oracle's output (its error vs the fp32 reference for candidate and
+incumbent). The orchestrator derives the L1 kind and the strictly-better floor from THESE fields and has
+the gate_verifier recompute L1 with them; your own `l1` can only reject.
 
 Preconditions you must check yourself, because the tool cannot:
 - both legs ran the SAME seed, data and config, so step i is the same batch on both sides. The tool

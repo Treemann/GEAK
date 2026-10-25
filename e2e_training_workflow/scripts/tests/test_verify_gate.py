@@ -21,7 +21,7 @@ def ok(c, m):
     print(("  ok: " if c else "  FAIL: ") + m); fails += 0 if c else 1
 
 IMPL = {"attention-backend": "fused", "NVTE_FUSED_ATTN": "1"}
-def leg(root, name, speed, overlay=None, nranks=8, fallback=0, drop_rank=None):
+def leg(root, name, speed, overlay=None, nranks=8, fallback=0, drop_rank=None, loss_rel=0.0):
     d = os.path.join(root, name); os.makedirs(os.path.join(d, "probe"))
     impl = dict(IMPL, **({"GEAK_OVERLAY": "m.json", "GEAK_OVERLAY_SHA": "k1"} if overlay else {}))
     cfg = {"seq-length": "4096", "snapshot_keys": "v5", **impl}
@@ -34,7 +34,7 @@ def leg(root, name, speed, overlay=None, nranks=8, fallback=0, drop_rank=None):
                 t += dur / 1000 + 0.001
                 f.write(json.dumps({"record": "step", "step": i + 1, "dur_ms": dur, "useful_tokens": 8000,
                                     "total_tokens": 8192, "peak_reserved_mb": 80000, "t_wall": t,
-                                    "loss": 3.0 - 0.01 * i, "grad_norm": 5.0}) + "\n")
+                                    "loss": (3.0 - 0.01 * i) * (1 + (loss_rel if i == 0 else 0.0)), "grad_norm": 5.0}) + "\n")
     json.dump({"status": "ok", "hang_detected": False, "occupancy_verdict": {"verdict": "clean"}},
               open(os.path.join(d, "bench_summary.json"), "w"))
     if overlay:
@@ -121,6 +121,24 @@ try:
        band({"stack": "megatron", "across_job_floor_pct": 0.2}) == 0.2,
        "gate_eval: per-stack floor (Megatron 0.30%, HF 0.25%); an explicit floor overrides it")
     ok(nul["verdict"]["band_pct"] == 0.3, "verify_gate without --floor uses the per-stack default")
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+# Audit 2026-10-25 G-3: L1 is recomputed with the ORCHESTRATOR's kind / floor. A cand whose step-1 loss is
+# 0.1% off at step 1 only passes kernel_swap (0.25%) and fails overlay (0.05%); no --l1-kind, no l1 field.
+root = tempfile.mkdtemp(prefix="vgtest_")
+try:
+    ref = leg(root, "ref", 1.0)
+    cand = leg(root, "cand", 0.97, overlay="attn", loss_rel=0.001)
+    ov = run(ref, cand, ("--floor", "0.25", "--l1-kind", "overlay"))
+    ks = run(ref, cand, ("--floor", "0.25", "--l1-kind", "kernel_swap"))
+    sb = run(ref, cand, ("--floor", "0.25", "--l1-kind", "kernel_swap", "--l1-l0-strictly-better"))
+    ok(ov["l1"]["pass"] is False and ov["l1"]["recomputed"]["kind"] == "overlay",
+       f"step-1 loss +0.1% fails the overlay floor (pass={ov['l1'].get('pass')})")
+    ok(ks["l1"]["pass"] is True, f"... and passes kernel_swap (pass={ks['l1'].get('pass')})")
+    ok(sb["l1"]["checks"]["step1_loss_rel_pct"]["limit"] == 2.0, "--l1-l0-strictly-better is the 2.0% floor")
+    ok("l1" not in run(ref, cand), "no --l1-kind -> no l1 field (the orchestrator then refuses)")
+    bad = run(ref, cand, ("--floor", "0.25", "--l1-kind", "kernel_swap", "--l1-band", os.path.join(root, "nope.json")))
+    ok(bad["l1"]["pass"] is False and "error" in bad["l1"], "an unreadable band is a refusal, not a pass")
 finally:
     shutil.rmtree(root, ignore_errors=True)
 print("all checks passed" if not fails else f"{fails} check(s) FAILED")

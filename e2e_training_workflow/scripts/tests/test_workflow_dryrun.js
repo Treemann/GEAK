@@ -48,6 +48,12 @@ const refShaFrom = (prompt) => {
 let INTEG_N = 0;
 let AUDIT_OVERRIDE;
 let QUALITY_SEQ = null;                    // queued quality-phase replies (extension tests)
+let L1V_OVERRIDE;                          // (refDir, candDir, prompt) -> the verifier's recomputed l1; undefined = pass
+let QUALV_OVERRIDE;                        // (args) -> quality_ab_final JSON; undefined = echo the Director's last reply
+let PAIRS_DROP;                            // (refDir, candDir) -> true to drop that pairing from the verifier reply
+let LAST_QUALITY = null;
+let L0X_OVERRIDE;                          // extra fields in the Auditor's l0 (L1-plan evidence)
+let VALIDATE_OVERRIDE;                     // fields merged into the Director's Validate reply
 let REUSEV_OVERRIDE;                       // quality_reuse.py check result (KIND quality_reuse); undefined = valid
 let PACKV_OVERRIDE;                        // verify_gate --kind packing result; undefined = confirms
 let ORACLE_OVERRIDE;                       // the Auditor's l0.oracle block; undefined = template v2
@@ -120,6 +126,13 @@ function stubFor(prompt) {
   }
   if (is('PHASE=verify')) {
     if (VERIFY_OVERRIDE === null) return null;
+    if (prompt.includes('"KIND": "quality"')) {        // quality_ab_final recomputed (audit ORCH-A8)
+      const m = /"QUALITY_ARGS": (\[[^\]]*\])/.exec(prompt);
+      const qa = m ? JSON.parse(m[1]) : [];
+      const r = QUALV_OVERRIDE !== undefined ? (QUALV_OVERRIDE && QUALV_OVERRIDE(qa))
+        : (LAST_QUALITY ? { quality: LAST_QUALITY.quality, stability: LAST_QUALITY.stability } : null);
+      return { pairs: [{ ref_dir: `${qa[0]}_ref`, cand_dir: `${qa[0]}_cand`, quality_verdict: r }] };
+    }
     if (prompt.includes('"KIND": "quality_reuse"')) {   // audit 2026-10-25 ID-3: the reuse proof is recomputed
       return { pairs: [{ ref_dir: '/p_ref', cand_dir: '/p_cand',
         reuse_check: REUSEV_OVERRIDE !== undefined ? REUSEV_OVERRIDE : { valid: true, seeds: [] } }] };
@@ -131,11 +144,15 @@ function stubFor(prompt) {
     const grab = (key) => { const m = new RegExp(`"${key}": \\[([^\\]]*)\\]`).exec(prompt); return m ? JSON.parse(`[${m[1]}]`) : []; };
     const refs = grab('REF_DIRS'), cands = grab('CAND_DIRS');
     const pairs = [];
+    const l1k = (/"L1_KIND": "([a-z_]+)"/.exec(prompt) || [])[1];
     for (const r of refs) for (const c of cands) {
+      if (PAIRS_DROP && PAIRS_DROP(r, c)) continue;
       const klass = VERIFY_OVERRIDE ? VERIFY_OVERRIDE(r, c) : 'win';
       pairs.push({ ref_dir: r, cand_dir: c, verdict: { klass, delta_pct: 2.0, band_pct: 0.5, reason: 'stub' },
                    engagement: { forward: true, backward: true }, comparison: {},
                    carried: CARRIED_OVERRIDE !== undefined ? CARRIED_OVERRIDE : { ok: true, lost: [], slots: {} },
+                   ...(l1k ? { l1: L1V_OVERRIDE !== undefined ? L1V_OVERRIDE(r, c, prompt)
+                     : { pass: true, failures: [], recomputed: { kind: l1k } } } : {}),
                    error: null });
     }
     return { pairs, ...(prompt.includes('"MGC_TASK"') ? { mgc_applicability: MGCA_OVERRIDE !== undefined ? MGCA_OVERRIDE
@@ -143,7 +160,7 @@ function stubFor(prompt) {
   }
   if (is('PHASE=gate')) {
     if (AUDIT_OVERRIDE !== undefined) return AUDIT_OVERRIDE;
-    return { l0: { pass: true, oracle: ORACLE_OVERRIDE !== undefined ? ORACLE_OVERRIDE
+    return { l0: { ...(L0X_OVERRIDE || {}), pass: true, oracle: ORACLE_OVERRIDE !== undefined ? ORACLE_OVERRIDE
                                       : { kind: 'template', template_version: 2, scores_every_output: true } },
              l1: { pass: true }, l2_recommended: false, risk_class: 'low',
              main_grad_contract: MGC_OVERRIDE !== undefined ? MGC_OVERRIDE : { applicable: true, passed: true },
@@ -153,13 +170,15 @@ function stubFor(prompt) {
                                      engagement_recheck: { forward: true, backward: true } };
   if (is('PHASE=report')) return 'report text';
   if (is('PHASE=quality')) {
-    if (QUALITY_SEQ) return QUALITY_SEQ.shift();
-    return { cleared: true, quality: 'PASS-quality: stub', stability: 'PASS-stability: stub' };
+    LAST_QUALITY = QUALITY_SEQ ? QUALITY_SEQ.shift()
+      : { cleared: true, quality: 'PASS-quality: stub', stability: 'PASS-stability: stub', legs_prefix: '/work/runs/qgate_stub' };
+    return LAST_QUALITY;
   }
   if (is('PHASE=validate')) {
     return { validation_status: 'confirmed', baseline_useful_tok_s: 850, final_useful_tok_s: 900,
              delta_pct: 5.88, band_pct: 0.15, estimator: 'paired per-step ratio', wall_delta_pct: 5.1,
-             l1: { pass: true }, legs: [] };
+             l1: { pass: true }, legs: [], ref_dir: '/work/runs/val_ref', final_dir: '/work/runs/val_final',
+             ...(VALIDATE_OVERRIDE || {}) };
   }
   if (is('date +%s%3N') || is('epoch_ms')) return { epoch_ms: 1791468713613 + 1000 };
   return {};
@@ -508,7 +527,7 @@ async function dryRun(args) {
   // ---- 2026-10-22 ORCH-1: the gate verifier recomputes every pairing from the leg dirs ---------
   try {
     const { result: r0, calls: c0 } = await dryRun(base);
-    const vp = c0.prompts.filter((p) => p.includes('PHASE=verify'));
+    const vp = c0.prompts.filter((p) => p.includes('PHASE=verify') && p.includes('"KIND": "kernel"'));
     ok(r0.accepted.length > 0 && vp.length === r0.accepted.length && vp[0].includes('gref2_'),
       `every accepted kernel was recomputed by the verifier, over EVERY measured leg (${vp.length} verify calls)`);
     VERIFY_OVERRIDE = () => 'inconclusive_noise';
@@ -619,6 +638,90 @@ async function dryRun(args) {
   }
   STRAT_HEADS = null;
   CONFIG_OVERRIDE = null;
+
+  // ---- audit 2026-10-25 fix 12 (ORCH-A5 / A2 / G-3 / A8): code-derived status, verifier coverage,
+  // recomputed L1 with a code-derived plan, recomputed outcome-test verdict ------------------------
+  try {
+    const kv = (calls) => calls.prompts.filter((p) => p.includes('PHASE=verify') && p.includes('"KIND": "kernel"'));
+    // A2: a reply that skips a requested pairing (here every gref2_ leg) cannot accept.
+    PAIRS_DROP = (r) => r.includes('gref2_');
+    const { result: c1 } = await dryRun(base);
+    PAIRS_DROP = undefined;
+    ok(c1.accepted.length === 0, 'a verifier reply that skips a requested pairing cannot accept (regression veto intact)');
+    // G-3: the verifier's own L1 decides; a failure rejects even when the Auditor's l1 passed.
+    L1V_OVERRIDE = () => ({ pass: false, failures: ['step-1 loss differs by 0.3100% (limit 0.0500%)'] });
+    const { result: c2 } = await dryRun(base);
+    L1V_OVERRIDE = undefined;
+    ok(c2.accepted.length === 0, 'a failed recomputed L1 refuses although the Auditor reported l1.pass');
+    L1V_OVERRIDE = () => undefined;
+    const { result: c2b } = await dryRun(base);
+    L1V_OVERRIDE = undefined;
+    ok(c2b.accepted.length === 0, 'a verifier reply without its L1 recomputation cannot accept');
+    // G-3: the L1 plan comes from the L0 evidence, not the Auditor's choice.
+    const { calls: c3 } = await dryRun(base);
+    ok(kv(c3).length > 0 && kv(c3).every((p) => p.includes('"L1_KIND": "kernel_swap"') && p.includes('"L1_L0_STRICTLY_BETTER": false')),
+      'no L0 evidence -> kernel_swap, never the 8x looser strictly-better floor');
+    L0X_OVERRIDE = { out_bit_identical: true };
+    const { calls: c4 } = await dryRun(base);
+    ok(kv(c4).length > 0 && kv(c4).every((p) => p.includes('"L1_KIND": "overlay"')), 'forward bit-identical in L0 -> the tight overlay floor');
+    L0X_OVERRIDE = { per_output: { out: { cand_err: 1, base_err: 2 }, dgrad: { cand_err: 1, base_err: 2 } } };
+    const { calls: c5 } = await dryRun(base);
+    ok(kv(c5).length > 0 && kv(c5).every((p) => p.includes('"L1_L0_STRICTLY_BETTER": true')),
+      'every output strictly closer to fp32 -> strictly-better floor');
+    L0X_OVERRIDE = { per_output: { out: { cand_err: 1, base_err: 2 }, wgrad: { cand_err: 2, base_err: 2 } } };
+    const { calls: c6 } = await dryRun(base);
+    ok(kv(c6).length > 0 && kv(c6).every((p) => p.includes('"L1_L0_STRICTLY_BETTER": false')),
+      'one output merely equal -> NOT strictly better');
+    L0X_OVERRIDE = undefined;
+    // A5: status is code-derived.
+    const { result: s0, calls: sc0 } = await dryRun(base);
+    ok(s0.status === 'ok' && sc0.prompts.some((p) => p.includes('"KIND": "stack"') && p.includes('val_final')),
+      `a confirmed Validate recomputed as a win is ok (status=${s0.status})`);
+    VERIFY_OVERRIDE = (r, c) => (c.includes('val_final') ? 'no_win' : 'win');
+    const { result: s1 } = await dryRun(base);
+    VERIFY_OVERRIDE = undefined;
+    ok(s1.status === 'unconfirmed' && /recomputation/.test(s1.status_reason || ''),
+      `Validate says confirmed but the recomputed headline is no_win -> unconfirmed (${s1.status})`);
+    VALIDATE_OVERRIDE = { ref_dir: undefined, final_dir: undefined };
+    const { result: s2 } = await dryRun(base);
+    VALIDATE_OVERRIDE = undefined;
+    ok(s2.status === 'unconfirmed', 'a Validate without its headline leg dirs cannot make the run ok');
+    VERIFY_OVERRIDE = (r, c) => (c.includes('val_final') ? 'win' : 'no_win');
+    const { result: s3 } = await dryRun(base);
+    VERIFY_OVERRIDE = undefined;
+    ok(s3.accepted.length === 0 && s3.status === 'no_gain', `nothing accepted -> no_gain whatever Validate says (${s3.status})`);
+    // A8: the outcome-test verdict is recomputed; cleared derives from the recomputed strings.
+    QUALV_OVERRIDE = () => ({ quality: 'INCONCLUSIVE-quality: upper 95% bound +0.009 > margin', stability: 'PASS-stability: 0 severe' });
+    QUALITY_SEQ = [{ cleared: true, quality: 'PASS-quality: ok', stability: 'PASS-stability: 0', legs_prefix: '/work/runs/qA' },
+                   { cleared: true, quality: 'PASS-quality: n=10', stability: 'PASS-stability: 0', legs_prefix: '/work/runs/qB' }];
+    const { result: q1, calls: qc1 } = await dryRun({ ...base, quality_gate: 'true' });
+    ok(q1.quality_gate.cleared === false && q1.quality_gate.reported && q1.quality_gate.reported.cleared === true,
+      'a Director PASS that recomputes as INCONCLUSIVE is NOT CLEARED (the report is kept)');
+    const qv = qc1.prompts.filter((p) => p.includes('"KIND": "quality"'));
+    ok(qv.length === 2 && qv[1].includes('"/work/runs/qA"') && qv[1].includes('"/work/runs/qB"'),
+      'the extension is recomputed over BOTH prefixes (the combined sample)');
+    QUALV_OVERRIDE = () => ({ quality: 'PASS-quality: upper ok', stability: 'PASS-stability: 0 severe' });
+    QUALITY_SEQ = [{ cleared: false, quality: 'whatever', stability: 'x', legs_prefix: '/work/runs/qA' }];
+    const { result: q2 } = await dryRun({ ...base, quality_gate: 'true' });
+    ok(q2.quality_gate.cleared === true, 'cleared is derived from the recomputed PASS/PASS, not the Director\'s flag');
+    QUALV_OVERRIDE = () => ({ quality: 'INCONCLUSIVE-quality: seed 7 cand did not finish', stability: 'FAIL-stability: seed 7 cand DIVERGED' });
+    QUALITY_SEQ = [{ cleared: true, quality: 'PASS-quality: ok', stability: 'PASS-stability: 0', legs_prefix: '/work/runs/qA' }];
+    const { result: q3, calls: qc3 } = await dryRun({ ...base, quality_gate: 'true' });
+    ok(q3.quality_gate.cleared === false && qc3.prompts.filter((p) => p.includes('PHASE=quality')).length === 1,
+      'a recomputed FAIL-stability (diverged cand) is NOT CLEARED and is not extended');
+    QUALV_OVERRIDE = () => null;
+    QUALITY_SEQ = [{ cleared: true, quality: 'PASS-quality: ok', stability: 'PASS-stability: 0', legs_prefix: '/work/runs/qA' }];
+    const { result: q4 } = await dryRun({ ...base, quality_gate: 'true' });
+    ok(q4.quality_gate.cleared === false, 'no recomputed verdict -> NOT CLEARED');
+    QUALV_OVERRIDE = undefined;
+    QUALITY_SEQ = [{ cleared: true, quality: 'PASS-quality: ok', stability: 'PASS-stability: 0', legs_prefix: '/work/runs/qA' }];
+    const { result: q5 } = await dryRun({ ...base, quality_gate: 'true', stack: 'hf_trl', quality_ctrl: 'none' });
+    ok(q5.quality_gate && q5.quality_gate.cleared === false, 'an HF outcome test without the in-run control is NOT CLEARED (G-5)');
+  } catch (e) {
+    ok(false, `fix-12 cases threw: ${e && e.stack}`);
+  }
+  PAIRS_DROP = undefined; L1V_OVERRIDE = undefined; L0X_OVERRIDE = undefined; VALIDATE_OVERRIDE = undefined;
+  QUALV_OVERRIDE = undefined; QUALITY_SEQ = null; VERIFY_OVERRIDE = undefined;
 
   // An opts.phase that is not a meta.phases title opens an ad-hoc group in /workflows and leaves the
   // declared phase reading "not started" though its agent ran (run wf_becee9a0-c6f, 2026-10-20).

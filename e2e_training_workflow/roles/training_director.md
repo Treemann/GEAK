@@ -121,8 +121,12 @@ Return JSON:
 ```json
 {"validation_status": "confirmed|disputed|unusable", "baseline_useful_tok_s": 0.0,
  "final_useful_tok_s": 0.0, "delta_pct": 0.0, "band_pct": 0.0, "wall_delta_pct": 0.0, "l1": {"pass": true},
- "legs": [...], "reason": "..."}
+ "legs": [...], "ref_dir": "<baseline leg dir of the headline pair>", "final_dir": "<final leg dir>",
+ "reason": "..."}
 ```
+`ref_dir` / `final_dir` are required: the gate_verifier recomputes that pair (`verify_gate.py --kind
+stack`, or `--kind packing` for a packed stack) and the run is `ok` only if the recomputation is a win
+with its own L1 passed (audit ORCH-A5). Your `validation_status` alone no longer decides the status.
 
 ## PHASE=quality (optional final gate, `quality_gate: true`)
 
@@ -146,7 +150,7 @@ pass before it is called safe to train with.
      accepted, and a CLEARED verdict would clear something else.
    * `QUALITY_WORKLOAD` defaults to this run's WORKLOAD. The protocol needs a SCHEDULED recipe
      (warmup + decay, DECISIONS 4.22-4.24): if the descriptor has no `LR_DECAY_ITERS` /
-     `LR_DECAY_STYLE` other than constant, do NOT run; return `cleared: null` and say the run must
+     `LR_DECAY_STYLE` other than constant, do NOT run; return `cleared: false`, `quality: "NOT RUN: unscheduled recipe"` and say the run must
      pass a scheduled `quality_workload`.
 2. **Run** `QUALITY_SCRIPT --workload QUALITY_WORKLOAD --stack QUALITY_STACK --nproc NPROC --gpus GPU_IDS
    --seeds QUALITY_SEEDS --arms ref,cand[,QUALITY_CTRL] --cand-cmd "<your script>"
@@ -166,7 +170,9 @@ pass before it is called safe to train with.
 3. **Verify engagement** on every cand leg: per overlay, the training buckets show fallback 0. The
    eval-mode fallbacks of rope / swiglu / attn / lmhead are expected (no_grad path).
 4. **Judge** with `QUALITY_VERDICT <prefix> --cand cand` (plus `--ctrl QUALITY_CTRL` when set). Return its `cleared`, `quality` and
-   `stability` VERBATIM, plus `legs_prefix`. Do not soften a NOT CLEARED. A NOT CLEARED stack still
+   `stability` VERBATIM, plus `legs_prefix` (REQUIRED: the orchestrator has the gate_verifier re-run
+   quality_ab_final.py on it and derives `cleared` from the recomputed strings; without it the verdict is
+   NOT CLEARED). Do not soften a NOT CLEARED. A NOT CLEARED stack still
    ships its throughput number, but must be labelled not cleared for production training.
    * If `QUALITY_CTRL` is set (e.g. `ctrl70`), add it as a third arm (`--arms ref,cand,QUALITY_CTRL`) and
      judge with `--ctrl QUALITY_CTRL`: the yardstick is then measured in this run, and the verdict is

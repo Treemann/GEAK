@@ -25,6 +25,8 @@ It caps the chance of clearing a stack that is exactly one margin worse at ~5%, 
 INCONCLUSIVE verdicts for noisy runs (add seeds). The output prints both rules' verdicts.
 
 Usage: quality_ab_final.py <prefix> [<prefix> ...] [--cand s8] [--rule noninf|point]
+  The LAST stdout line is always one JSON object with quality / stability / cleared (cleared derived from
+  the two strings); a cand leg that stopped on a non-finite loss is FAIL-stability, not INCOMPLETE.
   Several prefixes are judged as ONE sample (a pre-registered seed extension: the first run's prefix
   plus the extension's). A seed found under two prefixes is refused -- it would be counted twice.
 """
@@ -70,6 +72,38 @@ def steps(d):
     return [r for r in (json.loads(l) for l in open(p)) if r.get("record") == "step"] if os.path.exists(p) else []
 
 
+# A cand leg that STOPPED early because training diverged (non-finite loss; Megatron's NaN check /
+# rerun state machine exiting) is the worst stability outcome, not an incomplete run (audit 2026-10-25
+# G-7: it printed INCOMPLETE and no JSON, so a caller could not tell it from a leg still running).
+DIVERGED_RE = re.compile(r"(lm loss: (nan|inf|-inf)\b|loss is (nan|inf)|NaN detected|found NaN|"
+                         r"Unexpected result nan|rerun_state_machine.*(nan|inf|NaN|Inf))", re.IGNORECASE)
+
+
+def diverged(d, st):
+    if any(not math.isfinite(float(r.get("loss", 0.0) or 0.0)) for r in st):
+        return True
+    try:
+        return bool(DIVERGED_RE.search(open(os.path.join(d, "train.log"), errors="replace").read()))
+    except FileNotFoundError:
+        return False
+
+
+def _host(p):
+    """A container /work/... prefix (agents mix them) -> the host path under GEAK_WORK_DIR."""
+    return os.path.join(os.environ.get("GEAK_WORK_DIR", "/home/treemann/geak_train"), p[len("/work/"):]) \
+        if p.startswith("/work/") else p
+
+
+def emit(quality, stability, **kw):
+    """EVERY outcome ends in one JSON line (the orchestrator recomputes this verdict, ORCH-A8), and
+    `cleared` is DERIVED from the two verdict strings -- never set on its own."""
+    cleared = quality.startswith("PASS") and stability.startswith("PASS")
+    print("QUALITY:  ", quality)
+    print("STABILITY:", stability)
+    print("OVERALL:  ", "CLEARED" if cleared else "NOT CLEARED")
+    print(json.dumps({**kw, "quality": quality, "stability": stability, "cleared": cleared}))
+
+
 def heldout(d):
     try:
         v = VAL_RE.findall(open(os.path.join(d, "train.log"), errors="replace").read())
@@ -90,7 +124,7 @@ def main():
                     help="noninf (default since 2026-10-22): upper one-sided 95%% bound of mean d <= margin; "
                          "point: the pre-registered rule of the outcome tests up to 2026-10-22")
     a = ap.parse_args()
-    prefixes = [p.rstrip("/") for p in a.prefix]
+    prefixes = [_host(p.rstrip("/")) for p in a.prefix]
     where = {}
     for P in prefixes:
         for f in glob.glob(P + f"_{a.base}_seed*"):
@@ -98,14 +132,15 @@ def main():
             if m:
                 s_ = int(m.group(1))
                 if s_ in where and where[s_] != P:
-                    print(f"REFUSED: seed {s_} appears under {where[s_]} and {P}; a seed may be counted once")
+                    emit(f"REFUSED-quality: seed {s_} appears under {where[s_]} and {P}; a seed may be counted once",
+                         "REFUSED-stability: not judged")
                     return
                 where[s_] = P
     seeds = sorted(where)
     if len(seeds) < 3:
         # An empty glob used to crash in statistics.fmean; one or two seeds cannot carry a t-test.
-        print(f"INCOMPLETE: {len(seeds)} seed(s) found for {P}_{a.base}_seed* -- the protocol needs >= 3 "
-              f"(pre-registered: 5)")
+        emit(f"INCOMPLETE-quality: {len(seeds)} seed(s) found for {prefixes}_{a.base}_seed* -- the protocol "
+             f"needs >= 3 (pre-registered: 5)", "INCOMPLETE-stability: not judged", seeds=seeds)
         return
     tc = t_crit(len(seeds))
     if len(seeds) != 5:
@@ -119,7 +154,13 @@ def main():
         # Complete = both legs ran the same number of steps, enough to cover the episode window after
         # step AFTER (358 on the Megatron protocol, 296 on HF's one-epoch protocol), and both evaluated.
         if len(sr) != len(sc) or len(sr) < AFTER + WIN + 1 or hr is None or hc is None:
-            print(f"INCOMPLETE: seed {s} ref {len(sr)} steps / {hr}, cand {len(sc)} steps / {hc}")
+            if len(sc) < len(sr) and hc is None and diverged(c, sc):
+                emit(f"INCONCLUSIVE-quality: seed {s} {a.cand} did not finish",
+                     f"FAIL-stability: seed {s} {a.cand} DIVERGED at step {len(sc)} (non-finite loss / NaN exit)",
+                     seeds=seeds, diverged_seed=s)
+                return
+            emit(f"INCOMPLETE-quality: seed {s} ref {len(sr)} steps / {hr}, cand {len(sc)} steps / {hc}",
+                 "INCOMPLETE-stability: not judged", seeds=seeds)
             return
         diff = [x["loss"] - y["loss"] for x, y in zip(sc, sr)]
         m10 = max(statistics.fmean(diff[i:i + WIN]) for i in range(AFTER, len(diff) - WIN + 1))
@@ -132,15 +173,16 @@ def main():
         for s in seeds:
             hb, hk = heldout(f"{where[s]}_{a.base}_seed{s}"), heldout(f"{where[s]}_{a.ctrl}_seed{s}")
             if hk is None:
-                print(f"INCOMPLETE: control seed {s} has no held-out loss")
+                emit(f"INCOMPLETE-quality: control seed {s} has no held-out loss", "INCOMPLETE-stability: not judged",
+                     seeds=seeds)
                 return
             cd.append(hk - hb)
         cm, csd = statistics.fmean(cd), statistics.stdev(cd)
         ct = cm / (csd / math.sqrt(len(cd))) if csd > 0 else math.copysign(math.inf, cm)
         print(f"control {a.ctrl} - {a.base}: d {[round(x, 5) for x in cd]} mean {cm:+.5f} t {ct:.2f}")
         if not (cm > 0 and ct >= tc):
-            print("QUALITY:   INCONCLUSIVE-quality: the positive control was not detected")
-            print("OVERALL:   NOT CLEARED")
+            emit("INCONCLUSIVE-quality: the positive control was not detected", "NOT-JUDGED-stability: the "
+                 "control failed first", seeds=seeds, ctrl_d=[round(x, 6) for x in cd])
             return
         yard, ctrl_note = cm, f"measured in-run from {a.ctrl} (t {ct:.2f})"
     margin = 0.25 * yard
@@ -180,14 +222,9 @@ def main():
         stab = f"PASS-stability: {n_sev} severe, 0 catastrophic"
     else:
         stab = f"INCONCLUSIVE-stability: {n_sev} severe, 0 catastrophic"
-    cleared = qual.startswith("PASS") and stab.startswith("PASS")
-    print("QUALITY:  ", qual)
-    print("STABILITY:", stab)
-    print("OVERALL:  ", "CLEARED" if cleared else "NOT CLEARED")
-    print(json.dumps({"rule": a.rule, "upper95": round(upper, 6), "seeds": seeds, "d": [round(x, 6) for x in d],
-                      "mean": round(m, 6), "t": round(t, 3),
-                      "max10": [round(x, 3) for x in sev], "heldout_severe": d_sev, "heldout_catastrophic": d_cat,
-                      "quality": qual, "stability": stab, "cleared": cleared}))
+    emit(qual, stab, rule=a.rule, upper95=round(upper, 6), seeds=seeds, d=[round(x, 6) for x in d],
+         mean=round(m, 6), t=round(t, 3), max10=[round(x, 3) for x in sev], heldout_severe=d_sev,
+         heldout_catastrophic=d_cat, yardstick=round(yard, 6))
 
 
 if __name__ == "__main__":

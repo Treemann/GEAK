@@ -462,15 +462,35 @@ const legBase = (l) => {
   const d = typeof l === 'string' ? l : (l && (l.dir || l.probe_dir));
   return d ? String(d).replace(/\/+$/, '').replace(/\/probe$/, '').split('/').slice(-2).join('/') : null;
 };
-function verifyDecision(ver, refLegOrDir, candLegOrDir, needEngagement) {
+// `opts.expected` = {refs, cands}: the dirs the verifier was ASKED to cross (audit 2026-10-25 ORCH-A2: a
+// reply holding only the primary pair silently disabled the regression veto). `opts.needL1`: the pair
+// must carry the verifier's own L1 recomputation, passed (G-3).
+function verifyDecision(ver, refLegOrDir, candLegOrDir, needEngagement, opts) {
+  const o = opts || {};
   const pairs = (ver && Array.isArray(ver.pairs)) ? ver.pairs : null;
   if (!pairs || !pairs.length) return { ok: false, why: 'the gate verifier returned nothing: no independent recomputation, no accept' };
   const rb = legBase(refLegOrDir), cb = legBase(candLegOrDir);
   const prim = pairs.find((p) => legBase(p.ref_dir) === rb && legBase(p.cand_dir) === cb);
   const table = pairs.map((p) => ({ ref: legBase(p.ref_dir), cand: legBase(p.cand_dir),
     klass: p.verdict && p.verdict.klass, delta_pct: p.verdict && p.verdict.delta_pct,
-    band_pct: p.verdict && p.verdict.band_pct, error: p.error || null }));
+    band_pct: p.verdict && p.verdict.band_pct, error: p.error || null,
+    l1: p.l1 ? p.l1.pass : undefined }));
   if (!prim) return { ok: false, table, why: `the verifier did not recompute the reported pair ${rb} -> ${cb}` };
+  if (o.expected) {
+    const want = [];
+    for (const r of o.expected.refs || []) for (const c of o.expected.cands || []) want.push([legBase(r), legBase(c)]);
+    const miss = want.filter(([r, c]) => !pairs.some((p) => legBase(p.ref_dir) === r && legBase(p.cand_dir) === c));
+    if (miss.length) {
+      return { ok: false, table, why: `the verifier skipped ${miss.length} of ${want.length} requested pairing(s) ` +
+        `(${miss.map(([r, c]) => `${r}->${c}`).join(', ')}): a skipped pairing can hide a regression` };
+    }
+    const bad = pairs.filter((p) => p !== prim && (p.error || !p.verdict || p.verdict.error));
+    if (bad.length) {
+      return { ok: false, table, why: `${bad.length} requested pairing(s) could not be judged ` +
+        `(${bad.map((p) => `${legBase(p.ref_dir)}->${legBase(p.cand_dir)}`).join(', ')}): a pairing that was ` +
+        'not judged can hide a regression' };
+    }
+  }
   if (prim.error || !prim.verdict || prim.verdict.error) {
     return { ok: false, table, why: `the verifier could not judge the reported pair: ${prim.error || (prim.verdict || {}).error}` };
   }
@@ -500,7 +520,27 @@ function verifyDecision(ver, refLegOrDir, candLegOrDir, needEngagement) {
     return { ok: false, table, why: `${reg.length} measured pairing(s) are a REGRESSION on the recomputed numbers ` +
                                     `(${reg.map((p) => `${legBase(p.ref_dir)}->${legBase(p.cand_dir)}`).join(', ')})` };
   }
-  return { ok: true, table, delta_pct: prim.verdict.delta_pct, band_pct: prim.verdict.band_pct };
+  if (o.needL1 && !(prim.l1 && prim.l1.pass === true)) {
+    return { ok: false, table, why: prim.l1
+      ? `the verifier's own L1 recomputation (${(prim.l1.recomputed || {}).kind || '?'}) did not pass: ` +
+        `${(prim.l1.failures || []).join('; ') || prim.l1.error || prim.l1.reason || 'pass=' + prim.l1.pass}`
+      : 'the verifier output lacks its L1 recomputation for the reported pair' };
+  }
+  return { ok: true, table, delta_pct: prim.verdict.delta_pct, band_pct: prim.verdict.band_pct,
+           l1: prim.l1 ? { pass: prim.l1.pass, recomputed: prim.l1.recomputed || null } : null };
+}
+
+// The L1 kind and the --l0-strictly-better floor, derived by CODE from the L0 evidence (audit 2026-10-25
+// G-3: the Auditor chose them, and --l0-strictly-better widens the step-1 floor 8x). `overlay` (0.05%)
+// only when L0 shows the forward output bit-identical to the incumbent; `kernel_swap` (0.25%) otherwise;
+// strictly-better (2.0%) only with a per-output error table in which EVERY output is strictly closer to
+// the fp32 reference than the incumbent's.
+function l1PlanFromL0(l0) {
+  const po = l0 && l0.per_output && typeof l0.per_output === 'object' ? Object.values(l0.per_output) : [];
+  const better = po.length > 0 && po.every((e) => e && typeof e.cand_err === 'number' &&
+    typeof e.base_err === 'number' && e.cand_err < e.base_err);
+  const overlay = !!(l0 && l0.out_bit_identical === true);
+  return { kind: overlay ? 'overlay' : 'kernel_swap', l0_strictly_better: !overlay && better };
 }
 
 function comparable(ref, cand, allowedImpl) {
@@ -958,6 +998,9 @@ const MGC = obj({ applicable: { type: 'boolean' }, passed: { type: ['boolean', '
   ['applicable', 'passed']);
 // The L0 oracle's provenance (DECISIONS 4.60): a pre-v2 TEMPLATE oracle silently skips a missing output.
 const L0_VERDICT = obj({ pass: { type: 'boolean' }, reason: { type: 'string' },
+  // L1 plan evidence (l1PlanFromL0): the forward `out` bit-identical to the incumbent, and the per-output
+  // {cand_err, base_err} vs the fp32 reference, copied from the oracle's output.
+  out_bit_identical: { type: ['boolean', 'null'] }, per_output: { type: ['object', 'null'] },
   oracle: obj({ kind: { type: 'string', enum: ['template', 'custom'] },
     template_version: { type: ['number', 'null'] }, scores_every_output: { type: 'boolean' },
     task_dir: { type: 'string' } }, ['kind', 'template_version', 'scores_every_output']) }, ['pass', 'oracle']);
@@ -981,8 +1024,11 @@ const VALIDATE_SCHEMA = obj({
   validation_status: { type: 'string', enum: ['confirmed', 'disputed', 'unusable'] },
   baseline_useful_tok_s: { type: 'number' }, final_useful_tok_s: { type: 'number' },
   delta_pct: { type: 'number' }, band_pct: { type: 'number' }, estimator: { type: 'string' },
-  wall_delta_pct: { type: ['number', 'null'] }, l1: VERDICT, legs: { type: 'array' } },
-  ['validation_status', 'baseline_useful_tok_s', 'final_useful_tok_s', 'delta_pct', 'band_pct', 'estimator', 'l1', 'legs']);
+  wall_delta_pct: { type: ['number', 'null'] }, l1: VERDICT, legs: { type: 'array' },
+  // the headline pair's leg DIRECTORIES: the gate_verifier recomputes it (audit 2026-10-25 ORCH-A5)
+  ref_dir: { type: 'string' }, final_dir: { type: 'string' } },
+  ['validation_status', 'baseline_useful_tok_s', 'final_useful_tok_s', 'delta_pct', 'band_pct', 'estimator', 'l1', 'legs',
+   'ref_dir', 'final_dir']);
 
 // ---- wall clock -------------------------------------------------------------------------------
 // The workflow sandbox has NO clock at all: the `Date.now` / argless `new Date` family, plus
@@ -1012,6 +1058,8 @@ const VERIFY_SCHEMA = obj({ pairs: { type: 'array', minItems: 1, items: obj({
   ref_dir: { type: 'string' }, cand_dir: { type: 'string' }, verdict: { type: ['object', 'null'] },
   packing: { type: ['object', 'null'] },   // verify_gate --kind packing
   reuse_check: { type: ['object', 'null'] },   // quality_reuse.py check (KIND quality_reuse)
+  quality_verdict: { type: ['object', 'null'] },   // quality_ab_final.py's JSON line (KIND quality)
+  l1: { type: ['object', 'null'] },   // verify_gate --l1-kind: the recomputed trajectory_gate verdict
   engagement: { type: ['object', 'null'] }, comparison: { type: ['object', 'null'] },
   carried: { type: ['object', 'null'] },
   error: { type: ['string', 'null'] } }, ['ref_dir', 'cand_dir']) },
@@ -1322,7 +1370,7 @@ if (want('config')) {
                     reason: 'no equal-useful-token comparison (scripts/compare_legs_tokens.py)' };
       } else {
         const win = d > PACKING_MIN_GAIN_PCT;
-        verdict = { accepted: win, klass: win ? 'win' : 'no_win', delta_pct: d,
+        verdict = { accepted: win, klass: win ? 'win' : 'no_win', delta_pct: d, pack_gate_result: pg.result || null,
                     reported_delta_pct: ct && typeof ct.delta_pct === 'number' ? ct.delta_pct : null,
                     band_pct: PACKING_MIN_GAIN_PCT, delta_source: 'equal useful tokens (Class B)',
                     reason: `${d.toFixed(2)}% ${win ? '>' : '<='} ${PACKING_MIN_GAIN_PCT}% on an equal-useful-` +
@@ -1392,13 +1440,20 @@ if (want('config')) {
            `ceiling was ${sweep.ceiling_pct}%)`);
       if (cv.accepted) {
         // Same independent recomputation as a kernel gate (audit ORCH-1), on the Tuner's legs.
+        // L1 is recomputed too (G-3). A config lever has no L0, so never --l0-strictly-better; its kind is
+        // the Tuner's declared one (config_tuner.md 4b), recorded in the verifier's output.
+        const s1 = ((sweep.l1 || {}).checks || {}).step1_loss_rel_pct || {};
+        const cRefs = [sweep.ref.dir || sweep.ref.probe_dir].filter(Boolean);
+        const cCands = [sweep.cand.dir || sweep.cand.probe_dir].filter(Boolean);
         const ver = await safeAgentStub('gate_verifier', 'verify',
-          { REF_DIRS: [sweep.ref.dir || sweep.ref.probe_dir].filter(Boolean),
-            CAND_DIRS: [sweep.cand.dir || sweep.cand.probe_dir].filter(Boolean),
+          { REF_DIRS: cRefs, CAND_DIRS: cCands,
             KIND: 'config', LEVER_FLAGS: flagsString(sweep.flags_added), FLOOR: runFloor, NPROC,
+            L1_KIND: s1.candidate_kind === 'kernel_swap' ? 'kernel_swap' : 'overlay',
+            L1_BAND: wfReturn.bands.trajectory_band_path || null, L1_L0_STRICTLY_BETTER: false,
             GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts` },
           'Run verify_gate.py on EVERY ref x cand pairing and return its output verbatim. You are a script runner.');
-        const vd = verifyDecision(ver, sweep.ref, sweep.cand, false);
+        const vd = verifyDecision(ver, sweep.ref, sweep.cand, false,
+                                  { expected: { refs: cRefs, cands: cCands }, needL1: true });
         cv.verifier = vd;
         if (!vd.ok) Object.assign(cv, { accepted: false, klass: 'verifier_refused', reason: vd.why });
       }
@@ -1553,13 +1608,18 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
   let mgcAppl = null;   // the verifier's mgc_applicability.py (audit 2026-10-25 G-1)
   if (v.accepted) {
     const lm = integ.legs_measured || {};
+    const refDirs = [...new Set([integ.ref.dir || integ.ref.probe_dir, ...(lm.refs || [])].filter(Boolean))];
+    const candDirs = [...new Set([integ.cand.dir || integ.cand.probe_dir, ...(lm.cands || [])].filter(Boolean))];
+    const l1Plan = l1PlanFromL0(audit && audit.l0);
     const ver = await safeAgentStub('gate_verifier', 'verify',
-      { REF_DIRS: [...new Set([integ.ref.dir || integ.ref.probe_dir, ...(lm.refs || [])].filter(Boolean))],
-        CAND_DIRS: [...new Set([integ.cand.dir || integ.cand.probe_dir, ...(lm.cands || [])].filter(Boolean))],
+      { REF_DIRS: refDirs, CAND_DIRS: candDirs,
         KIND: 'kernel', FLOOR: runFloor, NPROC, GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts`,
+        L1_KIND: l1Plan.kind, L1_BAND: wfReturn.bands.trajectory_band_path || null,
+        L1_L0_STRICTLY_BETTER: l1Plan.l0_strictly_better,
         MGC_TASK: optimized.ext.task_dir || null, MGC_IMPL: integ.overlay_path || null },
       'Run verify_gate.py on EVERY ref x cand pairing and return its output verbatim. You are a script runner.');
-    const vd = verifyDecision(ver, integ.ref, integ.cand, true);
+    const vd = verifyDecision(ver, integ.ref, integ.cand, true,
+                              { expected: { refs: refDirs, cands: candDirs }, needL1: true });
     v.verifier = vd;
     mgcAppl = ver && ver.mgc_applicability && typeof ver.mgc_applicability.applicable === 'boolean'
       ? ver.mgc_applicability : null;
@@ -1728,6 +1788,45 @@ const val = await safeAgentStub('training_director', 'validate',
   'Re-measure the accepted stack against the TRUE baseline yourself and arbitrate.');
 wfReturn.validation = val || null;
 
+// INDEPENDENT RECOMPUTATION of the headline pair (audit 2026-10-25 ORCH-A5: a Validate that said
+// "confirmed" with delta -3% made the run 'ok'). verify_gate --kind stack allows exactly the accepted
+// overlays and levers to differ; a run whose accepted change is a packing lever is judged on equal useful
+// tokens (--kind packing) against the accepted lever's own pack_gate file.
+let valRe = null;
+const accCfgAll = (wfReturn.config_sweep && wfReturn.config_sweep.levers || []).filter((r) => r.verdict && r.verdict.accepted);
+const accPack = accCfgAll.find((r) => String(r.class || '').startsWith('B'));
+if (val && val.ref_dir && val.final_dir && (wfReturn.accepted.length || accCfgAll.length)) {
+  const vRefs = [val.ref_dir], vCands = [val.final_dir];
+  if (accPack) {
+    const ver = await safeAgentStub('gate_verifier', 'verify',
+      { REF_DIRS: vRefs, CAND_DIRS: vCands, KIND: 'packing', PACK_GATE_RESULT: accPack.verdict.pack_gate_result || null,
+        NPROC, GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts` },
+      'Run verify_gate.py --kind packing on the pairing and return its output verbatim. You are a script runner.');
+    const pv = ver && Array.isArray(ver.pairs) && ver.pairs[0] ? ver.pairs[0].packing : null;
+    const ok = !!(pv && pv.pack_gate_pass === true && pv.data_matches === true && pv.legs_usable === true &&
+                  typeof pv.delta_pct === 'number' && pv.delta_pct > PACKING_MIN_GAIN_PCT);
+    valRe = { ok, kind: 'packing', delta_pct: pv ? pv.delta_pct : null, band_pct: PACKING_MIN_GAIN_PCT,
+              why: ok ? null : (pv ? `packed stack not confirmed: ${JSON.stringify(pv.why || [])}, delta ${pv.delta_pct}`
+                                   : 'the gate verifier returned nothing for the packed stack') };
+  } else {
+    const accA = accCfgAll.filter((r) => !String(r.class || 'A').startsWith('B'));
+    const swap = wfReturn.accepted.length > 0 ||
+      accA.some((r) => ((r.verdict.verifier || {}).l1 || {}).recomputed && r.verdict.verifier.l1.recomputed.kind === 'kernel_swap');
+    const ver = await safeAgentStub('gate_verifier', 'verify',
+      { REF_DIRS: vRefs, CAND_DIRS: vCands, KIND: 'stack',
+        LEVER_FLAGS: flagsString(accA.reduce((f, r) => mergeFlags(f, r.flags_added), [])), FLOOR: runFloor, NPROC,
+        L1_KIND: swap ? 'kernel_swap' : 'overlay', L1_BAND: wfReturn.bands.trajectory_band_path || null,
+        L1_L0_STRICTLY_BETTER: false, GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts` },
+      'Run verify_gate.py on EVERY ref x cand pairing and return its output verbatim. You are a script runner.');
+    const vd = verifyDecision(ver, val.ref_dir, val.final_dir, false,
+                              { expected: { refs: vRefs, cands: vCands }, needL1: true });
+    valRe = { ok: vd.ok, kind: 'stack', delta_pct: vd.delta_pct != null ? vd.delta_pct : null,
+              band_pct: vd.band_pct != null ? vd.band_pct : null, l1: vd.l1 || null, why: vd.ok ? null : vd.why,
+              table: vd.table || null };
+  }
+}
+wfReturn.validation_recomputed = valRe;
+
 // ANNOTATE the accepted records against the independent re-measurement -- never rewrite them.
 // In the 7B run accepted[0].verdict.delta_pct stayed 7.853% after the Director had PROVEN that
 // figure was a window-placement artifact and the real number was +4.54%. Anything reading
@@ -1772,9 +1871,33 @@ if (val && typeof val.delta_pct === 'number' && wfReturn.accepted.length) {
 const qConfig = wfReturn.accepted_config &&
   !String(wfReturn.accepted_config.class || '').startsWith('B') ? wfReturn.accepted_config : null;
 const stackChanged = wfReturn.accepted.length > 0 || !!qConfig;
+// The verdict is RECOMPUTED (audit 2026-10-25 ORCH-A8 / G-3): quality_ab_final.py is pure host Python over
+// the legs' train.log / probe files, so the gate_verifier re-runs it with arguments the orchestrator builds,
+// and `cleared` is derived from its two verdict strings (/^PASS/ and /^PASS/), never taken from an agent.
+// On hf_trl a verdict without the in-run control is refused (G-5: the fixed yardstick is Megatron's).
+async function recomputeQuality(dq, prefixes) {
+  if (!dq) return null;
+  const reported = { cleared: dq.cleared, quality: dq.quality, stability: dq.stability };
+  const refuse = (why) => Object.assign({}, dq, { cleared: false, reported,
+    quality: `NOT CLEARED: ${why}; the Director reported: ${dq.quality}` });
+  if (STACK === 'hf_trl' && !QUALITY_CTRL) return refuse('an HF outcome test needs the in-run control (quality_ctrl)');
+  if (prefixes.some((x) => !x)) return refuse('no legs_prefix, so the verdict cannot be recomputed');
+  const qa = [...prefixes.map(String), '--cand', 'cand', '--base', 'ref', ...(QUALITY_CTRL ? ['--ctrl', String(QUALITY_CTRL)] : [])];
+  const ver = await safeAgentStub('gate_verifier', 'verify',
+    { KIND: 'quality', QUALITY_ARGS: qa, GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts` },
+    'Run quality_ab_final.py with exactly QUALITY_ARGS and return its LAST stdout line (JSON) verbatim as ' +
+    'pairs[0].quality_verdict. You are a script runner.');
+  const p0 = ver && Array.isArray(ver.pairs) ? ver.pairs[0] : null;
+  const r = p0 && p0.quality_verdict;
+  if (!r || typeof r.quality !== 'string' || typeof r.stability !== 'string') {
+    return refuse('the gate verifier did not recompute the verdict');
+  }
+  return Object.assign({}, dq, { quality: r.quality, stability: r.stability,
+    cleared: /^PASS/.test(r.quality) && /^PASS/.test(r.stability), reported, recomputed: r });
+}
 if (QUALITY_GATE && stackChanged) {
   phase('QualityGate');
-  const q = await safeAgentStub('training_director', 'quality',
+  const qDir = await safeAgentStub('training_director', 'quality',
     { ...benchInputs(curConfig, 'quality'), FINAL: fin, OVERLAY: curOverlay,
       ACCEPTED_CONFIG: qConfig, QUALITY_SEEDS, QUALITY_WORKLOAD, QUALITY_CTRL, QUALITY_STACK: STACK,
       QUALITY_REUSE, QUALITY_REUSE_TOOL: `${WORKFLOW_DIR}/scripts/quality_reuse.py`,
@@ -1782,6 +1905,7 @@ if (QUALITY_GATE && stackChanged) {
       QUALITY_VERDICT: `${WORKFLOW_DIR}/scripts/quality_ab_final.py` },
     'Run the one-epoch outcome test of the final stack against REF and return the verdict of ' +
     'quality_ab_final.py VERBATIM (cleared, quality, stability). Do not reinterpret it.');
+  const q = await recomputeQuality(qDir, [qDir && qDir.legs_prefix]);
   wfReturn.quality_gate = q || { cleared: false, quality: 'not run', stability: 'not run' };
   // Reused legs count only if the tool proved them the same recipe (fail closed). Computed ONCE and applied
   // to the first verdict, to the decision to extend, and to the extended verdict: the combined n = 10 sample
@@ -1827,7 +1951,7 @@ if (QUALITY_GATE && stackChanged) {
       !/positive control was not detected/.test(String(q.quality || '')) && !/^FAIL/.test(String(q.stability || '')) &&
       QUALITY_EXTEND_SEEDS !== 'none' && q.legs_prefix) {
     log0(`quality gate INCONCLUSIVE (${q.quality}) -- running the ONE pre-registered extension: seeds ${QUALITY_EXTEND_SEEDS}`);
-    const qx = await safeAgentStub('training_director', 'quality',
+    const qxDir = await safeAgentStub('training_director', 'quality',
       { ...benchInputs(curConfig, 'quality_ext'), FINAL: fin, OVERLAY: curOverlay,
         ACCEPTED_CONFIG: qConfig, QUALITY_SEEDS: QUALITY_EXTEND_SEEDS, QUALITY_WORKLOAD, QUALITY_CTRL, QUALITY_STACK: STACK,
         EXTENSION_OF: q.legs_prefix,
@@ -1837,6 +1961,7 @@ if (QUALITY_GATE && stackChanged) {
       '(same cand command, arms -- including QUALITY_CTRL if set -- stack and workload) for QUALITY_SEEDS only, then ' +
       'judge the COMBINED sample with `QUALITY_VERDICT EXTENSION_OF <your new prefix> --cand cand` plus ' +
       '`--ctrl QUALITY_CTRL` when it is set, and return that verdict VERBATIM. It is final.');
+    const qx = await recomputeQuality(qxDir, [q.legs_prefix, qxDir && qxDir.legs_prefix]);
     wfReturn.quality_gate = Object.assign({}, qx || { cleared: false, quality: 'extension not run', stability: 'not run' },
       { first_verdict: q, extended: true });
     if (!reuseOk) wfReturn.quality_gate = reuseRefusal(wfReturn.quality_gate);   // belt and braces
@@ -1860,8 +1985,20 @@ if (QUALITY_GATE && stackChanged) {
 wfReturn.gates_used = gatesUsed;
 wfReturn.tasks_used = tasksUsed;
 wfReturn.kb_identity = kbIdentity(curConfig);
-wfReturn.status = val && val.validation_status === 'confirmed' && val.l1 && val.l1.pass === true ? 'ok'
-  : (wfReturn.accepted.length ? 'unconfirmed' : 'no_gain');
+// Status is CODE-derived (audit 2026-10-25 ORCH-A5): nothing accepted is `no_gain` whatever Validate says;
+// `ok` needs the Director's confirmation AND the verifier's recomputation of the same pair as a win (delta
+// above its band) with its own L1 passed. Anything else that accepted something is `unconfirmed`.
+const acceptedAnything = wfReturn.accepted.length > 0 || accCfgAll.length > 0;
+wfReturn.status = !acceptedAnything ? 'no_gain'
+  : (val && val.validation_status === 'confirmed' && val.l1 && val.l1.pass === true && valRe && valRe.ok) ? 'ok'
+    : 'unconfirmed';
+if (wfReturn.status === 'unconfirmed') {
+  wfReturn.status_reason = !val ? 'Validate returned nothing'
+    : val.validation_status !== 'confirmed' ? `Validate: ${val.validation_status}`
+      : !(val.l1 && val.l1.pass === true) ? 'Validate L1 did not pass'
+        : !valRe ? 'Validate returned no headline leg dirs: the pair could not be recomputed'
+          : `the independent recomputation refuses the headline: ${valRe.why}`;
+}
 // A bundle whose own re-check failed, or a stack the outcome test did NOT clear, is not 'ok' (audit G9).
 if (wfReturn.status === 'ok' && wfReturn.finalize_engagement_failed) wfReturn.status = 'bundle_not_engaged';
 if (wfReturn.status === 'ok' && wfReturn.quality_gate && wfReturn.quality_gate.cleared === false) wfReturn.status = 'not_cleared';

@@ -7,16 +7,28 @@ recompute every pairing from the leg DIRECTORIES with a fixed script and return 
 ## PHASE=verify
 
 Inputs: `REF_DIRS`, `CAND_DIRS` (host paths of leg dirs, each with `probe/` and `bench_summary.json`),
-`KIND` (`kernel` | `config`), `LEVER_FLAGS` (config only), `LEVER_ENV` (config only, optional: the env
-knob names a lever sets besides its flags), `FLOOR` (the run's band floor), `NPROC`.
+`KIND` (`kernel` | `config` | `stack` | `packing` | `quality_reuse` | `quality`), `LEVER_FLAGS` (config /
+stack), `LEVER_ENV` (optional: the env knob names a lever sets besides its flags), `FLOOR` (the run's band
+floor), `NPROC`, and for the L1 recomputation `L1_KIND`, `L1_BAND` (may be null), `L1_L0_STRICTLY_BETTER`.
+Every pairing must be returned -- the orchestrator refuses a reply that skips one (audit ORCH-A2).
 
 For EVERY ref in `REF_DIRS` and EVERY cand in `CAND_DIRS`, run exactly:
 
 ```bash
 NODE=<a node binary: `which node`, else ~/.cursor-server/bin/*/node> \
 python3 GEAK_SCRIPTS/verify_gate.py <ref_dir> <cand_dir> --nproc NPROC --floor FLOOR --kind KIND \
-        [--lever-flags "LEVER_FLAGS"] [--lever-env LEVER_ENV]
+        [--lever-flags "LEVER_FLAGS"] [--lever-env LEVER_ENV] \
+        [--l1-kind L1_KIND [--l1-band L1_BAND] [--l1-l0-strictly-better]]
 ```
+
+Pass `--l1-kind` whenever `L1_KIND` is given, `--l1-band` only when `L1_BAND` is not null, and
+`--l1-l0-strictly-better` only when `L1_L0_STRICTLY_BETTER` is true. The script's `l1` field is the pair's
+`l1` (the orchestrator derived kind and floor from the L0 evidence; do not choose them yourself).
+
+With `KIND` = `quality` (an outcome-test verdict) run exactly
+`python3 GEAK_SCRIPTS/quality_ab_final.py <QUALITY_ARGS, each element one argv token, in order>` and
+return `{"pairs": [{"ref_dir": "<first QUALITY_ARGS element>_ref", "cand_dir": "<first QUALITY_ARGS
+element>_cand", "quality_verdict": <its LAST stdout line, parsed JSON, verbatim>}]}`.
 
 With `KIND` = `kernel` and `MGC_TASK` / `MGC_IMPL` given, ALSO run once (torch-free, host):
 
