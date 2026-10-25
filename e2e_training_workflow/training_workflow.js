@@ -1653,8 +1653,12 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
   let mgcAppl = null;   // the verifier's mgc_applicability.py (audit 2026-10-25 G-1)
   if (v.accepted) {
     const lm = integ.legs_measured || {};
-    const refDirs = [...new Set([integ.ref.dir || integ.ref.probe_dir, ...(lm.refs || [])].filter(Boolean))];
-    const candDirs = [...new Set([integ.cand.dir || integ.cand.probe_dir, ...(lm.cands || [])].filter(Boolean))];
+    // One entry per LEG, not per spelling: agents report the same leg as /work/... and as a host path,
+    // with or without /probe (run wf_e849d951-2cc recomputed one pairing 4 times).
+    const uniqLegs = (xs) => { const seen = new Set(); return xs.filter(Boolean).filter((d) => {
+      const k = legBase(d); if (seen.has(k)) return false; seen.add(k); return true; }); };
+    const refDirs = uniqLegs([integ.ref.dir || integ.ref.probe_dir, ...(lm.refs || [])]);
+    const candDirs = uniqLegs([integ.cand.dir || integ.cand.probe_dir, ...(lm.cands || [])]);
     const l1Plan = l1PlanFromL0(audit && audit.l0);
     const ver = await safeAgentStub('gate_verifier', 'verify',
       { REF_DIRS: refDirs, CAND_DIRS: candDirs,

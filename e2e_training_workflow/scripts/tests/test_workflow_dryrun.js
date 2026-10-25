@@ -118,7 +118,8 @@ function stubFor(prompt) {
     return { ref: leg({ implementation: impl(rs), dir: `/work/runs/gref_${INTEG_N}`, probe_dir: `/work/runs/gref_${INTEG_N}/probe` }),
              cand: leg({ useful_tok_s_per_gpu: 900, impl_digest: 'bbb', implementation: impl(rs ? `${rs}+${add}` : add),
                          dir: `/work/runs/gcand_${INTEG_N}`, probe_dir: `/work/runs/gcand_${INTEG_N}/probe` }),
-             legs_measured: { refs: [`/work/runs/gref_${INTEG_N}`, `/work/runs/gref2_${INTEG_N}`],
+             legs_measured: { refs: [`/work/runs/gref_${INTEG_N}`, `/home/u/geak_train/runs/gref_${INTEG_N}/probe`,
+                                     `/work/runs/gref2_${INTEG_N}`],
                               cands: [`/work/runs/gcand_${INTEG_N}`] },
              comparison: { delta_pct: 5.8, window_artifact_pct: 0.1 },
              engagement: ENG_OVERRIDE !== undefined ? ENG_OVERRIDE : { forward: true, backward: true },
@@ -585,6 +586,9 @@ async function dryRun(args) {
   try {
     const { result: r0, calls: c0 } = await dryRun(base);
     const vp = c0.prompts.filter((p) => p.includes('PHASE=verify') && p.includes('"KIND": "kernel"'));
+    ok(vp.every((p) => { const m = /"REF_DIRS": \[([^\]]*)\]/.exec(p); const xs = m ? JSON.parse(`[${m[1]}]`) : [];
+         return new Set(xs.map((x) => x.replace(/\/probe$/, '').split('/').slice(-2).join('/'))).size === xs.length; }),
+      'the verifier is asked for each leg once, whatever path spelling the agent used');
     ok(r0.accepted.length > 0 && vp.length === r0.accepted.length && vp[0].includes('gref2_'),
       `every accepted kernel was recomputed by the verifier, over EVERY measured leg (${vp.length} verify calls)`);
     VERIFY_OVERRIDE = () => 'inconclusive_noise';
