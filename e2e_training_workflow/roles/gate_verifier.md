@@ -22,7 +22,8 @@ python3 GEAK_SCRIPTS/verify_gate.py <ref_dir> <cand_dir> --nproc NPROC --floor F
 ```
 
 Pass `--l1-kind` whenever `L1_KIND` is given, `--l1-band` only when `L1_BAND` is not null, and
-`--l1-l0-strictly-better` only when `L1_L0_STRICTLY_BETTER` is true. The script's `l1` field is the pair's
+`--l1-l0-strictly-better` only when `L1_L0_STRICTLY_BETTER` is true, and `--lever-env LEVER_ENV` only when
+`LEVER_ENV` is not null. The script's `l1` field is the pair's
 `l1` (the orchestrator derived kind and floor from the L0 evidence; do not choose them yourself).
 
 With `KIND` = `quality` (an outcome-test verdict) run exactly

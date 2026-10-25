@@ -323,6 +323,42 @@ async function dryRun(args) {
   }
   CONFIG_L1 = { pass: true, checks: {} };
 
+  // audit 2026-10-25 item 13: a flag+env lever (the deliverable's `fast`) is accepted, verified with
+  // --lever-env, carried into later legs and into Validate's recomputation.
+  {
+    const fastCand = leg({ useful_tok_s_per_gpu: 866, impl_digest: 'fast',
+      implementation: Object.assign({}, leg().implementation,
+        { 'no-check-for-nan-in-loss-and-grad': 'true', 'env:GEAK_NAN_FROM_GRAD_NORM': '1' }) });
+    const fast = { lever: 'nan_from_grad_norm', flags_added: ['--no-check-for-nan-in-loss-and-grad'], cand: fastCand };
+    CONFIG_L1 = { pass: true, checks: { step1_loss_rel_pct: { candidate_kind: 'overlay' } } };
+    try {
+      CONFIG_OVERRIDE = { ...fast };
+      const { result: e0 } = await dryRun({ ...base, deep_mode: 'true', budget: 0 });
+      const v0 = ((((e0 || {}).config_sweep || {}).levers || [])[0] || {}).verdict || {};
+      ok(v0.accepted === false && v0.klass === 'incomparable', `flag+env lever WITHOUT env_added is refused (${v0.klass})`);
+      CONFIG_OVERRIDE = { ...fast, env_added: { GEAK_NAN_FROM_GRAD_NORM: '1' } };
+      const { result: e1, calls: ec1 } = await dryRun({ ...base, deep_mode: 'true', budget: 0 });
+      const lv1 = (((e1 || {}).config_sweep || {}).levers || [])[0] || {};
+      ok(lv1.verdict && lv1.verdict.accepted === true && lv1.env_added && lv1.env_added.GEAK_NAN_FROM_GRAD_NORM === '1',
+        `flag+env lever WITH env_added is accepted and recorded (${lv1.verdict && lv1.verdict.klass})`);
+      ok(ec1.prompts.some((p) => p.includes('"KIND": "config"') && p.includes('"LEVER_ENV": "GEAK_NAN_FROM_GRAD_NORM"')),
+        'the config verifier is told the lever env (--lever-env)');
+      ok(ec1.prompts.some((p) => p.includes('PHASE=validate') && p.includes('--extra-env "GEAK_NAN_FROM_GRAD_NORM=1"')),
+        'the carried env reaches later legs (Validate is told --extra-env)');
+      ok(ec1.prompts.some((p) => p.includes('"KIND": "stack"') && p.includes('"LEVER_ENV": "GEAK_NAN_FROM_GRAD_NORM"')),
+        'Validate\'s recomputation allows the lever env');
+      ok(e1.status === 'ok' && e1.accepted_config && e1.accepted_config.env_added.GEAK_NAN_FROM_GRAD_NORM === '1',
+        `a run whose accepted change is a flag+env lever can end ok (status=${e1.status})`);
+      CONFIG_OVERRIDE = { ...fast, env_added: { 'BAD NAME': '1', GEAK_NAN_FROM_GRAD_NORM: '1; rm -rf /' } };
+      const { result: e2 } = await dryRun({ ...base, deep_mode: 'true', budget: 0 });
+      const v2 = ((((e2 || {}).config_sweep || {}).levers || [])[0] || {}).verdict || {};
+      ok(v2.accepted === false, 'unsafe env names / values are dropped, so the lever is not accepted');
+    } catch (e) {
+      ok(false, `flag+env lever cases threw: ${e && e.stack}`);
+    }
+    CONFIG_OVERRIDE = null; CONFIG_L1 = { pass: true, checks: {} };
+  }
+
   // PACKING is the one gateable Class-B lever. Real numbers: pack_gate.py PASS on fresh packs,
   // equal-useful-token gain +266% (833 -> 3,048 useful tok/s/GPU at 7B).
   const pk = { lever: 'packing', flags_added: ['--train-data-path', '/work/data/x_packed.jsonl', 'packing'],

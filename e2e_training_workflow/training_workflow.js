@@ -411,6 +411,11 @@ function alignedDelta(integ) {
 // `_cosine` leg (no --ddp-average-in-collective) reused against a `_cosine_avg` candidate shares the
 // config_digest (the flag is implementation, DECISIONS 1.10b) and would hand the candidate ~0.9%.
 const KERNEL_IMPL_DELTA = ['GEAK_OVERLAY', 'GEAK_OVERLAY_SHA'];
+// A lever's env knobs: {NAME: value} with shell-safe names / values only (they go on an --extra-env line).
+const leverEnv = (env) => Object.fromEntries(Object.entries(env && typeof env === 'object' ? env : {})
+  .filter(([k, v]) => /^[A-Z][A-Z0-9_]*$/.test(k) && /^[A-Za-z0-9_.,:+\-/]*$/.test(String(v)))
+  .map(([k, v]) => [k, String(v)]));
+const envString = (env) => Object.entries(env || {}).map(([k, v]) => `${k}=${v}`).join(' ');
 const leverImplDelta = (flags) => (Array.isArray(flags) ? flags : String(flags || '').split(/\s+/))
   .filter((t) => typeof t === 'string' && t.startsWith('--')).map((t) => t.replace(/^--/, '').split('=')[0]);
 
@@ -852,11 +857,13 @@ function kbIdentity(config) {                       // hook 6: config hash keys 
 // ===========================================================================
 function roleAgent(role, phase, intro, inputs) {
   const cf = inputs && inputs.CONFIG && inputs.CONFIG.config_flags;
-  const carried = cf && cf.length ? `
+  const ce = envString(inputs && inputs.CONFIG && inputs.CONFIG.config_env);
+  const carried = (cf && cf.length) || ce ? `
 
 ## CARRIED CONFIG LEVERS (accepted earlier in this run: ${(inputs.CONFIG.accepted_levers || []).join(', ')})
-EVERY leg of the current stack you launch passes them: bench_train.sh ... --extra-train-args "${flagsString(cf)}"
-(append to any other extra args). A reference leg of a gate is a leg of the current stack too, so it
+EVERY leg of the current stack you launch passes them: bench_train.sh ... --extra-train-args "${flagsString(cf || [])}"${ce
+  ? ` --extra-env "${ce}"` : ''}
+(append to any other extra args / env, e.g. after the overlay's GEAK_OVERLAY=... line). A reference leg of a gate is a leg of the current stack too, so it
 carries them as well. Only a leg explicitly defined as the run's TRUE/bare baseline (Validate's
 baseline, the QualityGate REF arm) omits them. A leg without them is not this run's configuration:
 check the lever's keys in bench_summary.json (\`config\` / \`implementation\`) before quoting it.` : '';
@@ -1042,6 +1049,9 @@ const AUDIT_SCHEMA = obj({ l0: L0_VERDICT, l1: VERDICT, main_grad_contract: MGC,
 const FINALIZE_SCHEMA = obj({ overlay: { type: 'string' }, patch: { type: 'string' },
   launch: { type: 'string' }, engagement_recheck: PROOF_OR_NULL }, ['engagement_recheck']);
 const CONFIG_SCHEMA = obj({ lever: { type: 'string' }, flags_added: { type: 'array' },
+  // env knobs the lever sets besides its flags, NAME -> value (audit 2026-10-25 item 13: a flag+env lever
+  // such as --no-check-for-nan-in-loss-and-grad + GEAK_NAN_FROM_GRAD_NORM=1 could not be accepted or carried)
+  env_added: { type: ['object', 'null'] },
   packing_gate: { type: 'object' }, comparison_tokens: { type: 'object' },
   ceiling_pct: { type: 'number' }, ref: LEG, cand: LEG, l1: VERDICT,
   comparison: { type: 'object' }, config_digest_delta: { type: 'object' },
@@ -1328,6 +1338,7 @@ function classOfLever(flags) {
 function acceptLever(config, sweep) {
   const cand = sweep.cand || {};
   return { ...config, config_flags: mergeFlags(config.config_flags, sweep.flags_added),
+           config_env: { ...(config.config_env || {}), ...leverEnv(sweep.env_added) },
            digest: cand.config_digest || config.digest, impl_digest: cand.impl_digest || config.impl_digest,
            accepted_levers: [...(config.accepted_levers || []), sweep.lever] };
 }
@@ -1433,7 +1444,8 @@ if (want('config')) {
       // have been accepted.
       const l1 = sweep.l1 && typeof sweep.l1.pass === 'boolean' ? sweep.l1 : null;
       // A lever may move exactly its own implementation keys (and NVTE_* backend env), nothing else.
-      const leverImpl = [...leverImplDelta(sweep.flags_added),
+      const sweepEnv = leverEnv(sweep.env_added);
+      const leverImpl = [...leverImplDelta(sweep.flags_added), ...Object.keys(sweepEnv).map((k) => `env:${k}`),
         ...Object.keys({ ...((sweep.ref || {}).implementation || {}), ...((sweep.cand || {}).implementation || {}) })
           .filter((k) => k.startsWith('NVTE_'))];
       const cv = gateVerdict({ ref: sweep.ref, cand: sweep.cand, comparison: sweep.comparison,
@@ -1463,7 +1475,7 @@ if (want('config')) {
                   'fixed-recipe rule' });
       }
       sweepRecords.push({ lever: sweep.lever, requested: wantLever, flags_added: sweep.flags_added,
-        ceiling_pct: sweep.ceiling_pct, verdict: cv,
+        env_added: Object.keys(sweepEnv).length ? sweepEnv : null, ceiling_pct: sweep.ceiling_pct, verdict: cv,
         config_digest_delta: sweep.config_digest_delta || null,
         memory_conversion: sweep.memory_conversion || null });
       log0(`ConfigSweep ${sweep.lever}: ${cv.klass} (${cv.delta_pct}% vs band ${cv.band_pct}%, ` +
@@ -1478,6 +1490,7 @@ if (want('config')) {
         const ver = await safeAgentStub('gate_verifier', 'verify',
           { REF_DIRS: cRefs, CAND_DIRS: cCands,
             KIND: 'config', LEVER_FLAGS: flagsString(sweep.flags_added), FLOOR: runFloor, NPROC,
+            LEVER_ENV: Object.keys(sweepEnv).join(',') || null,
             L1_KIND: s1.candidate_kind === 'kernel_swap' ? 'kernel_swap' : 'overlay',
             L1_BAND: wfReturn.bands.trajectory_band_path || null, L1_L0_STRICTLY_BETTER: false,
             GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts` },
@@ -1505,11 +1518,12 @@ if (want('config')) {
     wfReturn.accepted_config = accs.length ? {
       lever: accs.map((r) => r.lever).join('+'),
       class: accA.length ? 'A' : accs[0].class,
-      levers: accs.map((r) => ({ lever: r.lever, class: r.class || 'A', flags_added: r.flags_added,
+      levers: accs.map((r) => ({ lever: r.lever, class: r.class || 'A', flags_added: r.flags_added, env_added: r.env_added || null,
                                  delta_pct: r.verdict.delta_pct, delta_source: r.verdict.delta_source })),
       delta_pct: accs.length === 1 ? accs[0].verdict.delta_pct : null,
       delta_source: accs.length === 1 ? accs[0].verdict.delta_source : 'per lever, see levers[]',
-      flags_added: (accA.length ? accA : accs).reduce((f, r) => mergeFlags(f, r.flags_added), []) } : null;
+      flags_added: (accA.length ? accA : accs).reduce((f, r) => mergeFlags(f, r.flags_added), []),
+      env_added: (accA.length ? accA : accs).reduce((e, r) => ({ ...e, ...(r.env_added || {}) }), {}) } : null;
     wfReturn.config_sweep = {
       levers: sweepRecords,
       accepted: accs[0] || null,          // first accepted (kept for older readers)
@@ -1845,6 +1859,7 @@ if (val && val.ref_dir && val.final_dir && (wfReturn.accepted.length || accCfgAl
     const ver = await safeAgentStub('gate_verifier', 'verify',
       { REF_DIRS: vRefs, CAND_DIRS: vCands, KIND: 'stack',
         LEVER_FLAGS: flagsString(accA.reduce((f, r) => mergeFlags(f, r.flags_added), [])), FLOOR: runFloor, NPROC,
+        LEVER_ENV: [...new Set(accA.flatMap((r) => Object.keys(r.env_added || {})))].join(',') || null,
         L1_KIND: swap ? 'kernel_swap' : 'overlay', L1_BAND: wfReturn.bands.trajectory_band_path || null,
         L1_L0_STRICTLY_BETTER: false, GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts` },
       'Run verify_gate.py on EVERY ref x cand pairing and return its output verbatim. You are a script runner.');
@@ -1950,9 +1965,10 @@ if (QUALITY_GATE && stackChanged) {
   // unless quality_reuse.accept_unknown_harness is set (recorded in the result).
   let reuseCheck = null;
   if (QUALITY_REUSE && q && q.legs_prefix) {
-    const cfgKeys = qConfig ? leverImplDelta(qConfig.flags_added) : [];
+    const cfgKeys = qConfig ? [...leverImplDelta(qConfig.flags_added),
+                               ...Object.keys(qConfig.env_added || {}).map((k) => `env:${k}`)] : [];
     const csv = (x) => (Array.isArray(x) ? x : String(x || '').split(',')).map((k) => String(k).trim()).filter(Boolean);
-    const allow = [...new Set([...cfgKeys.map((k) => k.replace(/-/g, '_')), ...csv(QUALITY_REUSE.allow)])];
+    const allow = [...new Set([...cfgKeys.filter((k) => !k.startsWith('env:')).map((k) => k.replace(/-/g, '_')), ...csv(QUALITY_REUSE.allow)])];
     const allowImpl = [...new Set([...cfgKeys, ...(wfReturn.accepted.length ? ['GEAK_OVERLAY_SHA'] : []),
                                    ...csv(QUALITY_REUSE.allow_impl)])];
     const checkArgs = ['check', '--prefix', String(q.legs_prefix), '--base', 'ref', '--cand', 'cand',

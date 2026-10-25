@@ -146,7 +146,8 @@ pass before it is called safe to train with.
      nothing, so the cand leg runs without `--extra-env`). `quality_ab.sh` refuses a cand arm with
      no `--cand-cmd`, so never omit it.
    * If `ACCEPTED_CONFIG` is set, its `flags_added` go on the cand arm ONLY, via
-     `--cand-train-args "<flags_added>"`. Without them the cand arm is not the stack this run
+     `--cand-train-args "<flags_added>"`, and its `env_added` (NAME=value pairs) are appended to the
+     `--extra-env` line your candidate command prints (a command that printed nothing prints just them). Without them the cand arm is not the stack this run
      accepted, and a CLEARED verdict would clear something else.
    * `QUALITY_WORKLOAD` defaults to this run's WORKLOAD. The protocol needs a SCHEDULED recipe
      (warmup + decay, DECISIONS 4.22-4.24): if the descriptor has no `LR_DECAY_ITERS` /

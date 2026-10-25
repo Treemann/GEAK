@@ -112,10 +112,19 @@ above 5%; without the gate it records `no_correctness_gate`.
    checks are the step-1 loss floor and the early-window sign rule; a throughput-only verdict skips
    even those.
 
-5. **Expect `config_digest` to change, and say what changed.** A kernel candidate must keep the
-   digest identical; yours is *allowed* to differ, because the flag you moved is part of the realized
-   config. Name the key and both values. If anything OTHER than your one lever moved, stop — the two
-   legs are not a controlled comparison and the delta is not attributable.
+5. **Say exactly what the lever moves -- in the IMPLEMENTATION half only.** An implementation lever leaves
+   `config_digest` (workload identity) UNCHANGED and moves `impl_digest`: name each implementation key
+   that moved and both values in `config_digest_delta` (e.g. `{"key": "overlap-grad-reduce", "ref": null,
+   "cand": "true"}`). A lever that moves `config_digest` changes the recipe and is refused as
+   `recipe_change` (fixed-recipe rule) -- do not propose it as a throughput lever. If anything OTHER than
+   your lever's own keys moved, stop: the legs are not a controlled comparison. (Corrected 2026-10-25,
+   audit item 13: this step used to say the digest SHOULD change, which the code refuses.)
+   **A lever that needs an env knob as well** (e.g. `--no-check-for-nan-in-loss-and-grad` with
+   `GEAK_NAN_FROM_GRAD_NORM=1`, DECISIONS 4.62): run the cand leg with `--extra-env "NAME=value"` too and
+   return the knob(s) as `env_added: {"NAME": "value"}`. Only knobs the probe captures (train_probe
+   `_KNOBS`, shown as `env:NAME` in `implementation`) can be gated; any other env difference shows up as
+   `unmapped` and is refused. The orchestrator allows exactly `flags_added` + `env_added` to differ,
+   has the verifier check with `--lever-env`, and carries both into every later leg.
 
 6. **Memory is a result, not a side effect.** Report `peak_reserved_mb` for both legs. Memory freed
    with no throughput change is **banked**, not a win — but unlike `fast`, you have a knob to spend
@@ -124,7 +133,7 @@ above 5%; without the gate it records `no_correctness_gate`.
 Return JSON:
 ```json
 {"lever": "comm_overlap|recompute|attention_backend",
- "flags_added": ["--overlap-grad-reduce"],
+ "flags_added": ["--overlap-grad-reduce"], "env_added": null,
  "ceiling_pct": 2.27, "ceiling_source": "config_diagnosis.exposed_comm_pct",
  "ref": {"...bench_summary..."}, "cand": {"...bench_summary..."},   // bench_summary.json VERBATIM, plus "probe_dir"
  // Required by the orchestrator (it fails closed on a trimmed leg): implementation, workload_identity,
