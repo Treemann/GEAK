@@ -440,6 +440,13 @@ async function dryRun(args) {
                      reuse_check: { valid: true } }];
     const { result: ru2 } = await dryRun({ ...base, ...reuse });
     ok(ru2.quality_gate.cleared === true, 'quality_reuse: a valid reuse check keeps the verdict');
+    // audit 2026-10-25 ORCH-A3: an INCONCLUSIVE first verdict with an UNPROVEN reuse must not extend into CLEARED.
+    QUALITY_SEQ = [{ cleared: false, quality: 'INCONCLUSIVE-quality: upper > margin', stability: 'PASS-stability: 0',
+                     legs_prefix: '/p', reuse_check: { valid: false } },
+                   { cleared: true, quality: 'PASS-quality: n=10', stability: 'PASS-stability: 0', legs_prefix: '/q' }];
+    const { result: ru3, calls: cru3 } = await dryRun({ ...base, ...reuse });
+    ok(ru3.quality_gate.cleared === false && cru3.prompts.filter((p) => p.includes('PHASE=quality')).length === 1,
+      'quality_reuse: an unproven reuse is NOT extended, and the verdict stays NOT CLEARED');
     let threw = false;
     try { await dryRun({ ...base, quality_gate: 'true', quality_reuse: { prefix: 'x', ref_arm: 'cand' } }); } catch (e) { threw = /quality_seeds/.test(String(e && e.message)); }
     ok(threw, 'quality_reuse without explicit quality_seeds fails loudly');

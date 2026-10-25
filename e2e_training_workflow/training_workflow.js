@@ -1737,15 +1737,19 @@ if (QUALITY_GATE && stackChanged) {
     'Run the one-epoch outcome test of the final stack against REF and return the verdict of ' +
     'quality_ab_final.py VERBATIM (cleared, quality, stability). Do not reinterpret it.');
   wfReturn.quality_gate = q || { cleared: false, quality: 'not run', stability: 'not run' };
-  // Reused legs count only if the tool proved them the same recipe (fail closed).
-  if (q && QUALITY_REUSE && !(q.reuse_check && q.reuse_check.valid === true)) {
-    wfReturn.quality_gate = Object.assign({}, q, { cleared: false,
-      quality: `NOT CLEARED: the reused legs of ${QUALITY_REUSE.prefix} were not proven to train the cand's ` +
-               `recipe (quality_reuse.py check valid=${q.reuse_check && q.reuse_check.valid})` });
-  }
+  // Reused legs count only if the tool proved them the same recipe (fail closed). Computed ONCE and applied
+  // to the first verdict, to the decision to extend, and to the extended verdict: the combined n = 10 sample
+  // pools the first sample's reused legs, so an unproven reuse must not be laundered by an extension (audit
+  // 2026-10-25 ORCH-A3: the extension replaced the guarded verdict wholesale and could report CLEARED).
+  const reuseOk = !QUALITY_REUSE || !!(q && q.reuse_check && q.reuse_check.valid === true);
+  const reuseRefusal = (v) => Object.assign({}, v, { cleared: false,
+    quality: `NOT CLEARED: the reused legs of ${QUALITY_REUSE.prefix} were not proven to train the cand's ` +
+             `recipe (quality_reuse.py check valid=${q && q.reuse_check && q.reuse_check.valid})` });
+  if (q && !reuseOk) wfReturn.quality_gate = reuseRefusal(q);
   // Extend only when the verdict is INCONCLUSIVE because the sample is too small -- NOT when the positive
-  // control itself was not detected (more seeds of an undetected control prove nothing; review QEXT).
-  if (q && /^INCONCLUSIVE-quality/.test(String(q.quality || '')) &&
+  // control itself was not detected (more seeds of an undetected control prove nothing; review QEXT) and
+  // NOT when the reused legs were not proven (above).
+  if (q && reuseOk && /^INCONCLUSIVE-quality/.test(String(q.quality || '')) &&
       !/positive control was not detected/.test(String(q.quality || '')) && !/^FAIL/.test(String(q.stability || '')) &&
       QUALITY_EXTEND_SEEDS !== 'none' && q.legs_prefix) {
     log0(`quality gate INCONCLUSIVE (${q.quality}) -- running the ONE pre-registered extension: seeds ${QUALITY_EXTEND_SEEDS}`);
@@ -1761,6 +1765,7 @@ if (QUALITY_GATE && stackChanged) {
       '`--ctrl QUALITY_CTRL` when it is set, and return that verdict VERBATIM. It is final.');
     wfReturn.quality_gate = Object.assign({}, qx || { cleared: false, quality: 'extension not run', stability: 'not run' },
       { first_verdict: q, extended: true });
+    if (!reuseOk) wfReturn.quality_gate = reuseRefusal(wfReturn.quality_gate);   // belt and braces
   }
   log0(wfReturn.quality_gate.cleared
     ? 'quality gate: CLEARED for training (one-epoch outcome test)'
