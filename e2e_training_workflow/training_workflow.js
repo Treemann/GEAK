@@ -1166,7 +1166,8 @@ const setup = await safeAgentStub('training_director', 'setup',
   'Pin the config IR, measure the TRUE baseline THREE times, and derive both bands from those legs. ' +
   'Measure EXACTLY REPEAT usable legs — if you take more, the extra legs must be named in notes with ' +
   'the reason, because an unexplained extra leg is 7 minutes of 8-GPU time nobody budgeted. ' +
-  'If BASELINE_DIRS is given, verify and REUSE those legs instead of measuring. ' +
+  'If BASELINE_DIRS is given, verify and REUSE those legs instead of measuring -- but only legs that carry ' +
+  'the full argv/env capture (`unmapped` not null when re-summarised; DECISIONS 4.78); re-measure the others. ' +
   (BASE_OVERLAY_CMD
     ? 'With BASE_OVERLAY_CMD set, a reused leg is only valid if it ran the SAME stack: its probe ' +
       'identity must carry the same GEAK_OVERLAY manifest basenames and GEAK_OVERLAY_SHA as a leg ' +

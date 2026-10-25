@@ -15,7 +15,9 @@ Read `knowledge/sft_measurement.md` before doing anything.
 2. **Reuse the baseline when `BASELINE_DIRS` is in your INPUTS.** Do not re-measure what is already
    on disk. VERIFY each offered leg first and say what you checked: same `config_digest` AND same
    `digest_schema` as the pinned config, `status: ok`, `occupancy_verdict: clean`,
-   `dispersion_reliable: true`, not `profiled_run`, not `captured_run`. Any leg failing any of those
+   `dispersion_reliable: true`, not `profiled_run`, not `captured_run`, and it carries the full argv/env
+   capture (`unmapped` is not null when re-summarised with the current probe_summarize -- a leg measured
+   before 2026-10-25 does not, and the gate refuses it against a fresh leg, DECISIONS 4.78). Any leg failing any of those
    is dropped and replaced by a fresh measurement — report which and why. If fewer than `REPEAT`
    legs survive, measure the shortfall.
    **With `BASE_OVERLAY_CMD` set, the baseline is the STACK, not the bare workload.**
