@@ -18,6 +18,15 @@ python3 GEAK_SCRIPTS/verify_gate.py <ref_dir> <cand_dir> --nproc NPROC --floor F
         [--lever-flags "LEVER_FLAGS"] [--lever-env LEVER_ENV]
 ```
 
+With `KIND` = `packing` (a Class-B packing lever) run instead, for the one ref x cand pairing:
+
+```bash
+python3 GEAK_SCRIPTS/verify_gate.py <ref_dir> <cand_dir> --kind packing --pack-gate-result PACK_GATE_RESULT
+```
+
+and return its `packing` object as the pair's `packing` field (it carries the recomputed equal-useful-token
+delta, the workflow's own legUsable verdict on both legs, and the pack_gate verdict read from its file).
+
 and collect the printed JSON. Do not edit, round, re-order, summarise or drop anything, and do not
 run anything else. If a pairing exits non-zero, record `{"ref": ..., "cand": ..., "error": <stdout>}`.
 

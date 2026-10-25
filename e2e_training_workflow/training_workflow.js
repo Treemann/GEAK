@@ -1007,6 +1007,7 @@ const QUALITY_SCHEMA = obj({ cleared: { type: 'boolean' }, quality: { type: 'str
   ['cleared', 'quality', 'stability']);
 const VERIFY_SCHEMA = obj({ pairs: { type: 'array', minItems: 1, items: obj({
   ref_dir: { type: 'string' }, cand_dir: { type: 'string' }, verdict: { type: ['object', 'null'] },
+  packing: { type: ['object', 'null'] },   // verify_gate --kind packing
   engagement: { type: ['object', 'null'] }, comparison: { type: ['object', 'null'] },
   carried: { type: ['object', 'null'] },
   error: { type: ['string', 'null'] } }, ['ref_dir', 'cand_dir']) } }, ['pairs']);
@@ -1279,9 +1280,33 @@ if (want('config')) {
       gatesUsed += 1;
       const pg = sweep.packing_gate || null;
       const ct = sweep.comparison_tokens || null;
-      const d = ct && typeof ct.delta_pct === 'number' ? ct.delta_pct : null;
+      let d = ct && typeof ct.delta_pct === 'number' ? ct.delta_pct : null;
       let verdict;
-      if (!pg || pg.pass !== true) {
+      // INDEPENDENT RECOMPUTATION (audit 2026-10-25 ORCH-A4): this path used to accept on the Tuner's own
+      // packing_gate.pass and comparison_tokens.delta_pct, with no legUsable / no verifier -- an
+      // unusable (failed / contaminated / hung) leg pair could accept the largest lever there is.
+      const ru = legUsable(sweep.ref || {}), cu = legUsable(sweep.cand || {});
+      let pv = null;
+      if (pg && pg.pass === true && ru.ok && cu.ok) {
+        const ver = await safeAgentStub('gate_verifier', 'verify',
+          { REF_DIRS: [sweep.ref.dir || sweep.ref.probe_dir].filter(Boolean),
+            CAND_DIRS: [sweep.cand.dir || sweep.cand.probe_dir].filter(Boolean),
+            KIND: 'packing', PACK_GATE_RESULT: pg.result || null, NPROC,
+            GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts` },
+          'Run verify_gate.py --kind packing on the pairing and return its output verbatim. You are a script runner.');
+        const pair = ver && Array.isArray(ver.pairs) ? ver.pairs[0] : null;
+        pv = pair && pair.packing ? pair.packing : null;
+        d = pv && typeof pv.delta_pct === 'number' ? pv.delta_pct : null;   // the RECOMPUTED delta decides
+      }
+      if (!ru.ok || !cu.ok) {
+        verdict = { accepted: false, klass: 'unusable_' + (ru.ok ? 'cand' : 'ref'),
+                    reason: `packing leg unusable: ${ru.ok ? cu.why : ru.why}` };
+      } else if (pg && pg.pass === true && !(pv && pv.pack_gate_pass === true && pv.data_matches === true &&
+                                             pv.legs_usable === true)) {
+        verdict = { accepted: false, klass: 'verifier_refused',
+                    reason: pv ? `the recomputation does not confirm the packing gate: ${JSON.stringify(pv.why || [])}`
+                               : 'no independent recomputation of the packing gate (gate_verifier returned nothing)' };
+      } else if (!pg || pg.pass !== true) {
         verdict = { accepted: false, klass: pg ? 'packing_gate_failed' : 'no_correctness_gate',
                     reason: pg ? `scripts/pack_gate.py verdict ${pg.verdict}: ${JSON.stringify(pg.checks || {})}`
                                : 'no packing_gate result (scripts/pack_gate.py): a packed dataset may not be ' +
@@ -1292,6 +1317,7 @@ if (want('config')) {
       } else {
         const win = d > PACKING_MIN_GAIN_PCT;
         verdict = { accepted: win, klass: win ? 'win' : 'no_win', delta_pct: d,
+                    reported_delta_pct: ct && typeof ct.delta_pct === 'number' ? ct.delta_pct : null,
                     band_pct: PACKING_MIN_GAIN_PCT, delta_source: 'equal useful tokens (Class B)',
                     reason: `${d.toFixed(2)}% ${win ? '>' : '<='} ${PACKING_MIN_GAIN_PCT}% on an equal-useful-` +
                             'token basis; packing gate PASS' };

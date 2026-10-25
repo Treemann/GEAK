@@ -48,6 +48,7 @@ const refShaFrom = (prompt) => {
 let INTEG_N = 0;
 let AUDIT_OVERRIDE;
 let QUALITY_SEQ = null;                    // queued quality-phase replies (extension tests)
+let PACKV_OVERRIDE;                        // verify_gate --kind packing result; undefined = confirms
 let ORACLE_OVERRIDE;                       // the Auditor's l0.oracle block; undefined = template v2
 let MGC_OVERRIDE;                          // the Auditor's main_grad_contract block; undefined = applicable + passed
 let CARRIED_OVERRIDE;                      // the verifier's `carried` block; undefined = all carried overlays engaged
@@ -117,6 +118,10 @@ function stubFor(prompt) {
   }
   if (is('PHASE=verify')) {
     if (VERIFY_OVERRIDE === null) return null;
+    if (prompt.includes('"KIND": "packing"')) {       // verify_gate --kind packing (audit ORCH-A4)
+      return { pairs: [{ ref_dir: '/work/runs/pr', cand_dir: '/work/runs/pc', packing: PACKV_OVERRIDE !== undefined
+        ? PACKV_OVERRIDE : { delta_pct: 265.9, pack_gate_pass: true, data_matches: true, legs_usable: true, why: [] } }] };
+    }
     const grab = (key) => { const m = new RegExp(`"${key}": \\[([^\\]]*)\\]`).exec(prompt); return m ? JSON.parse(`[${m[1]}]`) : []; };
     const refs = grab('REF_DIRS'), cands = grab('CAND_DIRS');
     const pairs = [];
@@ -301,8 +306,19 @@ async function dryRun(args) {
     ['packing, gate FAIL (wrong system prompt, 196/196 token mismatches)',
        { ...pk, packing_gate: { pass: false, verdict: 'FAIL', checks: { token_identity: { pass: false } } } }, false, 'packing_gate_failed'],
     ['packing, no gate result', { ...pk }, false, 'no_correctness_gate'],
+    // audit 2026-10-25 ORCH-A4: the RECOMPUTED numbers decide, and unusable legs refuse.
+    ['packing, verifier recomputes +1% (agent said +266%)', { ...pk, packing_gate: { pass: true, verdict: 'PASS' },
+       __packv: { delta_pct: 1.0, pack_gate_pass: true, data_matches: true, legs_usable: true, why: [] } }, false, 'no_win'],
+    ['packing, pack_gate verdict is about another dataset', { ...pk, packing_gate: { pass: true, verdict: 'PASS' },
+       __packv: { delta_pct: 265.9, pack_gate_pass: true, data_matches: false, legs_usable: true, why: ['other data'] } }, false, 'verifier_refused'],
+    ['packing, ref leg failed / contaminated', { ...pk, packing_gate: { pass: true, verdict: 'PASS' },
+       __ref: { status: 'failed', occupancy_verdict: { verdict: 'contaminated' } } }, false, 'unusable_ref'],
     ['GBS change (ungateable Class B)', { lever: 'gbs', flags_added: ['--global-batch-size', '128'] }, false, null]]) {
-    CONFIG_OVERRIDE = over;
+    PACKV_OVERRIDE = over.__packv;
+    CONFIG_OVERRIDE = Object.assign({}, over);
+    delete CONFIG_OVERRIDE.__packv;
+    delete CONFIG_OVERRIDE.__ref;
+    if (over.__ref) CONFIG_OVERRIDE.ref = leg(over.__ref);
     try {
       const { result } = await dryRun({ ...base, deep_mode: 'true', budget: 0 });
       const lv = (((result || {}).config_sweep || {}).levers || [])[0] || {};

@@ -18,6 +18,7 @@ produced the verdict. This script is the independent half: given ref and cand le
 
   verify_gate.py <ref_leg_dir> <cand_leg_dir> [--nproc 8] [--floor PCT (default: per-stack)] [--kind kernel|config]
                  [--lever-flags "--flag value ..."] [--lever-env KNOB1,KNOB2]
+  verify_gate.py <ref> <cand> --kind packing --pack-gate-result <pack_gate --out json>   (Class-B packing)
 
 Prints one JSON object. Exit 0 always when it could judge (the verdict is in the JSON); exit 2 when it
 could not (missing dirs or probes) -- the caller must then fail closed.
@@ -160,6 +161,42 @@ def _carried(ref_dir, cand_dir, nproc):
     return {"slots": out, "lost": lost, "ok": not lost}
 
 
+def _packing(ref, cand, ref_dir, cand_dir, pack_gate_result, node):
+    """Class-B packing gate, recomputed from the leg dirs (audit 2026-10-25 ORCH-A4): both legs usable by
+    the workflow's OWN legUsable(), the equal-useful-token delta recomputed by compare_legs_tokens, and the
+    pack_gate verdict READ FROM ITS FILE, checked to be about the dataset the cand leg actually trained."""
+    from compare_legs_tokens import compare_on_tokens
+    out = {"delta_pct": None, "pack_gate_pass": False, "data_matches": False, "usable": None, "why": []}
+    if node:
+        r = subprocess.run([node, os.path.join(HERE, "gate_eval.js")],
+                           input=json.dumps({"op": "usable", "ref": ref, "cand": cand}),
+                           capture_output=True, text=True, timeout=60)
+        out["usable"] = json.loads(r.stdout) if r.returncode == 0 else {"error": r.stderr[:300]}
+    tok = compare_on_tokens(os.path.join(ref_dir, "probe"), os.path.join(cand_dir, "probe"))
+    out["tokens"] = tok
+    out["delta_pct"] = tok.get("delta_pct") if isinstance(tok, dict) else None
+    pg = None
+    try:
+        pg = json.load(open(_leg_dir(pack_gate_result) if pack_gate_result and pack_gate_result.startswith("/work/")
+                            else pack_gate_result))
+    except (OSError, ValueError, TypeError) as e:
+        out["why"].append(f"pack_gate result unreadable: {e!r}")
+    if pg:
+        out["pack_gate_pass"] = pg.get("pass") is True and pg.get("verdict") == "PASS"
+        cand_data = ((cand.get("workload_identity") or {}).get("train-data-path")
+                     or (cand.get("config") or {}).get("train-data-path"))
+        out["cand_train_data"], out["pack_gate_packed"] = cand_data, pg.get("packed")
+        out["data_matches"] = bool(cand_data and pg.get("packed")
+                                   and os.path.basename(str(cand_data)) == os.path.basename(str(pg.get("packed"))))
+        if not out["data_matches"]:
+            out["why"].append("the pack_gate verdict is not about the dataset the cand leg trained")
+    u = out["usable"] or {}
+    out["legs_usable"] = bool(u.get("ref", {}).get("ok") and u.get("cand", {}).get("ok"))
+    if not out["legs_usable"]:
+        out["why"].append(f"leg unusable: {u}")
+    return out
+
+
 def _leg_dir(p):
     """Accept a leg dir or its probe/ dir, as a host path or a container /work/... path."""
     p = str(p).rstrip("/")
@@ -181,11 +218,16 @@ def main():
     # A lever that is a flag PLUS an env knob (e.g. --no-check-for-nan-in-loss-and-grad with
     # GEAK_NAN_FROM_GRAD_NORM=1, DECISIONS 4.62): the knob's names, comma-separated.
     lever_env = [k.strip() for k in opt("--lever-env", "").split(",") if k.strip()]
+    pack_gate_result = opt("--pack-gate-result", None)
     for d in (ref_dir, cand_dir):
         if not os.path.isdir(os.path.join(d, "probe")):
             print(json.dumps({"error": f"no probe dir under {d}"}))
             sys.exit(2)
     ref, cand = _leg(ref_dir), _leg(cand_dir)
+    if kind == "packing":
+        print(json.dumps({"ref": ref, "cand": cand, "kind": kind,
+                          "packing": _packing(ref, cand, ref_dir, cand_dir, pack_gate_result, _node())}))
+        return
     cmp = compare(ref["probe_dir"], cand["probe_dir"])
     if kind == "kernel":
         allowed = ["GEAK_OVERLAY", "GEAK_OVERLAY_SHA"]

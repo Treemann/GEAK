@@ -27,7 +27,10 @@ structural and checkable at step 1 on identical weights -- and it is the largest
 1. **Pack** with `scripts/pack_sft.py <src> <dst> --tokenizer <model> --seq <SEQ>`. Never write a
    system prompt yourself: the default differs by model and the script reads it from the tokenizer.
 2. **Gate** with `scripts/pack_gate.py --workload <env> --source <src> --packed <dst> --model <model>
-   --pack-index <k>` and return its JSON verbatim as `packing_gate`. Use a pack index other than 0 --
+   --pack-index <k> --out <EXP_ROOT>/pack_gate_<k>.json` and return its JSON verbatim as `packing_gate`,
+   PLUS `"result": "<that --out path>"` -- the gate verifier re-reads the verdict from that file and checks
+   it is about the dataset your cand leg trained; without it the lever cannot be accepted (audit
+   2026-10-25). Your `comparison_tokens` is recorded but not trusted: the verifier recomputes it. Use a pack index other than 0 --
    pack 0 is the one the gate was designed on. The gate checks token identity against the SOURCE,
    forward equivalence against an isolated expectation with a non-isolated control, and that boundary
    targets are masked. Its token check was once vacuous (it passed a pack built with the wrong system

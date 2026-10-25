@@ -138,6 +138,9 @@ def main():
     ap.add_argument("--pack-index", type=int, default=0)
     ap.add_argument("--verify", type=int, default=200)
     ap.add_argument("--nproc", type=int, default=8)
+    # The verdict as a FILE (audit 2026-10-25 ORCH-A4): the gate verifier reads it from disk instead of
+    # trusting an agent's transcription of stdout.
+    ap.add_argument("--out", default=None, help="host path to write the verdict JSON to")
     a = ap.parse_args()
 
     os.makedirs(os.path.join(WORK, "runs", "pack_gate"), exist_ok=True)
@@ -186,10 +189,13 @@ def main():
         verdict = "INCONCLUSIVE"
     else:
         verdict = "PASS" if all(c["pass"] for n, c in checks.items() if isinstance(c, dict) and "pass" in c) else "FAIL"
-    print(json.dumps({"verdict": verdict, "pass": verdict == "PASS", "pack_index": a.pack_index,
-                      "conversations_in_pack": ref["conversations_in_pack"], "megatron_loss": meg["loss"],
-                      "expected_loss": expect, "non_isolated_loss": non, "checks": checks,
-                      "leg": meg["dir"]}, indent=1))
+    res = {"verdict": verdict, "pass": verdict == "PASS", "pack_index": a.pack_index, "packed": a.packed,
+           "source": a.source, "conversations_in_pack": ref["conversations_in_pack"], "megatron_loss": meg["loss"],
+           "expected_loss": expect, "non_isolated_loss": non, "checks": checks, "leg": meg["dir"]}
+    print(json.dumps(res, indent=1))
+    if a.out:
+        with open(a.out, "w") as f:
+            json.dump(res, f, indent=1)
     sys.exit(0 if verdict == "PASS" else 1)
 
 
