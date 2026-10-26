@@ -45,6 +45,25 @@ const refShaFrom = (prompt) => {
   const m = i >= 0 ? /"GEAK_OVERLAY_SHA": "([^"]*)"/.exec(prompt.slice(i, prompt.indexOf('## ', i + 1) > 0 ? prompt.indexOf('## ', i + 1) : undefined)) : null;
   return m ? m[1] : '';
 };
+// The carried stack's impl_digest, read back from REF_EXPECTED: a real gate ref IS that leg's implementation.
+const refImplFrom = (prompt) => {
+  const i = prompt.indexOf('"REF_EXPECTED"');
+  const m = i >= 0 ? /"impl_digest": "([^"]*)"/.exec(prompt.slice(i)) : null;
+  return m ? m[1] : 'aaa';
+};
+// The whole REF_EXPECTED leg object from a prompt (balanced braces), or null.
+const refExpected = (prompt) => {
+  const i = prompt.indexOf('"REF_EXPECTED": {');
+  if (i < 0) return null;
+  let j = prompt.indexOf('{', i), depth = 0;
+  for (let k = j; k < prompt.length; k++) {
+    if (prompt[k] === '{') depth++;
+    else if (prompt[k] === '}') { depth--; if (!depth) { try { return JSON.parse(prompt.slice(j, k + 1)); } catch (e) { return null; } } }
+  }
+  return null;
+};
+let REFBIND_OVERRIDE;
+let SETUP_BARE;                             // true: Setup ignores BASE_OVERLAY_CMD (a stacked run with a bare baseline)                       // (legOverrides) for the integrate ref leg; undefined = bound
 let INTEG_N = 0;
 let AUDIT_OVERRIDE;
 let QUALITY_SEQ = null;                    // queued quality-phase replies (extension tests)
@@ -72,7 +91,10 @@ function stubFor(prompt) {
   const p = String(prompt);
   const is = (s) => p.includes(s);
   if (is('PHASE=setup') || is('training_director. PHASE=setup')) {
-    return { baseline_legs: [leg(), leg({ worst_iqr_spread_pct: 0.11 }), leg()],
+    // With BASE_OVERLAY_CMD a real Director measures the STACKED baseline (the legs carry the overlay).
+    const st = prompt.includes('"BASE_OVERLAY_CMD"') && !SETUP_BARE
+      ? { implementation: { 'attention-backend': 'fused', GEAK_OVERLAY: 'b.json', GEAK_OVERLAY_SHA: 'base0' } } : {};
+    return { baseline_legs: [leg(st), leg({ worst_iqr_spread_pct: 0.11, ...st }), leg(st)],
              across_job_band_pct: 0.07, trajectory_band_path: '/work/band.json',
              config_digest: 'd1548a7a764bdada', warmup_steps: 11, pad_fraction_pct: 70.1 };
   }
@@ -93,10 +115,14 @@ function stubFor(prompt) {
                           attention_backend: ['--attention-backend', 'flash'] };
     const req = Object.keys(LEVER_FLAGS).find((k) => is(`"REQUESTED_LEVER": "${k}"`));
     if (req) {
-      return { lever: req, flags_added: LEVER_FLAGS[req], ceiling_pct: 2.0, ref: leg(),
+      // A real Tuner's ref IS the carried stack (REF_EXPECTED, incl. levers accepted earlier this run).
+      const ex = refExpected(prompt) || {};
+      const refImpl = ex.implementation || leg().implementation;
+      return { lever: req, flags_added: LEVER_FLAGS[req], ceiling_pct: 2.0,
+               ref: leg({ implementation: refImpl, impl_digest: ex.impl_digest || 'aaa' }),
                // An implementation lever: config_digest unchanged, the lever's own key in `implementation`.
                cand: leg({ useful_tok_s_per_gpu: 866, impl_digest: `after_${req}`,
-                           implementation: Object.assign({}, leg().implementation,
+                           implementation: Object.assign({}, refImpl,
                              { [LEVER_FLAGS[req][0].slice(2)]: LEVER_FLAGS[req][1] }) }),
                comparison: { delta_pct: 1.9, window_artifact_pct: 0.05 },
                ...(CONFIG_L1 === undefined ? {} : { l1: CONFIG_L1 }), ...(CONFIG_OVERRIDE || {}) };
@@ -115,8 +141,9 @@ function stubFor(prompt) {
     const rs = refShaFrom(prompt), add = `k${++INTEG_N}`;
     const impl = (sha) => (sha ? { 'attention-backend': 'fused', GEAK_OVERLAY: 'm.json', GEAK_OVERLAY_SHA: sha }
                                : { 'attention-backend': 'fused' });
-    return { ref: leg({ implementation: impl(rs), dir: `/work/runs/gref_${INTEG_N}`, probe_dir: `/work/runs/gref_${INTEG_N}/probe` }),
-             cand: leg({ useful_tok_s_per_gpu: 900, impl_digest: 'bbb', implementation: impl(rs ? `${rs}+${add}` : add),
+    return { ref: leg({ implementation: impl(rs), impl_digest: refImplFrom(prompt), dir: `/work/runs/gref_${INTEG_N}`,
+                        probe_dir: `/work/runs/gref_${INTEG_N}/probe`, ...(REFBIND_OVERRIDE || {}) }),
+             cand: leg({ useful_tok_s_per_gpu: 900, impl_digest: `bbb${INTEG_N}`, implementation: impl(rs ? `${rs}+${add}` : add),
                          dir: `/work/runs/gcand_${INTEG_N}`, probe_dir: `/work/runs/gcand_${INTEG_N}/probe` }),
              legs_measured: { refs: [`/work/runs/gref_${INTEG_N}`, `/home/u/geak_train/runs/gref_${INTEG_N}/probe`,
                                      `/work/runs/gref2_${INTEG_N}`],
@@ -783,6 +810,37 @@ async function dryRun(args) {
   }
   PAIRS_DROP = undefined; L1V_OVERRIDE = undefined; L0X_OVERRIDE = undefined; VALIDATE_OVERRIDE = undefined;
   QUALV_OVERRIDE = undefined; QUALITY_SEQ = null; VERIFY_OVERRIDE = undefined;
+
+  // ---- audit 2026-10-25 #11: every gate's reference is bound to the carried stack ----------------------
+  try {
+    let threw = '';
+    SETUP_BARE = true;
+    try { await dryRun({ ...base, baseline_overlay: '/x/stack_overlay_env.sh --cond s8' }); } catch (e) { threw = String(e && e.message); }
+    SETUP_BARE = undefined;
+    ok(/runs no overlay/.test(threw), 'baseline_overlay with a bare Setup baseline fails loudly (#11 P8)');
+    REFBIND_OVERRIDE = { impl_digest: 'other_impl' };
+    const { result: b1 } = await dryRun(base);
+    ok(b1.accepted.length === 0, 'a kernel gate whose ref is not the carried implementation is refused');
+    REFBIND_OVERRIDE = { config_digest: 'other_workload' };
+    const { result: b2 } = await dryRun(base);
+    REFBIND_OVERRIDE = undefined;
+    ok(b2.accepted.length === 0, 'a kernel gate whose ref ran another workload is refused');
+    CONFIG_OVERRIDE = { ref: leg({ config_digest: 'other_workload' }) };
+    const { result: b3 } = await dryRun({ ...base, deep_mode: 'true', budget: 0 });
+    CONFIG_OVERRIDE = null;
+    const v3 = ((((b3 || {}).config_sweep || {}).levers || [])[0] || {}).verdict || {};
+    ok(v3.accepted === false, `a config gate whose ref is not the run's reference is refused (${v3.klass})`);
+    const { result: b4, calls: c4 } = await dryRun({ ...base, deep_mode: 'true', budget: 1, config_levers: 'recompute_granularity' });
+    const integ4 = c4.prompts.find((p) => p.includes('PHASE=integrate')) || '';
+    ok(c4.prompts.some((p) => p.includes('PHASE=reprofile') || (p.includes('PHASE=profile') && p.includes('after_config'))) ||
+       c4.prompts.filter((p) => p.includes('PHASE=profile') || p.includes('PHASE=reprofile')).length >= 2,
+      'an accepted config lever re-profiles before the kernel track');
+    ok(/"REF_EXPECTED": \{[^]*"impl_digest": "after_recompute_granularity"/.test(integ4) && b4.accepted.length > 0,
+      `the kernel gate after a config accept is bound to the lever's cand leg, and still accepts (${b4.accepted.length})`);
+  } catch (e) {
+    ok(false, `#11 binding cases threw: ${e && e.stack}`);
+  }
+  REFBIND_OVERRIDE = undefined; SETUP_BARE = undefined; CONFIG_OVERRIDE = null;
 
   // An opts.phase that is not a meta.phases title opens an ad-hoc group in /workflows and leaves the
   // declared phase reading "not started" though its agent ran (run wf_becee9a0-c6f, 2026-10-20).

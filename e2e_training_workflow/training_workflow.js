@@ -442,6 +442,25 @@ const flagsString = (flags) => (flags || []).map((t) => (/\s/.test(t) ? `'${t}'`
 
 // ref.GEAK_OVERLAY_SHA must equal the carried reference's, and cand's must EXTEND it by >= 1 component
 // ('+'-joined, one per manifest; rmsnorm ships two). Skipped only when refLeg carries no implementation.
+// A gate's reference must BE the run's current stack: same workload (config_digest) AND the same implementation
+// (impl_digest = carried overlays + accepted levers + env knobs). comparable() only relates ref to cand, so a
+// gate measured on another workload, or without an accepted lever, was accepted (audit 2026-10-25 #11 P2/P10).
+function refBinding(expected, ref) {
+  if (!expected || !ref) return { ok: false, why: 'no carried reference to bind the gate to (fail closed)' };
+  if (!expected.config_digest || !expected.impl_digest) {
+    return { ok: false, why: 'the carried reference leg carries no config / impl digest (fail closed)' };
+  }
+  if (ref.config_digest !== expected.config_digest) {
+    return { ok: false, why: `the gate's reference ran workload ${ref.config_digest}, not this run's ` +
+                             `${expected.config_digest}: it is not the run's reference` };
+  }
+  if (ref.impl_digest !== expected.impl_digest) {
+    return { ok: false, why: `the gate's reference implementation ${ref.impl_digest} is not the carried stack's ` +
+                             `${expected.impl_digest} (an accepted lever, env knob or overlay is missing or extra)` };
+  }
+  return { ok: true };
+}
+
 function overlayShaCheck(expectedRef, ref, cand) {
   const sha = (l) => String(((l || {}).implementation || {}).GEAK_OVERLAY_SHA || '');
   if (!expectedRef || !expectedRef.implementation) {
@@ -1199,6 +1218,16 @@ if (!byQuiet.length) {
     `${(l.dir || l.probe_dir || '?').split('/').slice(-2).join('/')}: ${legUsable(l).why}`).join('; '));
 }
 const baseline = byQuiet[0];
+// A STACKED baseline must carry the stack (audit #11 P8): with BASE_OVERLAY_CMD set and no overlay in the
+// baseline, every later gate measured "head vs bare" while the record said "on the stack" -- exactly the
+// confound baseline_overlay exists to remove (attn +4.27% bare vs +5.25% stacked, 4.17).
+if (BASE_OVERLAY_CMD && !((baseline.implementation || {}).GEAK_OVERLAY_SHA)) {
+  throw new Error(`baseline_overlay is set but the baseline leg ${(baseline.dir || baseline.probe_dir || '?')} runs no ` +
+                  'overlay (no GEAK_OVERLAY_SHA): Setup did not measure the stacked baseline');
+}
+// The CARRIED reference: the baseline, then the cand leg of every accepted config lever, then of every
+// accepted kernel. Every gate's ref is bound to it (refBinding).
+let stackRef = baseline;
 if (baselineLegs.length > 1) {
   log0('baseline legs by dispersion: ' + baselineLegs
     .map((l) => `${(l.dir || l.leg || '?').split('/').pop()}=${l.worst_iqr_spread_pct}%`).join(' ') +
@@ -1365,7 +1394,7 @@ if (want('config')) {
         'measure it exactly as a kernel candidate is measured.';
     const sweep = await safeAgentStub('config_tuner', 'config',
       { ...benchInputs(curConfig, 'config'), DIAGNOSIS: wfReturn.config_diagnosis,
-        BANDS: wfReturn.bands, CARRIED_OVERLAY: curOverlay, REQUESTED_LEVER: wantLever,
+        BANDS: wfReturn.bands, CARRIED_OVERLAY: curOverlay, REQUESTED_LEVER: wantLever, REF_EXPECTED: stackRef,
         ALREADY_MEASURED: sweepRecords.map((r) => r.lever) },
       directive, { label: wantLever ? `config_tuner:${wantLever}` : undefined });
   if (!sweep) {
@@ -1425,7 +1454,7 @@ if (want('config')) {
         recipe_note: 'global-batch-size now counts packs; divide by conversations_per_pack to keep ' +
                      'samples per optimizer step' });
       log0(`ConfigSweep ${sweep.lever}: ${verdict.klass} (${verdict.reason})`);
-      if (verdict.accepted) curConfig = acceptLever(curConfig, sweep);
+      if (verdict.accepted) { curConfig = acceptLever(curConfig, sweep); stackRef = sweep.cand; }
     } else if (kind.cls === 'B') {
       // Refuse, do not silently downgrade: a Class-B result looks exactly like a Class-A one.
       sweepRecords.push({ refused: true, lever: sweep.lever, requested: wantLever, reason:
@@ -1451,6 +1480,8 @@ if (want('config')) {
           .filter((k) => k.startsWith('NVTE_'))];
       const cv = gateVerdict({ ref: sweep.ref, cand: sweep.cand, comparison: sweep.comparison,
                                l1, mode: 'deep', allowedImpl: leverImpl });
+      const cb = refBinding(stackRef, sweep.ref);
+      if (cv.accepted && !cb.ok) Object.assign(cv, { accepted: false, klass: 'incomparable', reason: cb.why });
       if (!l1 && cv.accepted) {
         cv.accepted = false;
         cv.klass = 'no_correctness_gate';
@@ -1501,7 +1532,7 @@ if (want('config')) {
         cv.verifier = vd;
         if (!vd.ok) Object.assign(cv, { accepted: false, klass: 'verifier_refused', reason: vd.why });
       }
-      if (cv.accepted) curConfig = acceptLever(curConfig, sweep);
+      if (cv.accepted) { curConfig = acceptLever(curConfig, sweep); stackRef = sweep.cand; }
     }
   }
   }
@@ -1539,8 +1570,15 @@ if (want('config')) {
 // KernelTrack — the fast-mode optimization loop.
 // Lanes may use the whole GPU pool; a gate DRAINS them, because a training A/B needs every GPU.
 // ---------------------------------------------------------------------------
+// An accepted config lever moves which kernels dominate: re-profile ON the carried config before the kernel
+// track, as after a kernel accept (audit #11: the queue was the pre-lever profile's).
+if (stackRef !== baseline) {
+  const r = await profileAndRoute(curConfig, 'after_config');
+  if (r.profile) profile = r.profile;
+  if (r.strategy && r.strategy.head_candidates) headQueue = rankQueue(applySkips(r.strategy.head_candidates.slice()));
+}
 phase('KernelTrack');
-let refLeg = baseline;          // the carried accepted stack, not the bare baseline
+let refLeg = stackRef;          // the carried accepted stack (+ accepted levers), not the bare baseline
 let noImprove = 0;
 
 // outOfTime() is async (it reads the clock through an agent) and is deliberately LAST in the
@@ -1686,6 +1724,8 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
   if (v.accepted && !carried.ok) {
     Object.assign(v, { accepted: false, klass: 'incomparable', reason: carried.why });
   }
+  const kb = refBinding(refLeg, integ.ref);
+  if (v.accepted && !kb.ok) Object.assign(v, { accepted: false, klass: 'incomparable', reason: kb.why });
   // The oracle that produced L0 must score every output (DECISIONS 4.60): a template oracle from
   // build_task_dir >= v2 (output count / coverage / shape gated), or a custom one the Auditor confirms.
   const orc = audit && audit.l0 && audit.l0.oracle;
