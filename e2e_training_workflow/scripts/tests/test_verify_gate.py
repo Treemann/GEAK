@@ -21,7 +21,7 @@ def ok(c, m):
     print(("  ok: " if c else "  FAIL: ") + m); fails += 0 if c else 1
 
 IMPL = {"attention-backend": "fused", "NVTE_FUSED_ATTN": "1"}
-def leg(root, name, speed, overlay=None, nranks=8, fallback=0, drop_rank=None, loss_rel=0.0, coverage=None):
+def leg(root, name, speed, overlay=None, nranks=8, fallback=0, drop_rank=None, loss_rel=0.0, coverage=None, slow=None):
     d = os.path.join(root, name); os.makedirs(os.path.join(d, "probe"))
     impl = dict(IMPL, **({"GEAK_OVERLAY": "m.json", "GEAK_OVERLAY_SHA": "k1"} if overlay else {}))
     cfg = {"seq-length": "4096", "snapshot_keys": "v5", **impl}
@@ -31,7 +31,7 @@ def leg(root, name, speed, overlay=None, nranks=8, fallback=0, drop_rank=None, l
                                 **({"coverage": coverage} if coverage else {})}) + "\n")
             t = 0.0
             for i in range(30):
-                dur = (40000 if i == 0 else 2300 + 7 * ((i * 37) % 5)) * speed
+                dur = (40000 if i == 0 else 2300 + 7 * ((i * 37) % 5)) * (slow.get(i, speed) if slow else speed)
                 t += dur / 1000 + 0.001
                 f.write(json.dumps({"record": "step", "step": i + 1, "dur_ms": dur, "useful_tokens": 8000,
                                     "total_tokens": 8192, "peak_reserved_mb": 80000, "t_wall": t,
@@ -142,6 +142,22 @@ try:
     ok(bad["l1"]["pass"] is False and "error" in bad["l1"], "an unreadable band is a refusal, not a pass")
 finally:
     shutil.rmtree(root, ignore_errors=True)
+# Audit 2026-10-25 #6, end to end: 4 of the aligned steps 10% slower, the rest 1% faster. The median says
+# +1%; the 10%-trimmed mean of the same ratios says a loss -> tmean_veto, not win.
+root = tempfile.mkdtemp(prefix="vgtest_")
+try:
+    ref = leg(root, "ref", 1.0)
+    het = leg(root, "cand_het", 0.99, overlay="attn", slow={12: 1.10, 16: 1.10, 21: 1.10, 26: 1.10})
+    v = run(ref, het)
+    p = v["comparison"]["paired"]
+    ok(p["delta_pct"] > 0.5 and p["tmean_delta_pct"] < 0.3,
+       f"heterogeneous cand: median {p['delta_pct']}% vs trimmed mean {p['tmean_delta_pct']}%")
+    ok(v["verdict"]["klass"] == "tmean_veto", f"the gate vetoes the median-only win ({v['verdict'].get('klass')})")
+    hom = run(ref, leg(root, "cand_hom", 0.97, overlay="attn"))
+    ok(hom["verdict"]["klass"] == "win", f"a uniform 3% gain still wins ({hom['verdict'].get('klass')})")
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+
 # Audit 2026-10-25 ID-1, end to end: the full capture flows through probe_summarize into the workflow's own
 # comparable(). An unclassified env knob differing between the legs makes the pair incomparable.
 root = tempfile.mkdtemp(prefix="vgtest_")

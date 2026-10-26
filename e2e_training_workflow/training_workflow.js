@@ -736,7 +736,18 @@ function gateVerdict(spec) {
              reason: `+${deltaPct.toFixed(2)}% > band ${band.toFixed(2)}%, but this is a raw ratio: ` +
                      're-report with scripts/compare_legs.py before it can be a win', ...base };
   }
-  if (deltaPct > band) return { accepted: true, klass: 'win', reason: `+${deltaPct.toFixed(2)}% > band ${band.toFixed(2)}%`, ...base };
+  // The median must not be the only witness (audit 2026-10-25 #6): a kernel that is slower on SOME steps
+  // wins by median and loses in total time. The 10%-trimmed mean of the same per-step ratios (stalls cut,
+  // a systematic minority of slow steps kept) must ALSO clear the band. On 42 same-identity null pairs the
+  // median-minus-trimmed-mean gap is p95 0.62 / p99 0.94 pts, so this is a second, independent estimate.
+  const tm = spec.comparison && spec.comparison.paired ? Number(spec.comparison.paired.tmean_delta_pct) : NaN;
+  if (deltaPct > band && pairedOk && Number.isFinite(tm) && tm <= band) {
+    return { accepted: false, klass: 'tmean_veto', tmean_delta_pct: tm,
+             reason: `median +${deltaPct.toFixed(2)}% > band ${band.toFixed(2)}%, but the 10%-trimmed mean of the same ` +
+                     `per-step ratios is ${tm.toFixed(2)}% (<= band): slower on a minority of steps, no total-time win`, ...base };
+  }
+  if (deltaPct > band) return { accepted: true, klass: 'win', reason: `+${deltaPct.toFixed(2)}% > band ${band.toFixed(2)}%`,
+                                ...(Number.isFinite(tm) ? { tmean_delta_pct: tm } : {}), ...base };
   if (deltaPct < -band) return { accepted: false, klass: 'regression', reason: `${deltaPct.toFixed(2)}% < -band`, ...base };
   // In band. Memory is a CURRENCY, not a metric: it counts only once a config change spends it.
   // 5%, not 2%: on 2,403 TRUE-NULL pairs (same config + impl digest) peak_reserved differs by up to 4.0%

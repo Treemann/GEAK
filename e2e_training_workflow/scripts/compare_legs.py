@@ -87,6 +87,22 @@ def _stall_trimmed(pa, pb, fixed):
     return keep, len(allr) - len(keep)
 
 
+TRIM_FRAC = 0.10
+
+
+def _tmean_delta(ratios):
+    """Delta from the 10%-per-side TRIMMED MEAN of the per-step ratios (audit 2026-10-25 #6). The median is
+    blind to a kernel that is slower on SOME steps: 4 of 22 steps 10% slower, the rest 1% faster reads +1.01%
+    by median and -1.0% in total. A stall-threshold trim cannot help (STALL_FACTOR 1.04 would drop exactly
+    those steps), but a trimmed mean keeps a systematic minority of slow steps while the 10% cut on each
+    side removes the one or two host stalls a 25-step leg carries in either leg."""
+    r = sorted(ratios)
+    k = int(len(r) * TRIM_FRAC)
+    core = r[k:len(r) - k] if len(r) - 2 * k >= 5 else r
+    m = sum(core) / len(core)
+    return round(100 * (1.0 / m - 1.0), 4) if m > 0 else None
+
+
 def compare(ref_probe, cand_probe, tol=0.02):
     a, b = summarize(ref_probe, tol), summarize(cand_probe, tol)
     for x, name in ((a, "ref"), (b, "cand")):
@@ -155,6 +171,10 @@ def compare(ref_probe, cand_probe, tol=0.02):
                 "steps_dropped": dropped,
                 # The estimator is only valid if step i really is the same batch on both legs.
                 "same_batches": same_batches,
+                # total time over the same (stall-trimmed) steps: the gate's veto on heterogeneous effects
+                "tmean_delta_pct": _tmean_delta(ratios),
+                # report-only: total time over EVERY aligned step, stalls included
+                "sum_delta_raw_pct": round(100 * (sum(x[0] for x in pa) / sum(y[0] for y in pb) - 1.0), 4),
             }
 
     notes = []
