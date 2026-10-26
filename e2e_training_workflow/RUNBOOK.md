@@ -116,6 +116,10 @@ Read `pair_usable` FIRST. `NVTE_USE_HIPBLASLT` on/off and `gradient_accumulation
 come back **unusable** — they do not change the kernels at all, and a band built from either would
 have read as "kernel swaps are numerically free".
 
+Since 2026-10-25 (DECISIONS 4.89) a band's step-1 spread is REPORTED and never widens the step-1 limit: the
+limit is the floor of the kind (`overlay` 0.05%, `kernel_swap` 0.25%, 2.0% only with `--l0-strictly-better`).
+A kernel-swap band like the one above (step-1 spread 1.75%) used to lift the limit to 5.25%.
+
 ## 9. Judge a candidate
 ```bash
 python3 .../scripts/trajectory_gate.py compare <ref>/probe <cand>/probe \

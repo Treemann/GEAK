@@ -341,6 +341,12 @@ def calibrate(dirs, safety=3.0, holdout=None):
     g1 = [s["grad_norm"][0] for s in series if s["grad_norm"] and s["grad_norm"][0] is not None]
     gn1_rel = round(100 * (max(g1) - min(g1)) / abs(g1[0]), 6) if len(g1) >= 2 and g1[0] else None
     band = {
+        # Step 1 is a pure forward on identical weights: same-implementation baseline legs agree there to the
+        # bit in a healthy stack. Legs that do not (different data / config / a nondeterministic forward)
+        # are not a baseline; the band is marked invalid and verdict() refuses it (audit G-2).
+        **({"invalid": f"baseline legs disagree at step 1 by {step1_rel}% (> {STEP1_FLOOR_PCT['overlay']}%): "
+                       "not a same-implementation baseline"}
+           if step1_rel is not None and step1_rel > STEP1_FLOOR_PCT["overlay"] else {}),
         "safety": safety, "runs": list(dirs), "steps": n,
         "envelope": env,
         "rel_floor_pct": {k: _rel_floor_pct(series, k, n) for k in ("loss", "grad_norm")},
@@ -442,6 +448,10 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
         return {"pass": False, "reason": f"identity snapshot v{rk} vs v{ck}: v{max(rk, ck)} captures keys the older "
                                          "sidecar never recorded; RE-MEASURE the older leg, "
                                          "re-summarising cannot recover them", "checks": {}}
+    if not rs.get("config") or not cs.get("config"):
+        # Two missing headers compared EQUAL as identity (audit G-8): no header, no identity, no verdict.
+        return {"pass": False, "reason": "a leg has no probe header / captured config: identity cannot be checked",
+                "checks": {}}
     if ident(rs.get("config")) != ident(cs.get("config")):
         return {"pass": False, "reason": "legs trained a different WORKLOAD (batch/seq/mapping/data "
                                          "differ); step-aligned trajectories are not comparable",
@@ -452,8 +462,11 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
     impl_delta = {k: (rc.get(k), cc.get(k)) for k in sorted(set(rc) | set(cc))
                   if is_impl_key(k) and rc.get(k) != cc.get(k)}
     n = min(len(rs["loss"]), len(cs["loss"]))
-    if n < 3:
-        return {"pass": False, "reason": "fewer than 3 comparable steps", "checks": {}}
+    # The early-window sign rule needs EARLY_STEPS steps; 3 let a 3-step pair PASS (audit G-8).
+    if n < EARLY_STEPS:
+        return {"pass": False, "reason": f"fewer than {EARLY_STEPS} comparable steps ({n})", "checks": {}}
+    if band.get("invalid"):
+        return {"pass": False, "reason": f"the band is invalid: {band['invalid']}", "checks": {}}
     # A non-finite loss or grad_norm on the candidate where the reference is finite is a divergence,
     # and it must fail HERE: every later detector compares with < / >, and every comparison with NaN
     # is False, so a NaN trajectory used to PASS as 'within the envelope' (audit 2026-10-22, G2).
@@ -480,8 +493,13 @@ def verdict(ref_dir, cand_dir, band, candidate_kind="overlay", l0_strictly_bette
         floor = STEP1_FLOOR_PCT.get(candidate_kind, STEP1_REL_FLOOR_PCT)
         if candidate_kind == "kernel_swap" and l0_strictly_better:
             floor = STEP1_FLOOR_STRICTLY_MORE_ACCURATE_PCT
-        lim = max(floor, (band.get("step1_loss_rel_pct") or 0) * safety)
+        # The FLOOR alone (audit 2026-10-25 G-2): scaling the limit by the band's own step-1 spread let a
+        # kernel-swap band (RUNBOOK, 1.75%) lift 0.25% to 5.25% and undo 4.48. A same-implementation band
+        # has step-1 spread 0 in a healthy stack (calibrate refuses one that does not); the band's value is
+        # reported, never used to widen.
+        lim = floor
         res["checks"]["step1_loss_rel_pct"] = {"value": round(rel, 6), "limit": round(lim, 6),
+                                               "band_step1_rel_pct": band.get("step1_loss_rel_pct"),
                                                "candidate_kind": candidate_kind,
                                                "l0_strictly_better": bool(l0_strictly_better)}
         if rel > lim:

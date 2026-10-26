@@ -53,7 +53,9 @@ def synth(seed, n=30, cross_at=None):
     losses, gns = [], []
     for i in range(n):
         jitter = ((seed * 7919 + i * 104729) % 1000) / 1000.0 - 0.5     # deterministic, no RNG
-        losses.append(round(3.2 - 0.02 * i + 0.05 * jitter, 6))
+        # Step 1 is a pure forward on identical weights: bit-identical across same-implementation legs
+        # (calibrate refuses a baseline that is not, audit G-2), so no jitter there.
+        losses.append(round(3.2 - 0.02 * i + (0.05 * jitter if i else 0.0), 6))
         # grad_norm swings by ~2x run to run, as measured (152/219/83 at step 2)
         gns.append(round(150.0 + 70.0 * jitter * 2 + 3.0 * i, 6))
         if cross_at is not None and i == cross_at:
@@ -62,9 +64,37 @@ def synth(seed, n=30, cross_at=None):
     return losses, gns
 
 
+def g2_g8_checks(root):
+    """Audit 2026-10-25 G-2 / G-8."""
+    legs = [make_leg(root, f"gb{s}", *synth(s)) for s in (1, 2)]
+    band = tg.calibrate(legs)
+    ok(not band.get("invalid"), "a baseline whose step-1 losses agree is a valid band")
+    lo, gn = synth(3); lo[0] *= 1.01
+    bad = tg.calibrate(legs + [make_leg(root, "gb_off", lo, gn)])
+    ok(bool(bad.get("invalid")), "baseline legs that disagree at step 1 make the band invalid (G-2)")
+    ok(tg.verdict(legs[0], legs[1], bad)["pass"] is False, "verdict refuses an invalid band")
+    wide = dict(band, step1_loss_rel_pct=1.75)          # the RUNBOOK kernel-swap band's step-1 spread
+    sl = list(synth(1)[0]); sl[0] *= 1.01                 # a 1% forward shift
+    v = tg.verdict(legs[0], make_leg(root, "gb_shift", sl, synth(1)[1]), wide, candidate_kind="kernel_swap")
+    ok(v["checks"]["step1_loss_rel_pct"]["limit"] == 0.25 and v["pass"] is False,
+       "a band's step-1 spread no longer widens the limit (1% shift fails at 0.25%, was 5.25%)")
+    short = [make_leg(root, f"gs{s}", *[x[:5] for x in synth(s)]) for s in (1, 2)]
+    ok(tg.verdict(short[0], short[1], band)["pass"] is False, "5 comparable steps cannot PASS (G-8)")
+    d = os.path.join(root, "nohdr", "probe"); os.makedirs(d)
+    with open(os.path.join(d, "probe_rank0.jsonl"), "w") as f:
+        for i, (l, g) in enumerate(zip(*synth(1))):
+            f.write(json.dumps({"record": "step", "step": i + 1, "loss": l, "grad_norm": g}) + "\n")
+    try:
+        r = tg.verdict(d, d, band)
+        ok(r["pass"] is False, "a leg without a header cannot PASS (G-8)")
+    except Exception as e:   # noqa: BLE001
+        ok(True, f"a leg without a header cannot PASS (G-8; raised {type(e).__name__})")
+
+
 def main():
     root = tempfile.mkdtemp(prefix="tgtest_")
     try:
+        g2_g8_checks(root)
         legs = []
         for s in (1, 2, 3, 4, 5):
             lo, gn = synth(s, cross_at=11)
