@@ -20,6 +20,7 @@ SEEDS="1234,2345,3456"; ARMS="ref,s8,ctrl"; ITERS=""; NAME=qab; NPROC=8; GPUS=""
 # Default = the CLEARED production recipe (audit 2026-10-22 G4: it was the constant-LR packed.env, which
 # is NOT cleared and which no outcome test since P0-4d should run on).
 WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed_cosine_avg.env"; CAND_CMD=""; CAND_TARGS=""
+ALL_TARGS=""; ALL_ENV=""
 STACK=megatron; TRAIN=""; HELDOUT=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -32,6 +33,11 @@ while [ $# -gt 0 ]; do
     --workload) WORKLOAD="$2"; shift 2;;
     --cand-cmd) CAND_CMD="$2"; shift 2;;
     --cand-train-args) CAND_TARGS="$2"; shift 2;;   # e.g. a config lever under test, cand arm only
+    # Settings of EVERY arm (e.g. the deliverable's `fast` mode on both arms of a kernel A/B, 2026-10-26
+    # divergence-rate study): train args and NAME=value env, applied identically, so arms differ only
+    # in what the arm itself names.
+    --all-train-args) ALL_TARGS="$2"; shift 2;;
+    --all-env) ALL_ENV="$2"; shift 2;;
     # Second stack (HF TRL): unpacked data -- HF pads dynamically and does not take Megatron packs.
     --stack) STACK="$2"; shift 2;;
     --train) TRAIN="$2"; shift 2;;
@@ -68,10 +74,10 @@ for SEED in ${SEEDS//,/ }; do
   for ARM in ${ARMS//,/ }; do
     LEG="${ARM}_seed${SEED}"
     OUT_HOST="$WORK_HOST/runs/${NAME}_${STAMP}_${LEG}"
-    EXTRA=""; TARGS="--seed $SEED $EVAL_ARGS"
+    EXTRA=""; TARGS="--seed $SEED $EVAL_ARGS${ALL_TARGS:+ $ALL_TARGS}"
     case "$ARM" in
       ref) ;;
-      s[2-8]|s8eps) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$ARM" --stack "$STACK" --out "$OUT_HOST" --install "$OVL_HOST")" ;;
+      s[2-8]|s8eps|s8a22) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$ARM" --stack "$STACK" --out "$OUT_HOST" --install "$OVL_HOST")" ;;
       # The accepted stack with every side stream disabled (fc1/qkv wgrad overlap -> serial, lm-head
       # single stream): same kernel bytes, single-stream scheduling. Tests the side-stream race
       # hypothesis for the late-training instability (2026-10-16).
@@ -88,6 +94,7 @@ for SEED in ${SEEDS//,/ }; do
       ctrl70) TARGS="$TARGS --lr 7.0e-6 --min-lr 7.0e-7" ;;
       *) echo "unknown arm: $ARM" >&2; exit 2;;
     esac
+    [ -n "$ALL_ENV" ] && EXTRA="${EXTRA:+$EXTRA }$ALL_ENV"
     echo ">>> $(date +%H:%M:%S) leg $LEG -> $OUT_HOST"
     "$GEAK_ROOT/scripts/bench_train.sh" --workload "$WORKLOAD" --stack "$STACK" --nproc "$NPROC" ${GPUS:+--gpus "$GPUS"} \
       --iters "$ITERS" --data "$TRAIN" --out "$OUT_HOST" --tag "${NAME}_${LEG}" \

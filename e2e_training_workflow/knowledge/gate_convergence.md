@@ -2149,3 +2149,27 @@ leg ok / occupancy clean. Held-out d (cand - fast): -0.00528 / -0.00287 / +0.000
 Stability PASS: 1 severe (seed 3141 max10 0.275, held-out d +0.006 < 1 yardstick), 0 catastrophic.
 Engagement: the 1022 kernel served every training call on every rank (candidate_fwd = candidate_bwd = 20,048 per
 rank on 358 steps); its only fallbacks are the end-of-training eval pass (dropout_p0, by design).
+
+## P0-4q PRE-REGISTRATION (2026-10-26): late-divergence rate, 1022 vs 1013 attention, deliverable `fast` mode
+
+Written BEFORE any leg ran. Question (DECISIONS 4.82): does the 1022 attention kernel raise the rate of the
+late-divergence class (P0-4n seed 4680, 4.82 seed 8890) relative to the 1013 kernel, on the production recipe?
+
+* Arms (paired by seed, interleaved s8 then s8a22): `s8` (1013 attention) and `s8a22` (1022 attention), BOTH in
+  the deliverable's `fast` mode: `--manual-gc --manual-gc-interval 0 --no-check-for-nan-in-loss-and-grad` +
+  `GEAK_NAN_FROM_GRAD_NORM=1` (quality_ab.sh --all-train-args / --all-env). The arms differ ONLY in the attention
+  overlay. Workload `qwen2_5_math_7b_packed_cosine_avg.env`, one epoch (358 iters), held-out eval at the end,
+  image rocm/primus@sha256:8c8ecc6f..., 8 GPUs.
+* Seeds (fresh, never used on disk): 1203,2314,3425,4536,5647,6758,7869,8970,9081,1192. No extension.
+* Primary analysis: `quality_ab_final.py <prefix> --base s8 --cand s8a22` (noninf rule, fixed yardstick 0.0206).
+* Event per leg: its held-out loss exceeds the SAME seed's other arm by > 1 yardstick (0.0206), OR its late
+  grad-norm median (steps 251-358) > 4.0 (on disk: 2 of ~76 eps-1e-5 full-stack legs exceed 4.0).
+  Counted for BOTH arms (quality_ab_final's stability rule sees only the cand arm, audit HFC-8).
+* Interpretation agreed before the data (the decision itself is the user's):
+  - keep s8a22 as the default iff quality PASS, stability PASS, and events(s8a22) - events(s8) <= 1;
+  - revert the default to finalize_bundle_1021_s8_cosine_avg (1013) iff quality FAIL, stability FAIL, or
+    events(s8a22) - events(s8) >= 2;
+  - otherwise (INCONCLUSIVE) recommend the conservative revert: the 1022 gain (~+0.5%) does not pay for an
+    unresolved stability doubt.
+* Power, stated up front: 10 pairs detect a 10%-vs-0% per-leg rate difference with probability ~0.65; a null
+  result is weak evidence of equal rates, a positive one is strong.
