@@ -26,6 +26,12 @@ Pass `--l1-kind` whenever `L1_KIND` is given, `--l1-band` only when `L1_BAND` is
 `LEVER_ENV` is not null. The script's `l1` field is the pair's
 `l1` (the orchestrator derived kind and floor from the L0 evidence; do not choose them yourself).
 
+With `KIND` = `l0` (the gate's own L0, DECISIONS 4.99) run exactly
+`GEAK_SCRIPTS/l0_verify.sh L0_TASK L0_OVERLAY <EXP dir>/l0_verify_<head>.json --gpu GPU` (one GPU, ~2-10 min incl. a
+kernel build) and return `{"pairs": [{"ref_dir": "L0_TASK", "cand_dir": "L0_OVERLAY", "l0_recomputed": <the full JSON
+it wrote, verbatim>}]}` -- also when `correct` is false or the script failed (then `l0_recomputed` = `{"correct": null,
+"error": "<its last lines>"}`).
+
 With `KIND` = `quality` (an outcome-test verdict) run exactly
 `python3 GEAK_SCRIPTS/quality_ab_final.py <QUALITY_ARGS, each element one argv token, in order>` and
 return `{"pairs": [{"ref_dir": "<first QUALITY_ARGS element>_ref", "cand_dir": "<first QUALITY_ARGS

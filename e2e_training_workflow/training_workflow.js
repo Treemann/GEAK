@@ -1195,6 +1195,7 @@ const VERIFY_SCHEMA = obj({ pairs: { type: 'array', minItems: 1, items: obj({
   ref_dir: { type: 'string' }, cand_dir: { type: 'string' }, verdict: { type: ['object', 'null'] },
   packing: { type: ['object', 'null'] },   // verify_gate --kind packing
   reuse_check: { type: ['object', 'null'] },   // quality_reuse.py check (KIND quality_reuse)
+  l0_recomputed: { type: ['object', 'null'] },   // l0_verify.sh (KIND l0)
   quality_verdict: { type: ['object', 'null'] },   // quality_ab_final.py's JSON line (KIND quality)
   l1: { type: ['object', 'null'] },   // verify_gate --l1-kind: the recomputed trajectory_gate verdict
   engagement: { type: ['object', 'null'] }, comparison: { type: ['object', 'null'] },
@@ -1817,6 +1818,28 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
   const v = gateVerdict({ ref: integ.ref, cand: integ.cand, comparison: integ.comparison,
                           l0: audit && audit.l0, l1: audit && audit.l1,
                           mode: DEEP_MODE ? 'deep' : 'fast', allowedImpl: KERNEL_IMPL_DELTA });
+  // The verifier's OWN L0 (DECISIONS 4.99): the frozen oracle re-run on the shipped overlay (l0_verify.sh, one
+  // GPU). Its `correct` is required to accept, and its evidence -- forward bit-identity against the captured
+  // original, per-output error vs the original's -- is what plans L1. The Auditor's l0 can still only reject.
+  let l0r = null;
+  if (v.accepted) {
+    const lv = await safeAgentStub('gate_verifier', 'verify',
+      { KIND: 'l0', L0_TASK: optimized.ext.task_dir, L0_OVERLAY: integ.overlay_path || null,
+        GPU: GPU_IDS[0], GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts` },
+      'Run l0_verify.sh on the task and overlay and return its result verbatim as pairs[0].l0_recomputed. ' +
+      'You are a script runner.');
+    const p0 = lv && Array.isArray(lv.pairs) ? lv.pairs[0] : null;
+    l0r = p0 && p0.l0_recomputed && typeof p0.l0_recomputed === 'object' ? p0.l0_recomputed : null;
+    v.l0_recomputed = l0r;
+    const tdn = (x) => String(x || '').replace(/\/+$/, '').split('/').pop();
+    if (!l0r || l0r.correct !== true || tdn((l0r.oracle || {}).task_dir || l0r.task) !== tdn(optimized.ext.task_dir)) {
+      Object.assign(v, { accepted: false, klass: l0r && l0r.correct === false ? 'numerics' : 'no_correctness_gate',
+        reason: !l0r ? 'no independent L0 (the verifier did not re-run the oracle): a kernel may not be accepted on ' +
+                       "the Auditor's word"
+              : l0r.correct !== true ? `the verifier's own L0 run of the oracle is not correct (${l0r.error || 'correct=' + l0r.correct})`
+                : `the verifier ran the oracle of task ${tdn((l0r.oracle || {}).task_dir || l0r.task)}, not this head's` });
+    }
+  }
   // INDEPENDENT RECOMPUTATION of every pairing the Integrator measured (audit ORCH-1).
   let mgcAppl = null;   // the verifier's mgc_applicability.py (audit 2026-10-25 G-1)
   if (v.accepted) {
@@ -1827,7 +1850,7 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
       const k = legBase(d); if (seen.has(k)) return false; seen.add(k); return true; }); };
     const refDirs = uniqLegs([integ.ref.dir || integ.ref.probe_dir, ...(lm.refs || [])]);
     const candDirs = uniqLegs([integ.cand.dir || integ.cand.probe_dir, ...(lm.cands || [])]);
-    const l1Plan = l1PlanFromL0(audit && audit.l0);
+    const l1Plan = l1PlanFromL0(l0r);   // the verifier's recomputed evidence, not the Auditor's transcript
     const ver = await safeAgentStub('gate_verifier', 'verify',
       { REF_DIRS: refDirs, CAND_DIRS: candDirs,
         KIND: 'kernel', FLOOR: runFloor, NPROC, GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts`,

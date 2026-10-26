@@ -62,6 +62,7 @@ const refExpected = (prompt) => {
   }
   return null;
 };
+let L0R_OVERRIDE;                          // the verifier's l0_verify result; undefined = correct, no evidence
 let VDELTA_OVERRIDE;
 let INTEG_CMP_SEQ = null;                  // queued `comparison` objects, one per integrate call                        // (refDir, candDir) -> the verifier's delta_pct for that pairing
 let REFBIND_OVERRIDE;
@@ -156,6 +157,11 @@ function stubFor(prompt) {
   }
   if (is('PHASE=verify')) {
     if (VERIFY_OVERRIDE === null) return null;
+    if (prompt.includes('"KIND": "l0"')) {             // l0_verify.sh (DECISIONS 4.99)
+      const task = (/"L0_TASK": "([^"]*)"/.exec(prompt) || [])[1] || '/work/tasks/t';
+      return { pairs: [{ ref_dir: task, cand_dir: '/work/ovl', l0_recomputed: L0R_OVERRIDE !== undefined ? L0R_OVERRIDE
+        : { correct: true, out_bit_identical: null, per_output: null, oracle: { kind: 'template', task_dir: task } } }] };
+    }
     if (prompt.includes('"KIND": "quality"')) {        // quality_ab_final recomputed (audit ORCH-A8)
       const m = /"QUALITY_ARGS": (\[[^\]]*\])/.exec(prompt);
       const qa = m ? JSON.parse(m[1]) : [];
@@ -752,18 +758,37 @@ async function dryRun(args) {
     const { calls: c3 } = await dryRun(base);
     ok(kv(c3).length > 0 && kv(c3).every((p) => p.includes('"L1_KIND": "kernel_swap"') && p.includes('"L1_L0_STRICTLY_BETTER": false')),
       'no L0 evidence -> kernel_swap, never the 8x looser strictly-better floor');
-    L0X_OVERRIDE = { out_bit_identical: true };
+    L0R_OVERRIDE = { correct: true, out_bit_identical: true, per_output: null, oracle: { task_dir: '/work/tasks/t' } };
     const { calls: c4 } = await dryRun(base);
     ok(kv(c4).length > 0 && kv(c4).every((p) => p.includes('"L1_KIND": "overlay"')), 'forward bit-identical in L0 -> the tight overlay floor');
-    L0X_OVERRIDE = { per_output: { out: { cand_err: 1, base_err: 2 }, dgrad: { cand_err: 1, base_err: 2 } } };
+    L0R_OVERRIDE = { correct: true, oracle: { task_dir: '/work/tasks/t' },
+                     per_output: { out: { cand_err: 1, base_err: 2 }, dgrad: { cand_err: 1, base_err: 2 } } };
     const { calls: c5 } = await dryRun(base);
     ok(kv(c5).length > 0 && kv(c5).every((p) => p.includes('"L1_L0_STRICTLY_BETTER": true')),
       'every output strictly closer to fp32 -> strictly-better floor');
-    L0X_OVERRIDE = { per_output: { out: { cand_err: 1, base_err: 2 }, wgrad: { cand_err: 2, base_err: 2 } } };
+    L0R_OVERRIDE = { correct: true, oracle: { task_dir: '/work/tasks/t' },
+                     per_output: { out: { cand_err: 1, base_err: 2 }, wgrad: { cand_err: 2, base_err: 2 } } };
     const { calls: c6 } = await dryRun(base);
     ok(kv(c6).length > 0 && kv(c6).every((p) => p.includes('"L1_L0_STRICTLY_BETTER": false')),
       'one output merely equal -> NOT strictly better');
+    L0R_OVERRIDE = undefined;
+    // The Auditor's transcript no longer plans L1: claiming bit-identity there changes nothing.
+    L0X_OVERRIDE = { out_bit_identical: true };
+    const { calls: c7 } = await dryRun(base);
     L0X_OVERRIDE = undefined;
+    ok(kv(c7).length > 0 && kv(c7).every((p) => p.includes('"L1_KIND": "kernel_swap"')),
+      "the Auditor's own out_bit_identical does not loosen or tighten the plan (the verifier's evidence does)");
+    // DECISIONS 4.99: the verifier's own L0 decides.
+    L0R_OVERRIDE = { correct: false, error: null, oracle: { task_dir: '/work/tasks/t' } };
+    const { result: l0a } = await dryRun(base);
+    L0R_OVERRIDE = null;
+    const { result: l0b } = await dryRun(base);
+    L0R_OVERRIDE = { correct: true, oracle: { task_dir: '/work/tasks/another' } };
+    const { result: l0c } = await dryRun(base);
+    L0R_OVERRIDE = undefined;
+    ok(l0a.accepted.length === 0, "the verifier's own L0 not correct -> refused although the Auditor passed L0");
+    ok(l0b.accepted.length === 0, 'no independent L0 result -> refused (fail closed)');
+    ok(l0c.accepted.length === 0, "an L0 run on another task's oracle -> refused");
     // A5: status is code-derived.
     const { result: s0, calls: sc0 } = await dryRun(base);
     ok(s0.status === 'ok' && sc0.prompts.some((p) => p.includes('"KIND": "stack"') && p.includes('val_final')),

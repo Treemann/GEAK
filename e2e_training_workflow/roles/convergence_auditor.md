@@ -54,8 +54,8 @@ L0 run rates the candidate strictly more accurate than the incumbent on EVERY ou
 **Also return the evidence in `l0`** (audit G-3): `out_bit_identical` (true only when L0's paired block
 shows the forward `out` bit-identical to the incumbent) and `per_output` = `{<output>: {"cand_err": x,
 "base_err": y}}` copied from the oracle's output (its error vs the fp32 reference for candidate and
-incumbent). The orchestrator derives the L1 kind and the strictly-better floor from THESE fields and has
-the gate_verifier recompute L1 with them; your own `l1` can only reject.
+incumbent). Since DECISIONS 4.99 the gate_verifier re-runs the oracle itself (`l0_verify.sh`) and the
+orchestrator plans L1 from ITS evidence; your `l0` / `l1` remain required and can only reject.
 
 Preconditions you must check yourself, because the tool cannot:
 - both legs ran the SAME seed, data and config, so step i is the same batch on both sides. The tool
