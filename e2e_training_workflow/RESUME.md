@@ -8,7 +8,7 @@ default `fast`), HF `runs/finalize_bundle_1020_hf6_flat_rope` (default `bal`). B
 RESOLVED by the pre-registered rate study P0-4q (4.85): 10 fresh seeds x {s8, s8a22} in `fast`, PASS/PASS,
 late-drift events 1013: 2 vs 1022: 1 -> keep s8a22. Late grad-norm drift is a property of the recipe (also on bare legs).
 
-**Audit 2026-10-25** (report: `/home/treemann/geak_train/scratch/audit_1025_report.md`, 13 numbered findings + a
+**Audit 2026-10-25** (report: `knowledge/audit_2026-10-25.md`, 13 numbered findings + a
 low-severity table). FIXED, each verified in an agent-driven workflow run:
 * 4.73 (#1) an unproven quality_reuse can no longer be laundered by the seed extension.
 * 4.74 (#3) the packing lever is accepted only on the verifier's recomputation (legUsable, equal-token delta, pack_gate file).

@@ -164,6 +164,64 @@ def emit(quality, stability, **kw):
     print(json.dumps({**kw, "quality": quality, "stability": stability, "cleared": cleared}))
 
 
+def header_cfg(d):
+    """rank-0 probe header config, or None."""
+    try:
+        with open(os.path.join(d, "probe", "probe_rank0.jsonl")) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("record") == "header":
+                    return r.get("config") or {}
+    except FileNotFoundError:
+        return None
+    return None
+
+
+def leg_consistency(where, seeds, base, cand, allow_workload=()):
+    """Legs are paired by directory NAME; prove they are one experiment (audit 2026-10-25 G-6): per seed the two
+    arms share the workload identity (implementation may differ) and that seed; each arm runs ONE implementation
+    across every seed and prefix (an extension prefix of another stack would otherwise pool silently).
+    Returns a list of problems (empty = consistent). Legs without a header are reported, not guessed."""
+    import sys as _s
+    _s.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from probe_summarize import _norm as _n, is_impl_key, snapshot_schema
+    probs, impls = [], {base: [], cand: []}
+    wl = lambda c: {k: v for k, v in c.items() if not is_impl_key(k) and k not in ("snapshot_keys", "world_size")}  # noqa: E731
+    im = lambda c: {k: v for k, v in c.items() if is_impl_key(k) and k != "GEAK_OVERLAY"}  # noqa: E731
+    for s in seeds:
+        cb, cc = header_cfg(f"{where[s]}_{base}_seed{s}"), header_cfg(f"{where[s]}_{cand}_seed{s}")
+        if cb is None or cc is None:
+            probs.append(f"seed {s}: a leg has no probe header")
+            continue
+        # Schema-aware: a key only one side records is a difference only when both snapshots are the same
+        # version (v5 -> v6 added norm-epsilon / renamed rope-fusion; reused older legs predate them).
+        wb, wc = wl(cb), wl(cc)
+        same_schema = snapshot_schema(cb) == snapshot_schema(cc)
+        dk = sorted(k for k in set(wb) | set(wc)
+                    if k not in allow_workload and
+                    ((k in wb and k in wc and str(_n(wb[k])) != str(_n(wc[k]))) or
+                     (same_schema and (k in wb) != (k in wc))))
+        if dk:
+            probs.append(f"seed {s}: {base} and {cand} differ in workload identity ({', '.join(dk[:4])})")
+        for c in (cb, cc):
+            if str(c.get("seed")) != str(s):
+                probs.append(f"seed {s}: a leg ran --seed {c.get('seed')}")
+        impls[base].append((s, snapshot_schema(cb), im(cb))); impls[cand].append((s, snapshot_schema(cc), im(cc)))
+    for arm, xs in impls.items():
+        s0, v0, i0 = xs[0] if xs else (None, None, {})
+        for s1, v1, i1 in xs[1:]:
+            # the overlay content is recorded on every schema; other keys only where both snapshots record them
+            dk = sorted(k for k in set(i0) | set(i1)
+                        if (k == "GEAK_OVERLAY_SHA" and i0.get(k) != i1.get(k)) or
+                        (k in i0 and k in i1 and i0[k] != i1[k]) or (v0 == v1 and (k in i0) != (k in i1)))
+            if dk:
+                probs.append(f"arm {arm}: seed {s1} runs another implementation than seed {s0} ({', '.join(dk[:4])})")
+    return probs
+
+
 def heldout(d):
     try:
         v = VAL_RE.findall(open(os.path.join(d, "train.log"), errors="replace").read())
@@ -180,6 +238,10 @@ def main():
     ap.add_argument("--ctrl", default=None,
                     help="measure the yardstick IN THIS RUN from a positive-control arm (e.g. ctrl70) instead of "
                          "the fixed P0-4d value; the control must then be DETECTED (mean > 0, t >= 2.776)")
+    ap.add_argument("--allow-workload", default="",
+                    help="workload keys the change under test moves (a recipe test, e.g. norm-epsilon for P0-4l)")
+    ap.add_argument("--allow-inconsistent", action="store_true",
+                    help="judge legs that fail the one-experiment check (historical legs without headers; recorded)")
     ap.add_argument("--looks", type=int, choices=(1, 2), default=2,
                     help="2 (default): the test may be extended once -> Pocock 0.0294 one-sided at each look; "
                          "1: a single-look test (e.g. a pre-registered study without extension) -> 0.05")
@@ -235,6 +297,12 @@ def main():
         sev_b.append(m10b)
         print(f"seed {s}: held-out {a.base} {hr:.6f} {a.cand} {hc:.6f} d {hc - hr:+.5f} | max10 {m10:.3f} "
               f"(base arm {m10b:.3f})")
+    probs = leg_consistency(where, seeds, a.base, a.cand,
+                            {k.strip() for k in (a.allow_workload or "").split(",") if k.strip()})
+    if probs and not a.allow_inconsistent:
+        emit(f"REFUSED-quality: the legs are not one experiment: {'; '.join(probs[:3])}",
+             "REFUSED-stability: not judged", seeds=seeds, consistency=probs)
+        return
     yard, ctrl_note = YARDSTICK, "fixed (P0-4d)"
     if a.ctrl:
         cd = []

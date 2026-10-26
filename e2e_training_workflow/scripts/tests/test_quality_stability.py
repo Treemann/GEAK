@@ -9,9 +9,12 @@ fails = 0
 def ok(c, m):
     global fails
     print(("  ok: " if c else "  FAIL: ") + m); fails += 0 if c else 1
-def leg(root, name, held, bump=0.0):
+def leg(root, name, held, bump=0.0, cfg=None):
     d = os.path.join(root, name); os.makedirs(os.path.join(d, "probe"))
+    seed = name.rsplit("seed", 1)[-1]
     with open(os.path.join(d, "probe", "probe_rank0.jsonl"), "w") as f:
+        f.write(json.dumps({"record": "header", "config": {"snapshot_keys": "v6", "seed": seed, "lr": "1.0e-5",
+                                                           **(cfg or {})}}) + "\n")
         for i in range(358):
             f.write(json.dumps({"record": "step", "step": i + 1, "loss": 1.5 + (bump if i > 300 else 0.0)}) + "\n")
     open(os.path.join(d, "train.log"), "w").write(f" validation loss at iteration 358 | lm loss value: {held:.6E} |\n")
@@ -50,6 +53,33 @@ try:
     out1 = subprocess.run([sys.executable, QF, os.path.join(root, "q"), "--base", "ref", "--cand", "cand", "--looks", "1"],
                           capture_output=True, text=True).stdout
     ok(json.loads(out1.strip().splitlines()[-1])["alpha"] == 0.05, "--looks 1: a single-look test at 0.05")
+finally:
+    shutil.rmtree(root)
+
+# Audit 2026-10-25 G-6: legs paired by NAME must be one experiment.
+root = tempfile.mkdtemp(prefix="qstab_")
+try:
+    for i, s in enumerate((11, 22, 33, 44, 55)):
+        leg(root, f"q_ref_seed{s}", 1.30 + 0.001 * i)
+        leg(root, f"q_cand_seed{s}", 1.30 + 0.001 * i, cfg={"lr": "2.0e-5"} if s == 33 else None)
+    v = run_raw = json.loads(subprocess.run([sys.executable, QF, os.path.join(root, "q"), "--base", "ref", "--cand", "cand"],
+                                            capture_output=True, text=True).stdout.strip().splitlines()[-1])
+    ok(v["quality"].startswith("REFUSED") and any("lr" in p for p in v["consistency"]),
+       f"a cand leg on another recipe (lr) is refused: {v['quality'][:60]}")
+    v = json.loads(subprocess.run([sys.executable, QF, os.path.join(root, "q"), "--base", "ref", "--cand", "cand",
+                                   "--allow-workload", "lr"], capture_output=True, text=True).stdout.strip().splitlines()[-1])
+    ok(not v["quality"].startswith("REFUSED"), "...unless the test declares lr as the change under test")
+finally:
+    shutil.rmtree(root)
+root = tempfile.mkdtemp(prefix="qstab_")
+try:
+    for i, s in enumerate((11, 22, 33, 44, 55)):
+        leg(root, f"q_ref_seed{s}", 1.30 + 0.001 * i)
+        leg(root, f"q_cand_seed{s}", 1.30 + 0.001 * i, cfg={"GEAK_OVERLAY_SHA": "aaa" if s != 44 else "bbb"})
+    v = json.loads(subprocess.run([sys.executable, QF, os.path.join(root, "q"), "--base", "ref", "--cand", "cand"],
+                                  capture_output=True, text=True).stdout.strip().splitlines()[-1])
+    ok(v["quality"].startswith("REFUSED") and any("another implementation" in p for p in v["consistency"]),
+       "a cand arm that runs another overlay stack on one seed is refused")
 finally:
     shutil.rmtree(root)
 

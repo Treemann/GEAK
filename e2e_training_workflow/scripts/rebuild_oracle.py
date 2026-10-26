@@ -80,7 +80,8 @@ def main():
               "holdouts": [t for t, _ in hold], "tried": []}
     for i, cap in enumerate(cands):
         tmp = a.new_task if i == len(cands) - 1 or a.capture else a.new_task + f".try{i}"
-        build(cap, tmp, kw["reference"], kw["name"], kw["const"], kw["notes"], None, kw["ulp_labels"],
+        # candidate_bind (how the candidate is bound / proven engaged) is carried over: it was dropped (audit G-10)
+        build(cap, tmp, kw["reference"], kw["name"], kw["const"], kw["notes"], old.get("candidate_bind"), kw["ulp_labels"],
               hold, kw["ulp_floor"], kw["abs_floor_max_ulp"], kw["exact_labels"])
         new = json.load(open(os.path.join(tmp, "meta.json")))
         prim_ok = _close(new.get("base_error"), old.get("base_error"))
@@ -118,6 +119,7 @@ def main():
     mp = os.path.join(a.new_task, "meta.json")
     os.chmod(mp, 0o644)
     json.dump(new, open(mp, "w"), indent=2)
+    os.chmod(mp, 0o444)   # an oracle's meta is read-only, as build_task_dir leaves it (audit G-10)
     print(json.dumps(report, indent=1))
     return 0 if report["verified"] else 1
 
