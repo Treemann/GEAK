@@ -240,7 +240,7 @@ def main():
     if kind in ("config", "stack"):
         allowed += [t.lstrip("-").split("=")[0] for t in lever.split() if t.startswith("--")]
         allowed += ["env:" + k for k in lever_env]
-        allowed += [k for k in {**ref.get("implementation", {}), **cand.get("implementation", {})} if k.startswith("NVTE_")]
+        allowed += [k for k in lever_env if k.startswith("NVTE_")]   # declared NVTE knobs only (audit ID-4)
     out = {"ref": ref, "cand": cand, "comparison": cmp, "kind": kind, "verdict": None}
     node = _node()
     if node and isinstance(cmp, dict) and not cmp.get("error"):

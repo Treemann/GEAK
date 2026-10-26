@@ -62,6 +62,7 @@ const refExpected = (prompt) => {
   }
   return null;
 };
+let VDELTA_OVERRIDE;                        // (refDir, candDir) -> the verifier's delta_pct for that pairing
 let REFBIND_OVERRIDE;
 let SETUP_BARE;                             // true: Setup ignores BASE_OVERLAY_CMD (a stacked run with a bare baseline)                       // (legOverrides) for the integrate ref leg; undefined = bound
 let INTEG_N = 0;
@@ -176,7 +177,8 @@ function stubFor(prompt) {
     for (const r of refs) for (const c of cands) {
       if (PAIRS_DROP && PAIRS_DROP(r, c)) continue;
       const klass = VERIFY_OVERRIDE ? VERIFY_OVERRIDE(r, c) : 'win';
-      pairs.push({ ref_dir: r, cand_dir: c, verdict: { klass, delta_pct: 2.0, band_pct: 0.5, reason: 'stub' },
+      pairs.push({ ref_dir: r, cand_dir: c, verdict: { klass, delta_pct: VDELTA_OVERRIDE ? VDELTA_OVERRIDE(r, c) : 2.0,
+                                                         band_pct: 0.5, reason: 'stub' },
                    engagement: { forward: true, backward: true }, comparison: {},
                    carried: CARRIED_OVERRIDE !== undefined ? CARRIED_OVERRIDE : { ok: true, lost: [], slots: {} },
                    ...(l1k ? { l1: L1V_OVERRIDE !== undefined ? L1V_OVERRIDE(r, c, prompt)
@@ -189,7 +191,7 @@ function stubFor(prompt) {
   if (is('PHASE=gate')) {
     if (AUDIT_OVERRIDE !== undefined) return AUDIT_OVERRIDE;
     return { l0: { ...(L0X_OVERRIDE || {}), pass: true, oracle: ORACLE_OVERRIDE !== undefined ? ORACLE_OVERRIDE
-                                      : { kind: 'template', template_version: 2, scores_every_output: true } },
+                                      : { kind: 'template', template_version: 2, scores_every_output: true, task_dir: '/work/tasks/t' } },
              l1: { pass: true }, l2_recommended: false, risk_class: 'low',
              main_grad_contract: MGC_OVERRIDE !== undefined ? MGC_OVERRIDE : { applicable: true, passed: true },
              kb_rejection_card: null };
@@ -666,7 +668,7 @@ async function dryRun(args) {
     ORACLE_OVERRIDE = { kind: 'custom', template_version: null, scores_every_output: false };
     const { result: o2 } = await dryRun(base);
     ok(o2.accepted.length === 0, 'a custom oracle not confirmed to score every output cannot accept');
-    ORACLE_OVERRIDE = { kind: 'custom', template_version: null, scores_every_output: true };
+    ORACLE_OVERRIDE = { kind: 'custom', template_version: null, scores_every_output: true, task_dir: '/work/tasks/t' };
     const { result: o3 } = await dryRun(base);
     ok(o3.accepted.length > 0, 'a custom oracle confirmed to score every output is accepted');
     ORACLE_OVERRIDE = null;
@@ -841,6 +843,26 @@ async function dryRun(args) {
     ok(false, `#11 binding cases threw: ${e && e.stack}`);
   }
   REFBIND_OVERRIDE = undefined; SETUP_BARE = undefined; CONFIG_OVERRIDE = null;
+
+  // ---- low-severity audit items (2026-10-26) --------------------------------------------------------
+  try {
+    ORACLE_OVERRIDE = { kind: 'template', template_version: 2, scores_every_output: true, task_dir: '/work/tasks/other_head' };
+    const { result: a7 } = await dryRun(base);
+    ORACLE_OVERRIDE = undefined;
+    ok(a7.accepted.length === 0, 'ORCH-A7: L0 from another task\'s oracle cannot accept');
+    // MS-6: the reported pair +2.0%, the other measured pairing -1.5%
+    VERIFY_OVERRIDE = (r) => (r.includes('gref2_') ? 'no_win' : 'win');
+    VDELTA_OVERRIDE = (r, c) => (r.includes('gref2_') ? -1.5 : 2.0);   // median of {2.0, -1.5} = 0.25 <= band 0.5
+    const { result: m6 } = await dryRun(base);
+    VDELTA_OVERRIDE = undefined;
+    const { result: m6b } = await dryRun(base);
+    VERIFY_OVERRIDE = undefined;
+    ok(m6.accepted.length === 0, 'MS-6: a reported win whose median over all measured pairings is in band is refused (best-of-k)');
+    ok(m6b.accepted.length > 0, 'MS-6: ...and accepted when the pairings agree');
+  } catch (e) {
+    ok(false, `low-severity cases threw: ${e && e.stack}`);
+  }
+  ORACLE_OVERRIDE = undefined; VERIFY_OVERRIDE = undefined;
 
   // An opts.phase that is not a meta.phases title opens an ad-hoc group in /workflows and leaves the
   // declared phase reading "not started" though its agent ran (run wf_becee9a0-c6f, 2026-10-20).

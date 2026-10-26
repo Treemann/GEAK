@@ -50,7 +50,9 @@ def _decoder_layer_cls(model_dir):
 
 
 def parse():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    # allow_abbrev=False: an abbreviated flag (--hf-bal on) parsed fine but bypassed the probe's identity capture
+    # and the lmce argv fix, which match full names (audit ID-6).
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0], allow_abbrev=False)
     # Megatron vocabulary, translated below. Names must match train_probe._IDENTITY_PAIR_KEYS.
     ap.add_argument("--load", required=True, help="HF model directory")
     ap.add_argument("--tokenizer-model", required=True)

@@ -550,6 +550,17 @@ function verifyDecision(ver, refLegOrDir, candLegOrDir, needEngagement, opts) {
         `${(prim.l1.failures || []).join('; ') || prim.l1.error || prim.l1.reason || 'pass=' + prim.l1.pass}`
       : 'the verifier output lacks its L1 recomputation for the reported pair' };
   }
+  // Not best-of-k (audit MS-6): with several measured pairings the Integrator picked the primary, which raised
+  // the null p95 from 0.11% to 0.21%. The MEDIAN delta over all judged pairings must clear the band too.
+  const ds = pairs.filter((p) => p.verdict && typeof p.verdict.delta_pct === 'number').map((p) => p.verdict.delta_pct)
+    .sort((x, y) => x - y);
+  if (ds.length > 1) {
+    const med = ds.length % 2 ? ds[(ds.length - 1) / 2] : (ds[ds.length / 2 - 1] + ds[ds.length / 2]) / 2;
+    if (!(med > prim.verdict.band_pct)) {
+      return { ok: false, table, why: `the reported pair wins (+${prim.verdict.delta_pct}%) but the median over all ` +
+        `${ds.length} measured pairings is ${med.toFixed(3)}% <= band ${prim.verdict.band_pct}%: best-of-k, not a win` };
+    }
+  }
   return { ok: true, table, delta_pct: prim.verdict.delta_pct, band_pct: prim.verdict.band_pct,
            l1: prim.l1 ? { pass: prim.l1.pass, recomputed: prim.l1.recomputed || null } : null };
 }
@@ -623,7 +634,11 @@ function comparable(ref, cand, allowedImpl) {
   // v6 leg records it); older legs cannot carry it and are refused by the schema check above anyway
   // unless both are old.
   // hf_sft.py: the HF training loop (recorded on HF legs only, DECISIONS 4.67); absent on both Megatron legs.
-  const HARNESS_KEYS = ['rocm_compat.py', 'overlay_train.py', 'hf_sft.py', 'image_id'];
+  // rocm_compat.py patches MEGATRON; the HF loop never imports it, so a rocm_compat change must not make an HF
+  // pair incomparable (audit ID-10 / HFC-5). An HF leg is one whose harness records hf_sft.py.
+  const hfPair = !!((ref.harness || {})['hf_sft.py'] || (cand.harness || {})['hf_sft.py']);
+  const HARNESS_KEYS = hfPair ? ['overlay_train.py', 'hf_sft.py', 'image_id']
+                              : ['rocm_compat.py', 'overlay_train.py', 'hf_sft.py', 'image_id'];
   const rh = ref.harness, ch = cand.harness;
   if (!(rh && ch)) {
     if (Math.max(Number(ref.digest_schema) || 0, Number(cand.digest_schema) || 0) >= 6) {
@@ -745,6 +760,12 @@ function gateVerdict(spec) {
     return { accepted: false, klass: 'tmean_veto', tmean_delta_pct: tm,
              reason: `median +${deltaPct.toFixed(2)}% > band ${band.toFixed(2)}%, but the 10%-trimmed mean of the same ` +
                      `per-step ratios is ${tm.toFixed(2)}% (<= band): slower on a minority of steps, no total-time win`, ...base };
+  }
+  // The band is an SE over the paired sample; fewer than 12 steps cannot carry it (audit MS-2/8).
+  const pSteps = spec.comparison && spec.comparison.paired ? Number(spec.comparison.paired.steps) : NaN;
+  if (deltaPct > band && pairedOk && Number.isFinite(pSteps) && pSteps < 12) {
+    return { accepted: false, klass: 'inconclusive_noise',
+             reason: `+${deltaPct.toFixed(2)}% > band ${band.toFixed(2)}%, but over only ${pSteps} paired steps (< 12)`, ...base };
   }
   if (deltaPct > band) return { accepted: true, klass: 'win', reason: `+${deltaPct.toFixed(2)}% > band ${band.toFixed(2)}%`,
                                 ...(Number.isFinite(tm) ? { tmean_delta_pct: tm } : {}), ...base };
@@ -1040,7 +1061,11 @@ const SETUP_SCHEMA = obj({ baseline_legs: { type: 'array', items: LEG, minItems:
   warmup_steps: { type: 'number' }, pad_fraction_pct: { type: 'number' } }, ['baseline_legs']);
 const PROFILE_SCHEMA = obj({ buckets: { type: 'object' }, top_n: arrObj,
   config_diagnosis: { type: 'object' }, rank_skew_pct: { type: 'number' } }, ['top_n']);
-const STRATEGY_SCHEMA = obj({ head_candidates: arrObj, stop: { type: 'boolean' },
+// Each head must carry what the ranking and the stop rule read (audit ORCH-A10: a missing attainable_speedup
+// silently ranked a head at 0 expected gain).
+const HEAD = obj({ critical_path_share_pct: { type: 'number' }, attainable_speedup: { type: 'number' } },
+                 ['critical_path_share_pct', 'attainable_speedup']);
+const STRATEGY_SCHEMA = obj({ head_candidates: { type: 'array', items: HEAD }, stop: { type: 'boolean' },
   reasoning: { type: 'string' } }, ['head_candidates']);
 const EXTRACT_SCHEMA = obj({ task_dir: { type: 'string' }, op: { type: 'string' },
   has_backward: { type: 'boolean' }, autograd: { type: 'boolean' }, engagement: { type: 'object' } },
@@ -1070,7 +1095,7 @@ const L0_VERDICT = obj({ pass: { type: 'boolean' }, reason: { type: 'string' },
   out_bit_identical: { type: ['boolean', 'null'] }, per_output: { type: ['object', 'null'] },
   oracle: obj({ kind: { type: 'string', enum: ['template', 'custom'] },
     template_version: { type: ['number', 'null'] }, scores_every_output: { type: 'boolean' },
-    task_dir: { type: 'string' } }, ['kind', 'template_version', 'scores_every_output']) }, ['pass', 'oracle']);
+    task_dir: { type: 'string' } }, ['kind', 'template_version', 'scores_every_output', 'task_dir']) }, ['pass', 'oracle']);
 const AUDIT_SCHEMA = obj({ l0: L0_VERDICT, l1: VERDICT, main_grad_contract: MGC,
   l2_recommended: { type: 'boolean' }, risk_class: { type: 'string' },
   // Path of the KB card written back to the kernel layer on a reject, or null on a pass. Declared so
@@ -1266,7 +1291,9 @@ const measuredFloor = Number(setup.across_job_band_pct) || 0;
 // this box today and systematically UNDERSTATES day-scale drift (0.5B: 0.1002% run-local against a
 // 0.4966% worst over 37 pairs spanning days). So it is a widener, never a substitute for the floor.
 runAcrossJobPct = measuredFloor;
-const runFloor = Math.max(ACROSS_JOB_FLOOR_PCT, measuredFloor * BAND_SAFETY / 2);
+// The SAME floor term noiseBandPct applies (max(floor, BAND_SAFETY x measured)): this was half of it, so the stop
+// rule and the verifier's --floor ran on a band half as wide as the gate's (audit MS-5).
+const runFloor = Math.max(ACROSS_JOB_FLOOR_PCT, measuredFloor * BAND_SAFETY);
 log0(`baseline: ${baseline && baseline.useful_tok_s_per_gpu} useful tok/s/GPU; ` +
      `measured across-job ${measuredFloor}% -> run floor ${runFloor.toFixed(3)}%`);
 wfReturn.baseline = baseline;
@@ -1484,11 +1511,11 @@ if (want('config')) {
       // (step-1 grad_norm 26.7 vs 68.0 in the production recipe). Had flash measured faster, it would
       // have been accepted.
       const l1 = sweep.l1 && typeof sweep.l1.pass === 'boolean' ? sweep.l1 : null;
-      // A lever may move exactly its own implementation keys (and NVTE_* backend env), nothing else.
+      // A lever may move exactly its own implementation keys and the env knobs it DECLARES (env_added) --
+      // an NVTE_* backend knob too, by name. Every NVTE_* used to be allowed wholesale (audit ID-4).
       const sweepEnv = leverEnv(sweep.env_added);
       const leverImpl = [...leverImplDelta(sweep.flags_added), ...Object.keys(sweepEnv).map((k) => `env:${k}`),
-        ...Object.keys({ ...((sweep.ref || {}).implementation || {}), ...((sweep.cand || {}).implementation || {}) })
-          .filter((k) => k.startsWith('NVTE_'))];
+        ...Object.keys(sweepEnv).filter((k) => k.startsWith('NVTE_'))];
       const cv = gateVerdict({ ref: sweep.ref, cand: sweep.cand, comparison: sweep.comparison,
                                l1, mode: 'deep', allowedImpl: leverImpl });
       const cb = refBinding(stackRef, sweep.ref);
@@ -1740,11 +1767,16 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
   // The oracle that produced L0 must score every output (DECISIONS 4.60): a template oracle from
   // build_task_dir >= v2 (output count / coverage / shape gated), or a custom one the Auditor confirms.
   const orc = audit && audit.l0 && audit.l0.oracle;
-  const orcOk = !!orc && orc.scores_every_output === true &&
+  // The oracle must be THIS head's task (audit ORCH-A7: task_dir was optional and never compared).
+  const tdName = (x) => String(x || '').replace(/\/+$/, '').split('/').pop();
+  const orcTaskOk = !!orc && !!orc.task_dir && tdName(orc.task_dir) === tdName(optimized.ext.task_dir);
+  const orcOk = !!orc && orcTaskOk && orc.scores_every_output === true &&
     (orc.kind === 'custom' || (orc.kind === 'template' && Number(orc.template_version) >= 2));
   if (v.accepted && !orcOk) {
     Object.assign(v, { accepted: false, klass: 'no_correctness_gate',
-      reason: orc ? `L0 oracle cannot vouch for every output (kind=${orc.kind}, template_version=` +
+      reason: orc && !orcTaskOk ? `L0 ran the oracle of task ${tdName(orc.task_dir) || '(none)'}, not this head's ` +
+                                  `${tdName(optimized.ext.task_dir)}`
+            : orc ? `L0 oracle cannot vouch for every output (kind=${orc.kind}, template_version=` +
                     `${orc.template_version}, scores_every_output=${orc.scores_every_output}): rebuild it ` +
                     'with scripts/rebuild_oracle.py' : 'L0 did not report which oracle it ran' });
   }
@@ -1807,7 +1839,12 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
     if (r.profile) profile = r.profile;
     // Re-apply the skips: a re-profile rebuilds the queue from scratch and would otherwise
     // re-introduce a head whose verdict is already known.
-    if (r.strategy && r.strategy.head_candidates) headQueue = rankQueue(applySkips(r.strategy.head_candidates.slice()));
+    // ...and drop heads THIS run already decided (audit ORCH-A10: a re-profile re-queued them).
+    const decided = new Set([...wfReturn.accepted, ...(wfReturn.rejected || [])].map((x) => x.head));
+    if (r.strategy && r.strategy.head_candidates) {
+      headQueue = rankQueue(applySkips(r.strategy.head_candidates.slice()))
+        .filter((x) => !decided.has(x.short_name || x.kernel));
+    }
   } else {
     if (v.klass === 'banked_memory') {
       bankedMemory.push({ head: record.head, pct: v.banked_memory_pct });
