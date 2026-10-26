@@ -172,7 +172,8 @@ pass before it is called safe to train with.
    CLEARED whatever quality_ab_final says. You may run the check for your own information; it is not used.
 3. **Verify engagement** on every cand leg: per overlay, the training buckets show fallback 0. The
    eval-mode fallbacks of rope / swiglu / attn / lmhead are expected (no_grad path).
-4. **Judge** with `QUALITY_VERDICT <prefix> --cand cand` (plus `--ctrl QUALITY_CTRL` when set). Return its `cleared`, `quality` and
+4. **Judge** with `QUALITY_VERDICT <prefix> --cand cand` (plus `--ctrl QUALITY_CTRL` when set; the default
+   `--looks 2` applies the two-look Pocock boundary, DECISIONS 4.86 -- the orchestrator recomputes it anyway). Return its `cleared`, `quality` and
    `stability` VERBATIM, plus `legs_prefix` (REQUIRED: the orchestrator has the gate_verifier re-run
    quality_ab_final.py on it and derives `cleared` from the recomputed strings; without it the verdict is
    NOT CLEARED). Do not soften a NOT CLEARED. A NOT CLEARED stack still

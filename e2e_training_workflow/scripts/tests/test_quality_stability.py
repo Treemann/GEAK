@@ -24,7 +24,9 @@ def verdict(root, held_c, bump=0.0):
     return json.loads(out.strip().splitlines()[-1])
 for name, ds, bump, want in (
         ("clean", [0.0001, -0.0002, 0.0, 0.0001, -0.0001], 0.0, "PASS-stability: 0 severe"),
-        ("one seed held-out +0.273, max10 0.145", [0.0001, -0.0002, 0.0, 0.273, -0.0001], 0.145, "FAIL-stability"),
+        # DECISIONS 4.86: ONE catastrophic leg is within the recipe's background rate -> INCONCLUSIVE (extend)
+        ("one seed held-out +0.273, max10 0.145", [0.0001, -0.0002, 0.0, 0.273, -0.0001], 0.145, "INCONCLUSIVE-stability"),
+        ("two seeds held-out +0.273", [0.273, -0.0002, 0.0, 0.273, -0.0001], 0.0, "FAIL-stability"),
         ("one seed held-out +0.03 (1.5 yardsticks)", [0.0001, -0.0002, 0.0, 0.03, -0.0001], 0.0, "PASS-stability: 1 severe"),
         ("two seeds held-out +0.03", [0.03, -0.0002, 0.0, 0.03, -0.0001], 0.0, "INCONCLUSIVE-stability: 2 severe")):
     root = tempfile.mkdtemp(prefix="qstab_")
@@ -33,6 +35,24 @@ for name, ds, bump, want in (
         ok(v["stability"].startswith(want), f"{name}: {v['stability']}")
     finally:
         shutil.rmtree(root)
+# DECISIONS 4.86: a catastrophic BASE leg is flagged and its seed leaves the quality statistic; Pocock bound.
+root = tempfile.mkdtemp(prefix="qstab_")
+try:
+    for i, s in enumerate((11, 22, 33, 44, 55)):
+        leg(root, f"q_ref_seed{s}", 1.30 + 0.001 * i + (0.3 if s == 33 else 0.0))   # seed 33: the BASE leg is bad
+        leg(root, f"q_cand_seed{s}", 1.30 + 0.001 * i)
+    out = subprocess.run([sys.executable, QF, os.path.join(root, "q"), "--base", "ref", "--cand", "cand"],
+                         capture_output=True, text=True).stdout
+    v = json.loads(out.strip().splitlines()[-1])
+    ok(v["base_arm_catastrophic"] == [33] and "base arm: 1 catastrophic" in v["stability"],
+       f"a catastrophic base leg is flagged and dropped from quality ({v['base_arm_catastrophic']})")
+    ok(v["alpha"] == 0.0294 and "97.06%" in v["quality"], "two looks by default: Pocock 0.0294 one-sided")
+    out1 = subprocess.run([sys.executable, QF, os.path.join(root, "q"), "--base", "ref", "--cand", "cand", "--looks", "1"],
+                          capture_output=True, text=True).stdout
+    ok(json.loads(out1.strip().splitlines()[-1])["alpha"] == 0.05, "--looks 1: a single-look test at 0.05")
+finally:
+    shutil.rmtree(root)
+
 # Audit 2026-10-25 G-7 / ORCH-A8: EVERY outcome prints one JSON line with cleared derived from the strings, and a
 # cand leg that stopped on a non-finite loss is FAIL-stability, not INCOMPLETE.
 def run(root, *extra):

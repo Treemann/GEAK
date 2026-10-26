@@ -1932,7 +1932,10 @@ async function recomputeQuality(dq, prefixes) {
     quality: `NOT CLEARED: ${why}; the Director reported: ${dq.quality}` });
   if (STACK === 'hf_trl' && !QUALITY_CTRL) return refuse('an HF outcome test needs the in-run control (quality_ctrl)');
   if (prefixes.some((x) => !x)) return refuse('no legs_prefix, so the verdict cannot be recomputed');
-  const qa = [...prefixes.map(String), '--cand', 'cand', '--base', 'ref', ...(QUALITY_CTRL ? ['--ctrl', String(QUALITY_CTRL)] : [])];
+  // Two looks (Pocock 0.0294 at each) whenever the one pre-registered extension is possible (DECISIONS 4.86).
+  const looks = QUALITY_EXTEND_SEEDS === 'none' ? '1' : '2';
+  const qa = [...prefixes.map(String), '--cand', 'cand', '--base', 'ref', '--looks', looks,
+              ...(QUALITY_CTRL ? ['--ctrl', String(QUALITY_CTRL)] : [])];
   const ver = await safeAgentStub('gate_verifier', 'verify',
     { KIND: 'quality', QUALITY_ARGS: qa, GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts` },
     'Run quality_ab_final.py with exactly QUALITY_ARGS and return its LAST stdout line (JSON) verbatim as ' +

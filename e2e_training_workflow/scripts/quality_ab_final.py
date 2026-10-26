@@ -60,6 +60,54 @@ def t_one_sided(n):
     return _T95.get(n - 1, 1.645)
 
 
+# Group-sequential boundary (audit 2026-10-25 #7). The protocol may take a SECOND look (the one pre-registered
+# seed extension). Testing both looks at one-sided 5% gives an overall type-I ~8.4% (two simulations); Pocock's
+# boundary for two equally spaced looks spends 0.0294 one-sided at EACH look, overall 5%. `--looks 2` (the
+# default: every outcome test may be extended) applies it at both looks; `--looks 1` is a single-look test.
+POCOCK_2 = 0.0294
+
+
+def _betacf(a, b, x):
+    m_max, eps = 300, 3e-14
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c, d = 1.0, 1.0 - qab * x / qap
+    d = 1.0 / (d if abs(d) > 1e-300 else 1e-300)
+    h = d
+    for m in range(1, m_max + 1):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d; c = 1.0 + aa / c
+        d = 1.0 / (d if abs(d) > 1e-300 else 1e-300); h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d; c = 1.0 + aa / c
+        d = 1.0 / (d if abs(d) > 1e-300 else 1e-300); de = d * c; h *= de
+        if abs(de - 1.0) < eps:
+            break
+    return h
+
+
+def _t_sf(t, df):
+    """P(T > t) for Student t (t >= 0), via the regularized incomplete beta."""
+    x = df / (df + t * t)
+    lb = math.lgamma(df / 2 + 0.5) - math.lgamma(df / 2) - math.lgamma(0.5)
+    front = math.exp(lb + (df / 2) * math.log(x) + 0.5 * math.log(1 - x)) if 0 < x < 1 else 0.0
+    ib = front * _betacf(df / 2, 0.5, x) / (df / 2) if x < (df / 2 + 1) / (df / 2 + 0.5 + 2) else \
+        1 - math.exp(lb + (df / 2) * math.log(x) + 0.5 * math.log(1 - x)) * _betacf(0.5, df / 2, 1 - x) / 0.5
+    return 0.5 * ib
+
+
+def t_quantile_upper(alpha, df):
+    """t with P(T > t) = alpha (bisection)."""
+    lo, hi = 0.0, 100.0
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if _t_sf(mid, df) > alpha:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
 def t_crit(n):
     """Two-sided 95% critical t for n paired seeds (df = n - 1); the normal 1.96 past the table."""
     return _T975.get(n - 1, 1.96)
@@ -132,6 +180,9 @@ def main():
     ap.add_argument("--ctrl", default=None,
                     help="measure the yardstick IN THIS RUN from a positive-control arm (e.g. ctrl70) instead of "
                          "the fixed P0-4d value; the control must then be DETECTED (mean > 0, t >= 2.776)")
+    ap.add_argument("--looks", type=int, choices=(1, 2), default=2,
+                    help="2 (default): the test may be extended once -> Pocock 0.0294 one-sided at each look; "
+                         "1: a single-look test (e.g. a pre-registered study without extension) -> 0.05")
     ap.add_argument("--rule", choices=("noninf", "point"), default="noninf",
                     help="noninf (default since 2026-10-22): upper one-sided 95%% bound of mean d <= margin; "
                          "point: the pre-registered rule of the outcome tests up to 2026-10-22")
@@ -157,7 +208,7 @@ def main():
     tc = t_crit(len(seeds))
     if len(seeds) != 5:
         print(f"NOTE: {len(seeds)} seeds, not the pre-registered 5 -- t critical = {tc} (df {len(seeds) - 1})")
-    rows, d, sev = [], [], []
+    rows, d, sev, sev_b = [], [], [], []
     for s in seeds:
         P = where[s]
         r, c = f"{P}_{a.base}_seed{s}", f"{P}_{a.cand}_seed{s}"
@@ -176,9 +227,14 @@ def main():
             return
         diff = [x["loss"] - y["loss"] for x, y in zip(sc, sr)]
         m10 = max(statistics.fmean(diff[i:i + WIN]) for i in range(AFTER, len(diff) - WIN + 1))
+        # The SAME episode measure for the base arm against the cand (audit HFC-8): a base leg that diverged
+        # pulls d toward "pass" and used to go unflagged (4.70 seed 8124).
+        m10b = max(statistics.fmean([-x for x in diff[i:i + WIN]]) for i in range(AFTER, len(diff) - WIN + 1))
         d.append(hc - hr)
         sev.append(m10)
-        print(f"seed {s}: held-out {a.base} {hr:.6f} {a.cand} {hc:.6f} d {hc - hr:+.5f} | max10 {m10:.3f}")
+        sev_b.append(m10b)
+        print(f"seed {s}: held-out {a.base} {hr:.6f} {a.cand} {hc:.6f} d {hc - hr:+.5f} | max10 {m10:.3f} "
+              f"(base arm {m10b:.3f})")
     yard, ctrl_note = YARDSTICK, "fixed (P0-4d)"
     if a.ctrl:
         cd = []
@@ -198,9 +254,21 @@ def main():
             return
         yard, ctrl_note = cm, f"measured in-run from {a.ctrl} (t {ct:.2f})"
     margin = 0.25 * yard
-    m, sd = statistics.fmean(d), statistics.stdev(d)
-    t = m / (sd / math.sqrt(len(d))) if sd > 0 else math.copysign(math.inf, m)
-    upper = m + t_one_sided(len(d)) * sd / math.sqrt(len(d))
+    # A seed whose BASE leg is catastrophic has no valid reference: its d says nothing about the cand and is
+    # dropped from the quality statistic (reported). Cand-arm catastrophes stay in d -- they count against it.
+    base_cat = [s for s, x, dd in zip(seeds, sev_b, d) if x > CATASTROPHIC or -dd > HELDOUT_CATASTROPHIC_Y * yard]
+    dq = [dd for s, dd in zip(seeds, d) if s not in base_cat]
+    if len(dq) < 3:
+        emit(f"INCONCLUSIVE-quality: only {len(dq)} seed(s) with a valid base leg (base-arm catastrophic: {base_cat})",
+             "INCONCLUSIVE-stability: base arm unreliable", seeds=seeds, base_arm_catastrophic=base_cat)
+        return
+    if base_cat:
+        print(f"NOTE: base-arm catastrophic on seed(s) {base_cat}: dropped from the quality statistic")
+    alpha = POCOCK_2 if a.looks == 2 else 0.05
+    m, sd = statistics.fmean(dq), statistics.stdev(dq)
+    t = m / (sd / math.sqrt(len(dq))) if sd > 0 else math.copysign(math.inf, m)
+    t_up = t_quantile_upper(alpha, len(dq) - 1)
+    upper = m + t_up * sd / math.sqrt(len(dq))
     def _point():
         if m > margin and t >= tc:
             return f"FAIL-quality: mean {m:+.5f} > margin {margin:.5f}, t {t:.2f}"
@@ -211,9 +279,9 @@ def main():
         if m > margin and t >= tc:
             return f"FAIL-quality: mean {m:+.5f} > margin {margin:.5f}, t {t:.2f}"
         if upper <= margin:
-            return (f"PASS-quality: upper 95% bound {upper:+.5f} <= margin {margin:.5f} "
+            return (f"PASS-quality: upper {100 * (1 - alpha):.2f}% bound {upper:+.5f} <= margin {margin:.5f} "
                     f"(mean {m:+.5f}, 0.25 x yardstick {yard:.5f}, {ctrl_note})")
-        return (f"INCONCLUSIVE-quality: upper 95% bound {upper:+.5f} > margin {margin:.5f} "
+        return (f"INCONCLUSIVE-quality: upper {100 * (1 - alpha):.2f}% bound {upper:+.5f} > margin {margin:.5f} "
                 f"(mean {m:+.5f}, t {t:.2f}, {ctrl_note}) -- add seeds")
     qual = _noninf() if a.rule == "noninf" else _point()
     other = _point() if a.rule == "noninf" else _noninf()
@@ -228,13 +296,25 @@ def main():
     d_cat = [x > HELDOUT_CATASTROPHIC_Y * yard for x in d]
     n_cat = sum((x > CATASTROPHIC) or c for x, c in zip(sev, d_cat))
     n_sev = sum((x > SEVERE) or ds for x, ds in zip(sev, d_sev))
-    if n_cat:
-        stab = f"FAIL-stability: {n_cat} catastrophic leg(s)"
-    elif n_sev <= 1:
-        stab = f"PASS-stability: {n_sev} severe, 0 catastrophic"
+    # Catastrophic legs occur on HEALTHY stacks too: the production recipe's late divergence is chaotic and
+    # kernel-independent (4.69, P0-4q 4.85): 2 of 80 scheduled-recipe arm legs on disk (2.5% per leg), also on
+    # bare legs. "Any catastrophic leg = FAIL" therefore failed a healthy stack ~12% of the time at n = 5 (4.82).
+    # FAIL needs >= 2 catastrophic cand legs (P <= 0.6% at n = 5, <= 2.6% at n = 10 under that rate); ONE is
+    # INCONCLUSIVE (it may be extended) and never PASS at n < 10. A catastrophic held-out seed still sinks the
+    # quality bound on its own, so a lone event cannot clear a stack through this rule (DECISIONS 4.86).
+    n_cat_b = len(base_cat)
+    tag = f"{n_sev} severe, {n_cat} catastrophic (base arm: {n_cat_b} catastrophic)"
+    if n_cat >= 2:
+        stab = f"FAIL-stability: {tag}"
+    elif n_cat == 1 and len(seeds) < 10:
+        stab = f"INCONCLUSIVE-stability: {tag} -- one event is within the recipe's background rate; extend"
+    elif n_sev - n_cat <= 1:
+        stab = f"PASS-stability: {tag}"
     else:
-        stab = f"INCONCLUSIVE-stability: {n_sev} severe, 0 catastrophic"
-    emit(qual, stab, rule=a.rule, upper95=round(upper, 6), seeds=seeds, d=[round(x, 6) for x in d],
+        stab = f"INCONCLUSIVE-stability: {tag}"
+    emit(qual, stab, rule=a.rule, looks=a.looks, alpha=alpha, upper=round(upper, 6), upper95=round(upper, 6),
+         seeds=seeds, d=[round(x, 6) for x in d], base_arm_catastrophic=base_cat,
+         max10_base=[round(x, 3) for x in sev_b],
          mean=round(m, 6), t=round(t, 3), max10=[round(x, 3) for x in sev], heldout_severe=d_sev,
          heldout_catastrophic=d_cat, yardstick=round(yard, 6))
 
