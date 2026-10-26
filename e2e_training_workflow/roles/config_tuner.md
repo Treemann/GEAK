@@ -151,3 +151,8 @@ Return JSON:
  "l1": {"...trajectory_gate.py compare stdout verbatim, MUST contain a boolean pass..."},
  "notes": "..."}
 ```
+
+## Re-measure on longer legs (`REMEASURE_OF` in your INPUTS, DECISIONS 4.88)
+The first pair's median and 10%-trimmed-mean estimates disagreed. Measure the SAME lever (identical
+`flags_added` / `env_added`) again with the `ITERS` you are given (doubled), fresh ref and cand legs, L1 as
+before, and return the usual JSON. Do not substitute another lever and do not reuse the first legs.

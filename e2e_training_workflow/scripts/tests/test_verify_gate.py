@@ -152,7 +152,7 @@ try:
     p = v["comparison"]["paired"]
     ok(p["delta_pct"] > 0.5 and p["tmean_delta_pct"] < 0.3,
        f"heterogeneous cand: median {p['delta_pct']}% vs trimmed mean {p['tmean_delta_pct']}%")
-    ok(v["verdict"]["klass"] == "tmean_veto", f"the gate vetoes the median-only win ({v['verdict'].get('klass')})")
+    ok(v["verdict"]["klass"] == "estimators_disagree", f"the gate vetoes the median-only win ({v['verdict'].get('klass')})")
     hom = run(ref, leg(root, "cand_hom", 0.97, overlay="attn"))
     ok(hom["verdict"]["klass"] == "win", f"a uniform 3% gain still wins ({hom['verdict'].get('klass')})")
 finally:

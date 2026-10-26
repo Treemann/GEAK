@@ -62,7 +62,8 @@ const refExpected = (prompt) => {
   }
   return null;
 };
-let VDELTA_OVERRIDE;                        // (refDir, candDir) -> the verifier's delta_pct for that pairing
+let VDELTA_OVERRIDE;
+let INTEG_CMP_SEQ = null;                  // queued `comparison` objects, one per integrate call                        // (refDir, candDir) -> the verifier's delta_pct for that pairing
 let REFBIND_OVERRIDE;
 let SETUP_BARE;                             // true: Setup ignores BASE_OVERLAY_CMD (a stacked run with a bare baseline)                       // (legOverrides) for the integrate ref leg; undefined = bound
 let INTEG_N = 0;
@@ -130,7 +131,7 @@ function stubFor(prompt) {
     }
     return { lever: 'comm_overlap', flags_added: ['--overlap-grad-reduce'], ceiling_pct: 2.27,
              ref: leg(), cand: leg({ useful_tok_s_per_gpu: 866 }),
-             comparison: { delta_pct: 1.9, window_artifact_pct: 0.05 },
+             comparison: INTEG_CMP_SEQ && INTEG_CMP_SEQ.length ? INTEG_CMP_SEQ.shift() : { delta_pct: 1.9, window_artifact_pct: 0.05 },
              config_digest_delta: { key: 'overlap-grad-reduce', ref: null, cand: 'true' },
              peak_reserved_mb: { ref: 80578, cand: 80578 },
              memory_conversion: { freed_mb: 0, would_buy: null },
@@ -149,7 +150,7 @@ function stubFor(prompt) {
              legs_measured: { refs: [`/work/runs/gref_${INTEG_N}`, `/home/u/geak_train/runs/gref_${INTEG_N}/probe`,
                                      `/work/runs/gref2_${INTEG_N}`],
                               cands: [`/work/runs/gcand_${INTEG_N}`] },
-             comparison: { delta_pct: 5.8, window_artifact_pct: 0.1 },
+             comparison: INTEG_CMP_SEQ && INTEG_CMP_SEQ.length ? INTEG_CMP_SEQ.shift() : { delta_pct: 5.8, window_artifact_pct: 0.1 },
              engagement: ENG_OVERRIDE !== undefined ? ENG_OVERRIDE : { forward: true, backward: true },
              overlay_path: '/work/ovl', notes: 'n' };
   }
@@ -863,6 +864,31 @@ async function dryRun(args) {
     ok(false, `low-severity cases threw: ${e && e.stack}`);
   }
   ORACLE_OVERRIDE = undefined; VERIFY_OVERRIDE = undefined;
+
+  // ---- DECISIONS 4.88: median vs trimmed-mean disagreement -> ONE re-gate on legs twice as long ----------
+  try {
+    const cmp = (tm) => ({ delta_pct: 2.0, window_artifact_pct: 0.1,
+      paired: { delta_pct: 2.0, ratio_iqr_pct: 0.4, steps: 22, same_batches: true, tmean_delta_pct: tm } });
+    INTEG_CMP_SEQ = [cmp(-0.2), cmp(1.9)];
+    const { result: e1, calls: ce1 } = await dryRun({ ...base, budget: 1 });
+    const ip = ce1.prompts.filter((p) => p.includes('PHASE=integrate'));
+    ok(ip.length === 2 && ip[1].includes('"ITERS": 60') && ip[1].includes('REGATE_OF'),
+      `disagreeing estimators trigger ONE re-gate at 60 iterations (${ip.length} integrate calls)`);
+    ok(e1.accepted.length === 1, 'the longer pair agrees -> accepted on the longer pair');
+    INTEG_CMP_SEQ = [cmp(-0.2), cmp(-0.3)];
+    const { result: e2, calls: ce2 } = await dryRun({ ...base, budget: 1 });
+    ok(e2.accepted.length === 0 && ce2.prompts.filter((p) => p.includes('PHASE=integrate')).length === 2,
+      'still disagreeing on the longer pair -> refused, and no third gate');
+    INTEG_CMP_SEQ = [cmp(-1.4), cmp(1.8)];
+    const { result: e3, calls: ce3 } = await dryRun({ ...base, deep_mode: 'true', budget: 0 });
+    const cp3 = ce3.prompts.filter((p) => p.includes('PHASE=config'));
+    const lv3 = ((((e3 || {}).config_sweep || {}).levers || [])[0] || {}).verdict || {};
+    ok(cp3.length === 2 && cp3[1].includes('"ITERS": 60') && cp3[1].includes('REMEASURE_OF') && lv3.accepted === true,
+      `a config lever whose estimators disagree is re-measured once on longer legs, then decided (${lv3.klass})`);
+  } catch (e) {
+    ok(false, `re-gate cases threw: ${e && e.stack}`);
+  }
+  INTEG_CMP_SEQ = null;
 
   // An opts.phase that is not a meta.phases title opens an ad-hoc group in /workflows and leaves the
   // declared phase reading "not started" though its agent ran (run wf_becee9a0-c6f, 2026-10-20).

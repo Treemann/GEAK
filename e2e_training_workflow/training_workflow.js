@@ -757,9 +757,10 @@ function gateVerdict(spec) {
   // median-minus-trimmed-mean gap is p95 0.62 / p99 0.94 pts, so this is a second, independent estimate.
   const tm = spec.comparison && spec.comparison.paired ? Number(spec.comparison.paired.tmean_delta_pct) : NaN;
   if (deltaPct > band && pairedOk && Number.isFinite(tm) && tm <= band) {
-    return { accepted: false, klass: 'tmean_veto', tmean_delta_pct: tm,
+    return { accepted: false, klass: 'estimators_disagree', tmean_delta_pct: tm,
              reason: `median +${deltaPct.toFixed(2)}% > band ${band.toFixed(2)}%, but the 10%-trimmed mean of the same ` +
-                     `per-step ratios is ${tm.toFixed(2)}% (<= band): slower on a minority of steps, no total-time win`, ...base };
+                     `per-step ratios is ${tm.toFixed(2)}% (<= band): either slower on a minority of steps, or a ` +
+                     'leg too short for a mean-type estimate -- re-gate on longer legs', ...base };
   }
   // The band is an SE over the paired sample; fewer than 12 steps cannot carry it (audit MS-2/8).
   const pSteps = spec.comparison && spec.comparison.paired ? Number(spec.comparison.paired.steps) : NaN;
@@ -1430,11 +1431,35 @@ if (want('config')) {
         'named lever is the result being asked for, not a failure.'
       : 'Propose ONE Class-A lever from the Tier-0 pack, state its ceiling from the diagnosis, and ' +
         'measure it exactly as a kernel candidate is measured.';
-    const sweep = await safeAgentStub('config_tuner', 'config',
+    let sweep = await safeAgentStub('config_tuner', 'config',
       { ...benchInputs(curConfig, 'config'), DIAGNOSIS: wfReturn.config_diagnosis,
         BANDS: wfReturn.bands, CARRIED_OVERLAY: curOverlay, REQUESTED_LEVER: wantLever, REF_EXPECTED: stackRef,
         ALREADY_MEASURED: sweepRecords.map((r) => r.lever) },
       directive, { label: wantLever ? `config_tuner:${wantLever}` : undefined });
+    // Same rule as a kernel gate (DECISIONS 4.88): median and trimmed mean disagree -> ONE re-measure of THIS
+    // lever on legs twice as long. Needed most here: the NaN-from-grad-norm lever (+0.6%, validated) read trimmed
+    // means of +0.33 / -1.44 / -0.58 on three 30-step pairs.
+    if (sweep && sweep.ref && sweep.cand && !classOfLever(sweep.flags_added).cls.startsWith('B') && gatesUsed < MAX_GATES) {
+      const se = leverEnv(sweep.env_added);
+      const pre = gateVerdict({ ref: sweep.ref, cand: sweep.cand, comparison: sweep.comparison,
+        l1: { pass: true }, mode: 'deep',
+        allowedImpl: [...leverImplDelta(sweep.flags_added), ...Object.keys(se).map((k) => `env:${k}`),
+                      ...Object.keys(se).filter((k) => k.startsWith('NVTE_'))] });
+      if (pre.klass === 'estimators_disagree') {
+        const longIters = Math.max(60, 2 * ITERS);
+        log0(`ConfigSweep ${sweep.lever}: ${pre.reason}; re-measuring once at ${longIters} iterations`);
+        gatesUsed += 1;
+        const s2 = await safeAgentStub('config_tuner', 'config',
+          { ...benchInputs(curConfig, 'config_long'), ITERS: longIters, DIAGNOSIS: wfReturn.config_diagnosis,
+            BANDS: wfReturn.bands, CARRIED_OVERLAY: curOverlay, REQUESTED_LEVER: sweep.lever, REF_EXPECTED: stackRef,
+            ALREADY_MEASURED: sweepRecords.map((r) => r.lever),
+            REMEASURE_OF: { lever: sweep.lever, flags_added: sweep.flags_added, env_added: sweep.env_added || null } },
+          `RE-MEASURE the "${sweep.lever}" lever exactly as before (same flags_added / env_added) on legs twice as ` +
+          'long (ITERS is doubled): the first pair\'s median and trimmed-mean estimates disagreed.',
+          { label: `config_tuner:${sweep.lever}:long` });
+        if (s2 && s2.ref && s2.cand) sweep = Object.assign(s2, { remeasure_of: { first_comparison: sweep.comparison } });
+      }
+    }
   if (!sweep) {
     log0('ConfigSweep produced nothing; continuing to the kernel track.');
   } else {
@@ -1683,13 +1708,39 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
   if (!optimized || !optimized.kernel) { noImprove += 1; continue; }
 
   // ---- gate: exclusive whole-box A/B ----
-  const integ = await barrier.gate(async () => {
+  let integ = await barrier.gate(async () => {
     gatesUsed += 1;
     return safeAgentStub('integrator', 'integrate',
       { ...benchInputs(curConfig, `gate_${h.short_name}`), HEAD: h, TASK: optimized.ext,
         KERNEL_RESULT: optimized.kernel, CARRIED_OVERLAY: curOverlay, REF_EXPECTED: refLeg },
       'Overlay reversibly, prove engagement for forward AND backward, take a paired same-session A/B.');
   });
+  // The median and the 10%-trimmed mean of the per-step ratios disagree (DECISIONS 4.88): on 30-step legs that is
+  // usually the trimmed mean's noise (re-measured at 60 steps, all seven s8 increments agree on every estimator),
+  // sometimes a kernel slower on a minority of steps. ONE re-gate on legs twice as long decides; the second pair
+  // replaces the first for everything downstream (audit, verifier, record).
+  if (integ && integ.ref && integ.cand && gatesUsed < MAX_GATES) {
+    const pre = gateVerdict({ ref: integ.ref, cand: integ.cand, comparison: integ.comparison,
+                              l0: { pass: true }, l1: { pass: true }, mode: DEEP_MODE ? 'deep' : 'fast',
+                              allowedImpl: KERNEL_IMPL_DELTA });
+    if (pre.klass === 'estimators_disagree') {
+      const longIters = Math.max(60, 2 * ITERS);
+      log0(`  ${pre.reason}; re-gating once at ${longIters} iterations`);
+      const integ2 = await barrier.gate(async () => {
+        gatesUsed += 1;
+        return safeAgentStub('integrator', 'integrate',
+          { ...benchInputs(curConfig, `gate_${h.short_name}_long`), ITERS: longIters, HEAD: h, TASK: optimized.ext,
+            KERNEL_RESULT: optimized.kernel, CARRIED_OVERLAY: curOverlay, REF_EXPECTED: refLeg,
+            REGATE_OF: { ref: integ.ref.dir || integ.ref.probe_dir, cand: integ.cand.dir || integ.cand.probe_dir } },
+          'RE-GATE on longer legs (ITERS is doubled): the first pair\'s median and trimmed-mean estimates disagreed. ' +
+          'Same overlay, same protocol, fresh legs.');
+      });
+      if (integ2 && integ2.ref && integ2.cand) {
+        integ2.regate_of = { first_comparison: integ.comparison, reason: pre.reason };
+        integ = integ2;
+      }
+    }
+  }
   if (!integ || !integ.ref || !integ.cand) { noImprove += 1; continue; }
   // FAIL CLOSED (audit OVL-1): engagement must be PROVEN true on both paths, not merely not-false.
   const eng = integ.engagement || {};

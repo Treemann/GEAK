@@ -131,3 +131,8 @@ Return JSON (PHASE=finalize):
 `engagement_recheck.forward` / `.backward` are booleans, measured on a leg launched from the ASSEMBLED
 bundle. Anything other than `true` marks the run `bundle_not_engaged` (the orchestrator fails closed).
 When this run accepted NO kernel overlay there is nothing to re-check: return `null` for both.
+
+## Re-gate on longer legs (`REGATE_OF` in your INPUTS, DECISIONS 4.88)
+The orchestrator found the first pair's median and 10%-trimmed-mean estimates disagreeing (`compare_legs.py`
+`paired.delta_pct` vs `paired.tmean_delta_pct`). Run the SAME overlay and protocol again with the `ITERS` you are
+given (doubled), fresh legs, and return them exactly as for a normal gate. Do not reuse the first pair's legs.
