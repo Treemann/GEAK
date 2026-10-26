@@ -37,6 +37,8 @@ copy, disk check, stale locks, contaminated-attempt logs, rocm-smi unavailable =
 1022 attention oracle v2; low-severity batches. Both deliverables re-validated and re-pinned (harness at 8eaa0e3a).
 Closed later the same day: the verifier runs its own L0 (4.99), the HF token cross-check against the trainer's
 num_items_in_batch (4.100), the v2 attention oracle holdouts (4.101). No audit item is open.
+Then an adversarial review of all these fixes (wf_4c1372e4-a16) confirmed 18 defects -- all fixed (4.102); its
+stricter control-arm check refused P0-4m, and the fresh pre-registered P0-4r re-cleared the HF `bal` default (4.103).
 Consequence for users: legs measured before 2026-10-26 (no `content` record) cannot be references for fresh legs.
 
 ## OPEN AFTER THE 2026-10-23 REVIEW (owner: do all, in this order; status kept current)

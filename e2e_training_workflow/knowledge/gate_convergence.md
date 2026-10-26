@@ -2194,3 +2194,9 @@ control-arm check (4.102) now refuses it. P0-4r repeats the test with every arm 
 * verdict: `quality_ab_final.py <prefix> --base hf8 --cand cand --ctrl ctrl70 --looks 2` (in-run yardstick; Pocock
   boundary; 4.86 stability rule). CLEARED keeps `bal` as the HF default; anything else reverts the HF default to
   `--plain` (hf8 without balancing, cleared by P0-4k) until re-tested.
+
+### P0-4r RESULT (2026-10-26, runs/p04r_1026_155334_*, 15 legs, all complete): **CLEARED**
+`quality_ab_final --base hf8 --cand cand --ctrl ctrl70 --looks 2`: one-experiment check clean (all three arms the
+same recipe, the control moving only lr / min-lr); control detected (d mean +0.00637, t 91.5); PASS-quality: upper
+97.06% bound +0.00021 <= margin 0.00159 (mean +0.00002); PASS-stability: 0 severe, 0 catastrophic, base arm clean.
+The HF token cross-check agrees on all 15 legs. Per the pre-registration `bal` stays the HF default.

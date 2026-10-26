@@ -32,6 +32,8 @@ DECISIONS 4.55). Since 2026-10-23 every Megatron leg records the eps mismatch in
   * RoPE, a bf16-exact variant. The first, more accurate variant was rejected by the L1 direction rule.
 * The final configuration (hf8) is **cleared for training** by the one-epoch, 5-seed outcome test
   (P0-4k): held-out −0.00002 vs a control of +0.0065, no episodes.
+* The HF default `bal` (hf8 + token-balanced ranks) is cleared by P0-4r (2026-10-26, all arms fresh, hf8-based
+  control; DECISIONS 4.103), replacing P0-4m whose reused control arm no longer passes the consistency check.
 * Recipe: `workloads/qwen2_5_math_7b_hf_cosine_zero2_nm.env` + `stack_overlay_env.sh --cond hf8`.
 
 Training safety: the 8-kernel stack is **cleared for training under a standard LR schedule**
