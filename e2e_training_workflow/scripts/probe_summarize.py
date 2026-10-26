@@ -355,6 +355,32 @@ def snapshot_schema(cfg):
         return 2
 
 
+def _token_crosscheck(ranks, cfg):
+    """Per step: the probe's useful tokens (+ samples whose first position is a label, which the trainer's
+    unshifted count includes) against the trainer's num_items_in_batch -- summed over ranks when the trainer
+    normalizes globally (hf-average-tokens-across-devices true), per rank otherwise. The two counts come from
+    different code (the probe's batch hook vs the loss normalizer), so agreement is evidence the headline's
+    numerator is right on a leg with train metrics off (audit HFC-7)."""
+    rows = [st for _, (_, st) in sorted(ranks.items())]
+    if not rows or not any(r.get("stack_items") is not None for r in rows[0]):
+        return None
+    n = min(len(r) for r in rows)
+    glob_norm = str(cfg.get("hf-average-tokens-across-devices", "true")).lower() == "true"
+    bad, checked = [], 0
+    for i in range(n):
+        own = [(r[i].get("useful_tokens") or 0) + (r[i].get("first_labels") or 0) for r in rows]
+        si = [r[i].get("stack_items") for r in rows]
+        if any(x is None for x in si):
+            continue
+        checked += 1
+        if glob_norm:
+            if any(x != si[0] for x in si) or sum(own) != si[0]:
+                bad.append({"step": i + 1, "probe": sum(own), "trainer": si[0]})
+        elif any(o != x for o, x in zip(own, si)):
+            bad.append({"step": i + 1, "probe": own, "trainer": si})
+    return {"steps_checked": checked, "mismatched": len(bad), "examples": bad[:3], "global": glob_norm}
+
+
 def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
     ranks = {}
     for p in sorted(glob.glob(os.path.join(dirpath, "probe_rank*.jsonl"))):
@@ -486,6 +512,8 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         "unmapped": unmapped_of(headers[0].get("coverage")),
         # content identity (audit #9 / #10): overlay directory trees and input fingerprints; None = predates it
         "content": headers[0].get("content"),
+        # HF: the probe's token count against the trainer's own num_items_in_batch (audit HFC-7); None = no record
+        "token_crosscheck": _token_crosscheck(ranks, cfg),
         "unmapped_ranks_agree": len({json.dumps(unmapped_of(h.get("coverage")), sort_keys=True)
                                      for h in headers}) == 1,
         # Report-only: which harness code ran inside the leg (rocm_compat/overlay_train/train_probe).

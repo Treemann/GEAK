@@ -151,6 +151,26 @@ class _Probe:
         except Exception as e:  # measurement must never break the run
             self.pending.setdefault("errors", []).append(repr(e))
 
+    def _flush_int(self, key):
+        n = self.pending.get(key)
+        if n is None:
+            return None
+        try:
+            return int(n.item()) if hasattr(n, "item") else int(n)
+        except Exception as e:  # measurement must never break the run
+            self.pending.setdefault("errors", []).append(repr(e))
+            return None
+
+    def _flush_stack_items(self):
+        n = self.pending.get("stack_items")
+        if n is None:
+            return None
+        try:
+            return int(n.item()) if hasattr(n, "item") else int(n)
+        except Exception as e:  # measurement must never break the run
+            self.pending.setdefault("errors", []).append(repr(e))
+            return None
+
     def _flush_tokens(self):
         """The step's useful-token total as an int (one device sync per step, not per micro-batch)."""
         u = self.pending["useful_tokens"]
@@ -220,6 +240,11 @@ class _Probe:
             "useful_tokens": self._flush_tokens(),
             "total_tokens": self.pending["total_tokens"],
             "micro_batches": self.pending["micro_batches"],
+            # HF: the trainer's OWN label-token count for this optimizer step (num_items_in_batch, the loss's
+            # normalizer; global when average_tokens_across_devices). Cross-checks the probe's count with
+            # train metrics off (audit HFC-7). None on Megatron.
+            "stack_items": self._flush_stack_items(),
+            "first_labels": self._flush_int("first_labels"),
             "t_wall": time.time(),
         }
         if torch.cuda.is_available():
@@ -765,11 +790,32 @@ def install_hf(trainer):
             labels = inputs.get("labels") if isinstance(inputs, dict) else None
             if labels is not None:
                 PROBE.note_batch({"loss_mask": (labels[:, 1:] != -100)})
+                # samples whose FIRST position is a label: the trainer's num_items_in_batch counts them (it
+                # counts unshifted labels), the shifted useful count cannot -- the cross-check needs both
+                PROBE.pending["first_labels"] = PROBE.pending.get("first_labels", 0) + (labels[:, 0] != -100).sum()
         except Exception as e:  # measurement must never break the run
             PROBE.pending.setdefault("errors", []).append(repr(e))
         return _orig_training_step(model, inputs, *a, **kw)
 
     trainer.training_step = _probed_training_step
+
+    # The trainer's own count of the step's label tokens (audit HFC-7): Trainer passes num_items_in_batch to
+    # compute_loss on every micro-batch of an optimizer step (the same value each time). Kept as the device
+    # tensor; _flush_stack_items reads it once at the step boundary.
+    _orig_compute_loss = trainer.compute_loss
+
+    def _probed_compute_loss(model, inputs, *a, **kw):
+        try:
+            n = kw.get("num_items_in_batch")
+            if n is None and len(a) >= 2:
+                n = a[1]
+            if n is not None:
+                PROBE.pending["stack_items"] = n
+        except Exception as e:  # measurement must never break the run
+            PROBE.pending.setdefault("errors", []).append(repr(e))
+        return _orig_compute_loss(model, inputs, *a, **kw)
+
+    trainer.compute_loss = _probed_compute_loss
 
     class _StepCallback(TrainerCallback):
         def __init__(self):

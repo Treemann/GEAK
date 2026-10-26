@@ -360,6 +360,11 @@ const leg = (o = {}) => Object.assign({
   ok(!mixed.ok && mixed.stale, 'unmapped: a leg with the full capture vs one without is refused (re-measure)');
   ok(comparable(uleg(null), uleg(null)).ok, 'unmapped: two legs that both predate the capture are judged as before');
   ok(!comparable(uleg(U, { unmapped_ranks_agree: false }), uleg(U)).ok, 'unmapped: ranks that disagree are refused');
+  // audit HFC-7: the probe's token count must agree with the trainer's own
+  ok(!legUsable(leg({ token_crosscheck: { steps_checked: 30, mismatched: 2, examples: [{ step: 3 }] } })).ok,
+     'token cross-check: a leg whose probe count disagrees with num_items_in_batch is unusable');
+  ok(legUsable(leg({ token_crosscheck: { steps_checked: 30, mismatched: 0 } })).ok, 'token cross-check: agreement is usable');
+  ok(legUsable(leg({ token_crosscheck: null })).ok, 'token cross-check: absent (Megatron) is not a refusal');
   // audit #9 / #10: content identity
   const C = { v: 1, overlay_tree: 't1+t2', inputs: { 'train-data-path': '100:aa', 'tokenizer-model': 'tk' } };
   const cleg = (c, sha, o = {}) => uleg(U, { content: c, implementation: { 'attention-backend': 'fused', GEAK_OVERLAY_SHA: sha }, ...o });

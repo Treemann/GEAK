@@ -305,6 +305,12 @@ function legUsable(leg) {
              why: `contaminated on all ${leg.attempts || '?'} attempts — the node is not quiet` };
   }
   if (!leg || leg.status !== 'ok') return { ok: false, why: 'leg status != ok' };
+  // The probe's useful-token count must agree with the trainer's own (HF, audit HFC-7): the headline's numerator.
+  const tc = leg.token_crosscheck;
+  if (tc && (Number(tc.mismatched) > 0 || Number(tc.steps_checked) === 0)) {
+    return { ok: false, why: `the probe's useful-token count disagrees with the trainer's num_items_in_batch on ` +
+                             `${tc.mismatched} step(s) (${JSON.stringify((tc.examples || [])[0] || {})})` };
+  }
   if (leg.hang_detected) return { ok: false, why: 'hang detected' };
   // A leg too short to estimate dispersion is not a measurement either. Measured: 7 steady steps
   // gave an IQR of 1.243% where 24 steps of the same workload gave 0.072% -- the quartiles simply
