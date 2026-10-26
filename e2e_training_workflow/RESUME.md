@@ -1,4 +1,4 @@
-# Resume notes — updated 2026-10-26
+# Resume notes — updated 2026-10-26 (evening)
 
 ## 2026-10-25 / 26: AUDIT -> FIXES -> VERIFIED IN REAL RUNS (DECISIONS 4.73-4.85)
 
@@ -28,17 +28,16 @@ Verification runs: wf_7300e31a-c76 (ConfigSweep env carry + Validate recompute, 
 wf_e849d951-2cc (kernel path: L0 evidence -> L1 plan, mgc applicability, 4.84); real 30-step legs on both
 stacks (4.80); divergence detector on 1,003 legs (0 false positives).
 
-**OPEN (audit, not yet fixed), by priority:**
-1. #6 the throughput gate decides on the per-step-ratio median only (no sum / wall veto).
-2. #7 the seed extension is a second look without alpha spending (type-I ~8.4%, not ~5%).
-3. #9 GEAK_OVERLAY_SHA hashes impl.py only (kernel sources / GEMM tables outside it); #10 data / checkpoint /
-   tokenizer enter identity by PATH; pack_sft overwrites silently.
-4. #11 orchestration invariants that live only in prompts (kernel gate not bound to workload / carried config).
-5. Low table: G-2 (band-scaled step-1 limit), G-6 (quality_ab_final pairs by dir name), OPS-1 (watchdog kills
-   bench_train), MS-5/6/7, ID-6 (hf_sft allow_abbrev), ORCH-A7/A10, G-8/9/10, HFC-7/8 (base-arm severity), OPS-*.
-Residuals of the fixes: L0 evidence fields are still transcribed by the Auditor (GPU-bound); a config lever's
-L1 kind is the Tuner's declared one.
-
+**2026-10-26: the whole audit fix list is DONE** (DECISIONS 4.86-4.98): outcome-test protocol (Pocock two looks,
+both arms, >= 2 catastrophic for FAIL); gate reference bound to the carried stack; median-vs-trimmed-mean
+disagreement re-gates once on longer legs (all seven s8 increments re-measured positive on median, trimmed mean and
+wall: s8 vs ref +21.9% / wall +22.4%); L1 floor-only step-1 limit; bundle check_leg hard-checks harness + image and
+`bal` engagement; content identity (overlay trees, input fingerprints); ops hardening (setsid, private dispatcher
+copy, disk check, stale locks, contaminated-attempt logs, rocm-smi unavailable = unknown); pooled HF headline; the
+1022 attention oracle v2; low-severity batches. Both deliverables re-validated and re-pinned (harness at 8eaa0e3a).
+Remaining, recorded: HFC-7's HF token cross-check with metrics off (needs sampler-side label counts); v2 oracle
+holdouts with other cu_seqlens shapes; L0 evidence fields still transcribed by the Auditor (GPU-bound).
+Consequence for users: legs measured before 2026-10-26 (no `content` record) cannot be references for fresh legs.
 
 ## OPEN AFTER THE 2026-10-23 REVIEW (owner: do all, in this order; status kept current)
 

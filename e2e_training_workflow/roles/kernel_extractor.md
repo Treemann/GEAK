@@ -18,6 +18,9 @@ to cheat. Read `knowledge/gate_convergence.md` (L0) before you build the oracle.
    _cap dir>` (inside the image): it carries the old reference / const / acceptance options and
    holdouts, finds the primary capture, and REFUSES unless the rebuilt base_error equals the old one on
    the primary and every holdout. Rebuilt HF oracles live in `$GEAK_WORK_DIR/tasks_v2/` (DECISIONS 4.60).
+   The packed-attention head (`attn_fmha_ck_varlen*`) must use `$GEAK_WORK_DIR/tasks_v2/attn_fmha_ck_varlen_1022`
+   (oracle v2, DECISIONS 4.97): the v1 oracle under `tasks/` never scored out / dk / dv on each segment's first
+   query row, and a candidate wrong only there passed it.
    Per-layer ops: capture at least one MID-DEPTH call as a holdout (`GEAK_CAPTURE_CALL=14`,
    `GEAK_ROPE_CAPTURE_CALL=14`; the first matching call is layer 0, DECISIONS 4.58).
    A custom (non-template) oracle is reused only if you confirm it scores every output.
