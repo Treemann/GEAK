@@ -35,8 +35,8 @@ wall: s8 vs ref +21.9% / wall +22.4%); L1 floor-only step-1 limit; bundle check_
 `bal` engagement; content identity (overlay trees, input fingerprints); ops hardening (setsid, private dispatcher
 copy, disk check, stale locks, contaminated-attempt logs, rocm-smi unavailable = unknown); pooled HF headline; the
 1022 attention oracle v2; low-severity batches. Both deliverables re-validated and re-pinned (harness at 8eaa0e3a).
-Remaining, recorded: HFC-7's HF token cross-check with metrics off (needs sampler-side label counts); v2 oracle
-holdouts with other cu_seqlens shapes; L0 evidence fields still transcribed by the Auditor (GPU-bound).
+Closed later the same day: the verifier runs its own L0 (4.99), the HF token cross-check against the trainer's
+num_items_in_batch (4.100), the v2 attention oracle holdouts (4.101). No audit item is open.
 Consequence for users: legs measured before 2026-10-26 (no `content` record) cannot be references for fresh legs.
 
 ## OPEN AFTER THE 2026-10-23 REVIEW (owner: do all, in this order; status kept current)
