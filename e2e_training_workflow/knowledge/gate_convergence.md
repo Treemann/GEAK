@@ -2181,3 +2181,16 @@ Pre-registered events: s8 (1013) 2 -- seeds 1203 / 8970, late grad-norm median 4
 2314, 4.75. No leg's held-out exceeds its pair by > 1 yardstick. events(s8a22) - events(s8) = -1.
 Per the pre-registered reading: KEEP s8a22 as the default. Late grad-norm drift is a property of the recipe, not of
 the 1022 kernel: the largest one in this study is on the 1013 arm, and on disk the bare eps6 REF arm drifts as well.
+
+## P0-4r PRE-REGISTRATION (2026-10-26, before any leg): token-balanced ranks on hf8, re-tested with a VALID control
+
+P0-4m (4.61 / 4.68) cleared `--hf-balance-tokens on` on hf8, but its reused ctrl70 arm was bare + 0.7 LR (not hf8 +
+0.7 LR) and its hf8 arm was reused from 10-20 legs that predate the 10-23 hf_sft loss changes; quality_ab_final's
+control-arm check (4.102) now refuses it. P0-4r repeats the test with every arm fresh on the current harness:
+* arms: `hf8` (base), `cand` = hf8 + `--hf-balance-tokens on`, `ctrl70` = hf8 + LR x0.7 (`--ctrl-base hf8`);
+  workload `qwen2_5_math_7b_hf_cosine_zero2_nm_q.env` (one epoch = 296 iters, metrics off), stack hf_trl, 8 GPUs,
+  train19k / held-out 1k, image pinned by digest.
+* seeds (fresh): 6161, 7272, 8383, 9494, 1515. One pre-registered extension allowed (looks 2).
+* verdict: `quality_ab_final.py <prefix> --base hf8 --cand cand --ctrl ctrl70 --looks 2` (in-run yardstick; Pocock
+  boundary; 4.86 stability rule). CLEARED keeps `bal` as the HF default; anything else reverts the HF default to
+  `--plain` (hf8 without balancing, cleared by P0-4k) until re-tested.

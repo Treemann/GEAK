@@ -20,7 +20,7 @@ SEEDS="1234,2345,3456"; ARMS="ref,s8,ctrl"; ITERS=""; NAME=qab; NPROC=8; GPUS=""
 # Default = the CLEARED production recipe (audit 2026-10-22 G4: it was the constant-LR packed.env, which
 # is NOT cleared and which no outcome test since P0-4d should run on).
 WORKLOAD="$GEAK_ROOT/workloads/qwen2_5_math_7b_packed_cosine_avg.env"; CAND_CMD=""; CAND_TARGS=""
-ALL_TARGS=""; ALL_ENV=""
+ALL_TARGS=""; ALL_ENV=""; CTRL_BASE=""
 STACK=megatron; TRAIN=""; HELDOUT=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -38,6 +38,9 @@ while [ $# -gt 0 ]; do
     # in what the arm itself names.
     --all-train-args) ALL_TARGS="$2"; shift 2;;
     --all-env) ALL_ENV="$2"; shift 2;;
+    # The positive control ON a stack (DECISIONS 4.103): ctrl / ctrl70 run this stack_overlay_env condition with
+    # the scaled LR, so the control is the BASE arm's recipe with only the LR moved. Default: no overlay.
+    --ctrl-base) CTRL_BASE="$2"; shift 2;;
     # Second stack (HF TRL): unpacked data -- HF pads dynamically and does not take Megatron packs.
     --stack) STACK="$2"; shift 2;;
     --train) TRAIN="$2"; shift 2;;
@@ -77,7 +80,7 @@ for SEED in ${SEEDS//,/ }; do
     EXTRA=""; TARGS="--seed $SEED $EVAL_ARGS${ALL_TARGS:+ $ALL_TARGS}"
     case "$ARM" in
       ref) ;;
-      s[2-8]|s8eps|s8a22) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$ARM" --stack "$STACK" --out "$OUT_HOST" --install "$OVL_HOST")" ;;
+      s[2-8]|s8eps|s8a22|hf[1-8]) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$ARM" --stack "$STACK" --out "$OUT_HOST" --install "$OVL_HOST")" ;;
       # The accepted stack with every side stream disabled (fc1/qkv wgrad overlap -> serial, lm-head
       # single stream): same kernel bytes, single-stream scheduling. Tests the side-stream race
       # hypothesis for the late-training instability (2026-10-16).
@@ -89,9 +92,11 @@ for SEED in ${SEEDS//,/ }; do
       cand) [ -n "$CAND_CMD" ] || { echo "arm cand needs --cand-cmd" >&2; exit 2; }
             EXTRA="$(eval "$CAND_CMD --out \"$OUT_HOST\"")"; TARGS="$TARGS $CAND_TARGS" ;;
       only-*) EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "only:${ARM#only-}" --stack "$STACK" --out "$OUT_HOST" --install "$OVL_HOST/${ARM}")" ;;
-      ctrl) TARGS="$TARGS --lr 7.0e-6" ;;
+      ctrl) TARGS="$TARGS --lr 7.0e-6"
+            [ -n "$CTRL_BASE" ] && EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$CTRL_BASE" --stack "$STACK" --out "$OUT_HOST" --install "$OVL_HOST")" ;;
       # Positive control for a SCHEDULED recipe: the whole schedule scaled x0.7 (peak and floor).
-      ctrl70) TARGS="$TARGS --lr 7.0e-6 --min-lr 7.0e-7" ;;
+      ctrl70) TARGS="$TARGS --lr 7.0e-6 --min-lr 7.0e-7"
+              [ -n "$CTRL_BASE" ] && EXTRA="$("$GEAK_ROOT/scripts/stack_overlay_env.sh" --cond "$CTRL_BASE" --stack "$STACK" --out "$OUT_HOST" --install "$OVL_HOST")" ;;
       *) echo "unknown arm: $ARM" >&2; exit 2;;
     esac
     [ -n "$ALL_ENV" ] && EXTRA="${EXTRA:+$EXTRA }$ALL_ENV"
