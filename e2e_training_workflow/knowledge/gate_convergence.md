@@ -2173,3 +2173,11 @@ late-divergence class (P0-4n seed 4680, 4.82 seed 8890) relative to the 1013 ker
     unresolved stability doubt.
 * Power, stated up front: 10 pairs detect a 10%-vs-0% per-leg rate difference with probability ~0.65; a null
   result is weak evidence of equal rates, a positive one is strong.
+
+### P0-4q RESULT (2026-10-26, runs/p04q_1026_022048_*, 20 legs, all complete)
+`quality_ab_final --base s8 --cand s8a22`, n = 10: PASS-quality (upper 95% +0.00391 <= 0.00515, mean d +0.00067,
+t-crit 2.262), PASS-stability (1 severe by max10: seed 1192, 0.446, held-out d +0.0084 < 1 yardstick; 0 catastrophic).
+Pre-registered events: s8 (1013) 2 -- seeds 1203 / 8970, late grad-norm median 4.42 / 11.03; s8a22 (1022) 1 -- seed
+2314, 4.75. No leg's held-out exceeds its pair by > 1 yardstick. events(s8a22) - events(s8) = -1.
+Per the pre-registered reading: KEEP s8a22 as the default. Late grad-norm drift is a property of the recipe, not of
+the 1022 kernel: the largest one in this study is on the 1013 arm, and on disk the bare eps6 REF arm drifts as well.
