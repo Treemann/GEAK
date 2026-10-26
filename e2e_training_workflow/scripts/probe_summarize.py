@@ -121,7 +121,12 @@ def dispersion(vals):
     }
     s = sorted(vals)
     if len(s) >= 4:
-        q1, q3 = s[len(s) // 4], s[(3 * len(s)) // 4]
+        # INTERPOLATED quartiles, as compare_legs._quantile (audit MS-7): the index pick s[n // 4] jumped a
+        # whole order statistic when n moved by one -- up to 27x on a leg straddling a quartile cliff.
+        def _q(q):
+            x = q * (len(s) - 1); i = int(x)
+            return s[i] if i + 1 >= len(s) else s[i] + (x - i) * (s[i + 1] - s[i])
+        q1, q3 = _q(0.25), _q(0.75)
         out["iqr_spread_pct"] = round(100 * (q3 - q1) / med, 3)
     outliers = [v for v in vals if v > med * 1.02]
     out["outlier_steps"] = len(outliers)
@@ -187,9 +192,13 @@ def identity_vs_realized(probe_dir, cfg):
     checked, bad = 0, []
     for k, v in (cfg or {}).items():
         rk = k.replace("-", "_")
-        if rk in real and v != "true" and k != "snapshot_keys":
+        if rk in real and k != "snapshot_keys":
             checked += 1
-            if _norm(v) != _norm(real[rk]):
+            # store_true flags were skipped (audit HFC-6): a captured "true" must realize as True
+            if v == "true":
+                if str(real[rk]).strip().lower() != "true":
+                    bad.append({"key": k, "captured": v, "realized": real[rk].strip()})
+            elif _norm(v) != _norm(real[rk]):
                 bad.append({"key": k, "captured": v, "realized": real[rk].strip()})
     return {"checked": checked, "mismatches": bad}
 
@@ -246,7 +255,10 @@ IMPL_KEYS = ("attention-backend", "GEAK_OVERLAY", "GEAK_OVERLAY_SHA",
              # HF: WHICH rank / micro-batch slot a sample of the step lands on (DECISIONS 4.61)
              "hf-balance-tokens",
              # where the NaN/Inf check runs (DECISIONS 4.62)
-             "no-check-for-nan-in-loss-and-grad")
+             "no-check-for-nan-in-loss-and-grad",
+             # audit ID-10: HOW attention / activations are partitioned and computed, not what is trained.
+             # Absent on every leg on disk (TP1, fused attention), so no existing digest moves.
+             "sequence-parallel", "use-flash-attn")
 # Implementation keys that are LABELS, not implementation: recorded, never digested from v6 on.
 # GEAK_OVERLAY is the manifest file NAMES; GEAK_OVERLAY_SHA is the content. Renaming a manifest moved
 # impl_digest with identical bytes running (audit F8). Schema-aware so a v5 summary keeps its digest.
@@ -440,6 +452,18 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
                      if snapshot_schema(cfg) >= 6 else impl)
     impl_digest = hashlib.sha256(json.dumps(impl_digested, sort_keys=True).encode()).hexdigest()[:16]
 
+    # POOLED rate over the common steady window (audit MS-3): every rank's useful tokens over the step time
+    # (slowest rank per step) and the world size. On a variable-shape (HF) leg the median-of-rank-medians
+    # headline is biased, and the bias changes sign with token balancing (+0.8% / -0.6%); pooled is the
+    # quantity a run actually delivers. Fixed-shape legs keep the median headline (pooled reported).
+    _i0 = max(v["warmup_steps"] for v in per_rank.values())
+    _st = [st for _, (_, st) in sorted(ranks.items())]
+    _n = min(len(x) for x in _st)
+    if max_steps:
+        _n = min(_n, _i0 + int(max_steps))
+    _tok = sum(x[i].get("useful_tokens", 0) for x in _st for i in range(_i0, _n))
+    _dur = sum(max(x[i]["dur_ms"] for x in _st) for i in range(_i0, _n))
+    pooled = round(_tok / (_dur / 1000.0) / world, 1) if _dur > 0 and _n > _i0 else None
     meds = [v["median_ms"] for v in per_rank.values()]
     slowest = max(per_rank.items(), key=lambda kv: kv[1]["median_ms"])[0]
     out = {
@@ -460,6 +484,8 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         # Every flag / env var the snapshot does not classify (audit ID-1); None = the leg predates the
         # full capture. Ranks must agree on it (argv_hash covers argv; env is per process).
         "unmapped": unmapped_of(headers[0].get("coverage")),
+        # content identity (audit #9 / #10): overlay directory trees and input fingerprints; None = predates it
+        "content": headers[0].get("content"),
         "unmapped_ranks_agree": len({json.dumps(unmapped_of(h.get("coverage")), sort_keys=True)
                                      for h in headers}) == 1,
         # Report-only: which harness code ran inside the leg (rocm_compat/overlay_train/train_probe).
@@ -467,7 +493,10 @@ def summarize(dirpath, tol=0.02, force_warmup=None, max_steps=None):
         "total_tokens_cv_pct": _cv_pct(per_rank_tokens),
         "rank_skew_pct": round(100 * (max(meds) - min(meds)) / statistics.median(meds), 3),
         "slowest_rank": slowest,
-        "useful_tok_s_per_gpu": round(statistics.median(
+        "useful_tok_s_per_gpu": (pooled if (_step_shape(per_rank_tokens) == "variable" and pooled) else
+                                 round(statistics.median([v["useful_tok_s_per_gpu"] or 0 for v in per_rank.values()]), 1)),
+        "useful_tok_s_per_gpu_pooled": pooled,
+        "useful_tok_s_per_gpu_rank_median": round(statistics.median(
             [v["useful_tok_s_per_gpu"] or 0 for v in per_rank.values()]), 1),
         # Report-only wall-time view (see per_rank): what a production run of this config pays,
         # stalls included. The gate still decides on the median; this makes the gap visible.

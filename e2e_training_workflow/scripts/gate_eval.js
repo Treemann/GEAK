@@ -33,7 +33,7 @@ function constBlock() {
   if (a < 0 || b < 0) throw new Error('gate constant block not found');
   return src.slice(a, b + 'let runAcrossJobPct = 0;'.length);
 }
-const NAMES = ['windowMatchedLegs', 'noiseBandPct', 'legUsable', 'alignedDelta', 'comparable', 'gateVerdict'];
+const NAMES = ['windowMatchedLegs', 'noiseBandPct', 'legUsable', 'alignedDelta', 'contentAgree', 'comparable', 'gateVerdict'];
 // STACK lives outside the constant block in the workflow (it is read from A.stack there too); the
 // per-stack floor default needs it (DECISIONS 4.54).
 const makeGate = (args, runAcross) => new Function('A', 'runAcrossJobPctIn',

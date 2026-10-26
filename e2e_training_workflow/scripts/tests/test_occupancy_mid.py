@@ -23,4 +23,8 @@ ok(compare(B, B, (), clean, 8)["verdict"] == "clean" and
    compare(B, B, (), clean[:2] + [{"pids": own + [999]}], 8)["verdict"] == "contaminated",
    "compare(): verdict uses the in-leg samples")
 ok(compare(B, B, (), [], 8)["verdict"] == "clean", "no in-leg samples (short leg) -> before/after decide, as before")
+av = {"available": True, "pids": []}
+ok(compare(av, av, mid=[{"available": True, "pids": []}] * 3)["verdict"] == "clean", "available samples, nobody else: clean")
+ok(compare(av, av, mid=[{"available": True, "pids": []}, {"available": False, "pids": []}])["verdict"] == "unknown",
+   "a mid-leg sample taken while rocm-smi was unavailable is not evidence of clean (OPS-8)")
 print(f"\n{fails} FAILURE(S)" if fails else "\nall checks passed"); sys.exit(1 if fails else 0)

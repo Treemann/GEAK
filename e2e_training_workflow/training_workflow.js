@@ -454,6 +454,8 @@ function refBinding(expected, ref) {
     return { ok: false, why: `the gate's reference ran workload ${ref.config_digest}, not this run's ` +
                              `${expected.config_digest}: it is not the run's reference` };
   }
+  const cr = contentAgree(expected, ref);
+  if (!cr.ok) return { ok: false, why: `the gate's reference differs from the carried stack in content: ${cr.why}` };
   if (ref.impl_digest !== expected.impl_digest) {
     return { ok: false, why: `the gate's reference implementation ${ref.impl_digest} is not the carried stack's ` +
                              `${expected.impl_digest} (an accepted lever, env knob or overlay is missing or extra)` };
@@ -578,6 +580,32 @@ function l1PlanFromL0(l0) {
   return { kind: overlay ? 'overlay' : 'kernel_swap', l0_strictly_better: !overlay && better };
 }
 
+function contentAgree(a, b) {
+  const ca = a && a.content, cb = b && b.content;
+  if ((ca == null) !== (cb == null)) {
+    return { ok: false, stale: true, why: 'one leg predates the content identity record (overlay trees / input ' +
+                                         'fingerprints): re-measure it with the current probe' };
+  }
+  if (!ca) return { ok: true };
+  const ia = ca.inputs || {}, ib = cb.inputs || {};
+  const din = [...new Set([...Object.keys(ia), ...Object.keys(ib)])].filter((k) => ia[k] !== ib[k]);
+  if (din.length) {
+    return { ok: false, why: `the legs read different INPUT contents (${din.join(', ')}): same path, other bytes ` +
+                             '(a re-written pack / checkpoint / tokenizer) -- not the same workload' };
+  }
+  const sa = String(((a.implementation || {}).GEAK_OVERLAY_SHA) || ''), sb = String(((b.implementation || {}).GEAK_OVERLAY_SHA) || '');
+  const ta = String(ca.overlay_tree || ''), tb = String(cb.overlay_tree || '');
+  const map = (s, t) => { const ss = s ? s.split('+') : [], tt = t ? t.split('+') : []; const m = {};
+                          ss.forEach((x, i) => { m[x] = tt[i]; }); return m; };
+  const ma = map(sa, ta), mb = map(sb, tb);
+  const bad = Object.keys(ma).filter((k) => k in mb && ma[k] !== mb[k]);
+  if (bad.length) {
+    return { ok: false, why: `overlay component(s) ${bad.join(', ')} have the same impl.py but different files ` +
+                             '(kernel sources / GEMM tables / helpers): the legs did not run the same kernel bytes' };
+  }
+  return { ok: true };
+}
+
 function comparable(ref, cand, allowedImpl) {
   if (!ref.config_digest || !cand.config_digest) return { ok: false, why: 'a leg carries no config digest' };
   // Distinguish "different workload" from "the digest DEFINITION changed between these summaries".
@@ -679,10 +707,21 @@ function comparable(ref, cand, allowedImpl) {
         'workload or implementation (train_probe identity lists / probe_summarize IMPL_KEYS) before gating on it' };
     }
   }
+  // CONTENT identity (audit 2026-10-25 #9 / #10): overlay components with the same impl.py SHA must have the
+  // same directory tree (kernel sources, GEMM tables, helpers), and the data / tokenizer / checkpoint contents
+  // must match. One leg with the record and one without cannot show they agree (stale).
+  const contentCheck = contentAgree(ref, cand);
+  if (!contentCheck.ok) return contentCheck;
   // The digest check runs LAST and says so (`digestOnly`), so ConfigSweep can re-gate a lever that is
   // supposed to move identity WITHOUT skipping the rank and implementation checks above. Before
   // 2026-10-22 it ran first and ConfigSweep re-gated on any 'incomparable' (audit G2/ORCH-6).
-  if (ref.config_digest !== cand.config_digest) {
+  // Number formatting is not identity (audit ID-9: '1e-5' vs '1.0e-5' digested differently): when the digests
+  // differ, compare the workload identities with numerically equal values treated as equal.
+  const numEq = (x, y) => x === y || (x != null && y != null && x !== '' && y !== '' &&
+                                       Number.isFinite(Number(x)) && Number(x) === Number(y));
+  const wiR = ref.workload_identity, wiC = cand.workload_identity;
+  const sameWl = wiR && wiC && [...new Set([...Object.keys(wiR), ...Object.keys(wiC)])].every((k) => numEq(wiR[k], wiC[k]));
+  if (ref.config_digest !== cand.config_digest && !sameWl) {
     return { ok: false, digestOnly: true, why: `config digest differs (${ref.config_digest} vs ${cand.config_digest}): ` +
       `these legs did not measure the same workload` };
   }
@@ -1050,7 +1089,9 @@ const LEG = obj({ implementation: { type: 'object' }, workload_identity: { type:
   harness: { type: ['object', 'null'] },
   // every flag / env knob nobody classified (probe_summarize, audit ID-1); null = predates the capture.
   // Not required (historic legs); the gate_verifier recomputes it from the probe either way.
-  unmapped: { type: ['object', 'null'] }, unmapped_ranks_agree: { type: ['boolean', 'null'] } },
+  unmapped: { type: ['object', 'null'] }, unmapped_ranks_agree: { type: ['boolean', 'null'] },
+  // overlay directory trees + input fingerprints (audit #9 / #10); null = predates the record
+  content: { type: ['object', 'null'] } },
   LEG_REQUIRED);
 const PROOF = obj({ forward: { type: 'boolean' }, backward: { type: 'boolean' } }, ['forward', 'backward']);
 // Finalize runs even when no kernel was accepted; then there is nothing to re-check and null is honest.

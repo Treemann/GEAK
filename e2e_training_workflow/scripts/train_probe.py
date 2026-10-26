@@ -75,7 +75,7 @@ class _Probe:
                     "device": torch.cuda.get_device_name(self.local_rank)
                     if torch.cuda.is_available() else "cpu",
                     "argv_hash": _argv_hash(), "config": _config_snapshot(), "harness": _harness_shas(),
-                    "coverage": _coverage()})
+                    "coverage": _coverage(), "content": _content()})
 
     def _emit(self, obj):
         self.fh.write(json.dumps(obj) + "\n")
@@ -475,6 +475,93 @@ _COVERAGE_ENV_PREFIXES = (
     "TOKENIZERS_",
     # the overlay knob families (_KNOBS), so a NEW knob of an existing family is seen before it is listed
     "KCK_", "FC1_", "FC2OP_", "LMHEAD_", "QKV_", "RMSN_", "ROPE_", "SWIGLU_")
+
+
+# CONTENT identity (audit 2026-10-25 #9 / #10). GEAK_OVERLAY_SHA hashes each manifest's replacement impl.py
+# and its declared `sources` -- not the GEMM tables, kernel sources and helpers impl.py loads (deleting
+# lt_solutions.csv left the SHA unchanged, and gemm_select silently falls back). Data, tokenizer and checkpoint
+# entered identity by PATH only, and packs were re-written in place. Both are recorded here, OUTSIDE `config`
+# (no digest moves): probe_summarize surfaces them, comparable() compares them.
+_TREE_SKIP_DIRS = {"build", "__pycache__", ".torch_ext", "mgc_ext", ".triton", "ext"}
+
+
+def _tree_hash(root):
+    import hashlib
+    h = hashlib.sha256()
+    for dp, dns, fns in os.walk(root):
+        dns[:] = sorted(d for d in dns if d not in _TREE_SKIP_DIRS)
+        for fn in sorted(fns):
+            if fn.endswith((".pyc", ".lock", ".log")) or fn.startswith("engagement") or \
+                    (fn.startswith("m_") and fn.endswith(".json")):   # manifests carry per-install paths
+                continue
+            p = os.path.join(dp, fn)
+            try:
+                with open(p, "rb") as f:
+                    b = f.read()
+            except OSError:
+                continue
+            rel = os.path.relpath(p, root).encode()
+            h.update(b"%d:" % len(rel) + rel + b"%d:" % len(b) + b)
+    return h.hexdigest()[:16]
+
+
+def _fingerprint(path, budget=4 << 20):
+    """size + sha of head/tail for files; for a directory, every file's relative path and size (and the
+    head/tail of files up to 64 MB -- tokenizer files, checkpoint metadata, not multi-GB shards)."""
+    import hashlib
+    def ffp(p):
+        try:
+            n = os.path.getsize(p)
+            with open(p, "rb") as f:
+                head = f.read(budget)
+                if n > 2 * budget:
+                    f.seek(n - budget)
+                tail = f.read(budget)
+            return f"{n}:{hashlib.sha256(head + tail).hexdigest()[:16]}"
+        except OSError:
+            return None
+    if os.path.isfile(path):
+        return ffp(path)
+    if os.path.isdir(path):
+        h, k = hashlib.sha256(), 0
+        for dp, dns, fns in os.walk(path):
+            dns.sort()
+            if os.path.relpath(dp, path).count(os.sep) >= 2:
+                dns[:] = []
+            for fn in sorted(fns):
+                p = os.path.join(dp, fn)
+                try:
+                    n = os.path.getsize(p)
+                except OSError:
+                    continue
+                v = ffp(p) if n <= (64 << 20) else str(n)
+                h.update(f"{os.path.relpath(p, path)}={v};".encode())
+                k += 1
+                if k > 4000:
+                    return "TOO_MANY_FILES:" + h.hexdigest()[:16]
+        return h.hexdigest()[:16]
+    return None
+
+
+def _content():
+    import sys
+    out = {"v": 1}
+    if os.environ.get("GEAK_OVERLAY"):
+        ms = [m.strip() for m in os.environ["GEAK_OVERLAY"].split(",") if m.strip()]
+        out["overlay_tree"] = "+".join(_tree_hash(os.path.dirname(os.path.abspath(m))) for m in ms)
+    argv, ins = sys.argv, {}
+    for k in ("--train-data-path", "--valid-data-path", "--tokenizer-model", "--load"):
+        v = None
+        for i, t in enumerate(argv):
+            if t == k and i + 1 < len(argv):
+                v = argv[i + 1]
+            elif t.startswith(k + "="):
+                v = t.split("=", 1)[1]
+        if v:
+            v = v.strip("[]'\" ")
+            ins[k.lstrip("-")] = _fingerprint(v)
+    out["inputs"] = ins
+    return out
 
 
 def _coverage():

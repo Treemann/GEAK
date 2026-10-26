@@ -77,8 +77,10 @@ adapter_launch() {
     if [ "$t" = "--rope-fusion" ]; then rope_flag=""; else extra="$extra $t"; fi
   done
   EXTRA_TRAIN_ARGS="${extra# }"
+  # setsid: the job gets its OWN process group, so teardown's `kill -<pgid>` hits the job only. Sharing the
+  # dispatcher's group, the hang watchdog killed bench_train itself (exit 143, no bench_summary; audit OPS-1).
   # shellcheck disable=SC2086
-  env $EXTRA_ENV \
+  setsid env $EXTRA_ENV \
     PYTHONPATH="$MLM_DIR${PYTHONPATH:+:$PYTHONPATH}" \
     GEAK_PROBE_DIR="$PROBE_DIR" \
     ${PROFILE_STEPS:+GEAK_PROFILE_STEPS="$PROFILE_STEPS"} \

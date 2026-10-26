@@ -15,7 +15,15 @@
 #                  [--extra-train-args "..."] [--extra-env "..."] [--tag NAME]
 set -uo pipefail
 
-GEAK_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Run from a PRIVATE COPY (audit OPS-2): bash reads a script incrementally, so editing this file while a
+# dispatcher runs it (in-place, non-atomic) corrupted the running leg. The copy is taken once per process
+# (host side and again inside the container); paths still resolve from the repo.
+if [ -z "${GEAK_BT_RUNCOPY:-}" ]; then
+  _bt_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  _bt_copy="$(mktemp "${TMPDIR:-/tmp}/bench_train.XXXXXX.sh")" && cp "$_bt_dir/bench_train.sh" "$_bt_copy" && \
+    GEAK_BT_RUNCOPY=1 GEAK_BT_SCRIPTS="$_bt_dir" exec bash "$_bt_copy" "$@"
+fi
+GEAK_SCRIPTS="${GEAK_BT_SCRIPTS:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 GEAK_ROOT="$(dirname "$GEAK_SCRIPTS")"
 
 # ---- host / container transparency -------------------------------------------------------------
@@ -71,7 +79,7 @@ if [ ! -d "${MLM_DIR:-/workspace/Primus/third_party/Megatron-LM}" ] && [ -z "${G
     -e GEAK_IN_CONTAINER=1 -e GEAK_HOST_WORK="$WORK" \
     -e HIP_VISIBLE_DEVICES="$_VIS" -e GEAK_IMAGE="$IMAGE" ${_IMGID:+-e GEAK_IMAGE_ID="$_IMGID"} \
     ${MASTER_PORT:+-e MASTER_PORT="$MASTER_PORT"} ${HANG_TIMEOUT:+-e HANG_TIMEOUT="$HANG_TIMEOUT"} \
-    ${TRITON_CACHE_DIR:+-e TRITON_CACHE_DIR="$TRITON_CACHE_DIR"} \
+    ${TRITON_CACHE_DIR:+-e TRITON_CACHE_DIR="$(case "$TRITON_CACHE_DIR" in "$WORK"/*) echo "/work${TRITON_CACHE_DIR#$WORK}";; *) echo "$TRITON_CACHE_DIR";; esac)"} \
     ${ATTENTION_BACKEND:+-e ATTENTION_BACKEND="$ATTENTION_BACKEND"} \
     ${RETRY_CONTAMINATED:+-e RETRY_CONTAMINATED="$RETRY_CONTAMINATED"} \
     --entrypoint bash "$IMAGE" \
@@ -148,6 +156,13 @@ source "$GEAK_SCRIPTS/adapters/${STACK}.sh"
 adapter_capabilities > "$OUT_DIR/capabilities.json"
 # Optional per-stack recipe checks that must hold BEFORE any GPU time is spent (Megatron: the RMSNorm
 # epsilon vs the model's config, DECISIONS 4.55). Non-zero = the descriptor asks for a recipe nobody chose.
+# Disk headroom (audit OPS-10): a leg writes probes, traces and checkpoints-in-flight; on a full disk it dies
+# mid-run and leaves a half leg that looks like a hang. Refuse up front below GEAK_MIN_FREE_GB (default 20).
+_free_gb=$(df -Pk "$(dirname "$OUT_DIR")" 2>/dev/null | awk 'NR==2 {print int($4/1048576)}')
+if [ -n "$_free_gb" ] && [ "$_free_gb" -lt "${GEAK_MIN_FREE_GB:-20}" ]; then
+  echo "!!! only ${_free_gb} GB free under $(dirname "$OUT_DIR") (< ${GEAK_MIN_FREE_GB:-20}): refusing the leg" >&2
+  exit 3
+fi
 if declare -F adapter_preflight >/dev/null; then
   adapter_preflight || { echo "!!! adapter preflight refused this configuration" >&2; exit 3; }
 fi
@@ -218,6 +233,11 @@ while :; do
   echo ">>> leg contaminated (a foreign process held a GPU); re-measuring (attempt $((ATTEMPTS + 1)))" \
     | tee -a "$OUT_DIR/train.log"
   mv "$OUT_DIR/probe" "$OUT_DIR/probe.contaminated.$ATTEMPTS" 2>/dev/null || true
+  # Keep the whole attempt, not only its probe (audit OPS-6): train.log and the occupancy record are the
+  # evidence of WHY it was contaminated.
+  for _f in train.log occupancy_before.json occupancy_after.json occupancy_mid.jsonl occupancy_verdict.json; do
+    [ -e "$OUT_DIR/$_f" ] && cp "$OUT_DIR/$_f" "$OUT_DIR/$_f.contaminated.$ATTEMPTS" 2>/dev/null
+  done
   mkdir -p "$PROBE_DIR"
 done
 

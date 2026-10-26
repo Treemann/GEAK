@@ -92,7 +92,9 @@ def compare(before: dict, after: dict, own_pids=(), mid=(), nproc=0):
     a = set(after.get("pids", [])) - own
     m = set(mid_foreign(list(mid), int(nproc or 0))) - own
     verdict = "clean"
-    if not before.get("available") or not after.get("available"):
+    # A mid-leg sample taken while rocm-smi was unavailable observed nothing; it is not evidence of a clean leg
+    # (audit OPS-8: such samples counted as clean).
+    if not before.get("available") or not after.get("available") or any(not s.get("available", True) for s in mid):
         verdict = "unknown"
     elif b or a or m:
         verdict = "contaminated"

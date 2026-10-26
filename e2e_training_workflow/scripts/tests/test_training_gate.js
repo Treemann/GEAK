@@ -132,7 +132,7 @@ const leg = (o = {}) => Object.assign({
 
 // ---------------------------------------------------------------- 3./4. the gate
 {
-  const { gateVerdict, legUsable, comparable } = load(['gateVerdict', 'legUsable', 'noiseBandPct', 'windowMatchedLegs', 'comparable', 'alignedDelta']);
+  const { gateVerdict, legUsable, comparable } = load(['gateVerdict', 'legUsable', 'noiseBandPct', 'windowMatchedLegs', 'contentAgree', 'comparable', 'alignedDelta']);
   const v = (o) => gateVerdict(Object.assign({ ref: leg(), cand: leg(), mode: 'fast' }, o));
 
   // An ACCEPT now requires an aligned comparison, so every accept-asserting case must supply one.
@@ -360,6 +360,19 @@ const leg = (o = {}) => Object.assign({
   ok(!mixed.ok && mixed.stale, 'unmapped: a leg with the full capture vs one without is refused (re-measure)');
   ok(comparable(uleg(null), uleg(null)).ok, 'unmapped: two legs that both predate the capture are judged as before');
   ok(!comparable(uleg(U, { unmapped_ranks_agree: false }), uleg(U)).ok, 'unmapped: ranks that disagree are refused');
+  // audit #9 / #10: content identity
+  const C = { v: 1, overlay_tree: 't1+t2', inputs: { 'train-data-path': '100:aa', 'tokenizer-model': 'tk' } };
+  const cleg = (c, sha, o = {}) => uleg(U, { content: c, implementation: { 'attention-backend': 'fused', GEAK_OVERLAY_SHA: sha }, ...o });
+  ok(comparable(cleg(C, 's1+s2'), cleg(JSON.parse(JSON.stringify(C)), 's1+s2'), ['GEAK_OVERLAY', 'GEAK_OVERLAY_SHA']).ok,
+     'content: same trees and inputs are comparable');
+  ok(comparable(cleg(C, 's1+s2'), cleg({ ...C, overlay_tree: 't1+t2+t3' }, 's1+s2+s3'), ['GEAK_OVERLAY', 'GEAK_OVERLAY_SHA']).ok,
+     'content: a cand that ADDS an overlay component (new sha, new tree) is comparable');
+  const kb = comparable(cleg(C, 's1+s2'), cleg({ ...C, overlay_tree: 't1+tX' }, 's1+s2'), ['GEAK_OVERLAY', 'GEAK_OVERLAY_SHA']);
+  ok(!kb.ok && /same impl\.py but different files/.test(kb.why), 'content: same impl.py sha with other kernel files is refused (#9)');
+  const db = comparable(cleg(C, 's1'), cleg({ ...C, inputs: { ...C.inputs, 'train-data-path': '100:bb' } }, 's1'));
+  ok(!db.ok && /INPUT contents/.test(db.why), 'content: same data path with other bytes is refused (#10)');
+  const st = comparable(cleg(null, 's1'), cleg(C, 's1'));
+  ok(!st.ok && st.stale, 'content: one leg without the record is stale');
   const dOnly = comparable(leg(), leg({ config_digest: 'other' }));
   ok(!dOnly.ok && dOnly.digestOnly === true, 'a pair differing only in config_digest is flagged digestOnly');
   const notOnly = comparable(leg({ implementation: IMPL }), leg({ config_digest: 'other',
