@@ -164,6 +164,22 @@ def emit(quality, stability, **kw):
     print(json.dumps({**kw, "quality": quality, "stability": stability, "cleared": cleared}))
 
 
+def header_rec(d):
+    """rank-0 probe header record, or None."""
+    try:
+        with open(os.path.join(d, "probe", "probe_rank0.jsonl")) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("record") == "header":
+                    return r
+    except FileNotFoundError:
+        return None
+    return None
+
+
 def header_cfg(d):
     """rank-0 probe header config, or None."""
     try:
@@ -180,7 +196,7 @@ def header_cfg(d):
     return None
 
 
-def leg_consistency(where, seeds, base, cand, allow_workload=()):
+def leg_consistency(where, seeds, base, cand, allow_workload=(), ctrl=None, ctrl_allow=("lr", "min-lr")):
     """Legs are paired by directory NAME; prove they are one experiment (audit 2026-10-25 G-6): per seed the two
     arms share the workload identity (implementation may differ) and that seed; each arm runs ONE implementation
     across every seed and prefix (an extension prefix of another stack would otherwise pool silently).
@@ -189,6 +205,7 @@ def leg_consistency(where, seeds, base, cand, allow_workload=()):
     _s.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from probe_summarize import _norm as _n, is_impl_key, snapshot_schema
     probs, impls = [], {base: [], cand: []}
+    trees = {}   # arm -> {overlay sha component: tree hash}, across seeds and prefixes (audit #9 in outcome tests)
     wl = lambda c: {k: v for k, v in c.items() if not is_impl_key(k) and k not in ("snapshot_keys", "world_size")}  # noqa: E731
     im = lambda c: {k: v for k, v in c.items() if is_impl_key(k) and k != "GEAK_OVERLAY"}  # noqa: E731
     for s in seeds:
@@ -210,12 +227,56 @@ def leg_consistency(where, seeds, base, cand, allow_workload=()):
             if str(c.get("seed")) != str(s):
                 probs.append(f"seed {s}: a leg ran --seed {c.get('seed')}")
         impls[base].append((s, snapshot_schema(cb), im(cb))); impls[cand].append((s, snapshot_schema(cc), im(cc)))
+        # CONTENT (DECISIONS 4.94; review 2026-10-26): same input bytes on both arms, and per arm one tree per
+        # overlay component. Compared where both legs carry the record (older legs cannot).
+        hb, hc_ = header_rec(f"{where[s]}_{base}_seed{s}") or {}, header_rec(f"{where[s]}_{cand}_seed{s}") or {}
+        kb, kc = hb.get("content"), hc_.get("content")
+        if kb and kc and (kb.get("inputs") or {}) != (kc.get("inputs") or {}):
+            probs.append(f"seed {s}: {base} and {cand} read different input contents (same path, other bytes)")
+        for arm, cfg_, ct in ((base, cb, kb), (cand, cc, kc)):
+            if not ct:
+                continue
+            shas = str(cfg_.get("GEAK_OVERLAY_SHA") or "").split("+") if cfg_.get("GEAK_OVERLAY_SHA") else []
+            trs = str(ct.get("overlay_tree") or "").split("+") if ct.get("overlay_tree") else []
+            m = trees.setdefault(arm, {})
+            for sh, tr in zip(shas, trs):
+                if sh in m and m[sh] != tr:
+                    probs.append(f"arm {arm}: overlay component {sh} ran other files on seed {s} (kernel sources / tables)")
+                m.setdefault(sh, tr)
+        if ctrl:
+            # the control arm DEFINES the in-run yardstick: the base recipe with only the LR scaled, the base's
+            # implementation, the same seed and inputs (review 2026-10-26: it was paired by name only)
+            ck = header_cfg(f"{where[s]}_{ctrl}_seed{s}")
+            if ck is None:
+                probs.append(f"seed {s}: the {ctrl} leg has no probe header")
+            else:
+                wk = wl(ck)
+                same_k = snapshot_schema(cb) == snapshot_schema(ck)
+                dkk = sorted(k for k in set(wb) | set(wk)
+                             if k not in ctrl_allow and
+                             ((k in wb and k in wk and str(_n(wb[k])) != str(_n(wk[k]))) or
+                              (same_k and (k in wb) != (k in wk))))
+                if dkk:
+                    probs.append(f"seed {s}: {ctrl} differs from {base} beyond {'/'.join(ctrl_allow)} ({', '.join(dkk[:4])})")
+                if str(ck.get("seed")) != str(s):
+                    probs.append(f"seed {s}: the {ctrl} leg ran --seed {ck.get('seed')}")
+                ib_, ik_ = im(cb), im(ck)
+                if any(ib_.get(k) != ik_.get(k) for k in set(ib_) | set(ik_)
+                       if k == "GEAK_OVERLAY_SHA" or k.startswith("NVTE_") or (k in ib_ and k in ik_)):
+                    probs.append(f"seed {s}: {ctrl} runs another implementation than {base}")
+                kk = (header_rec(f"{where[s]}_{ctrl}_seed{s}") or {}).get("content")
+                if kb and kk and (kb.get("inputs") or {}) != (kk.get("inputs") or {}):
+                    probs.append(f"seed {s}: {ctrl} read different input contents than {base}")
     for arm, xs in impls.items():
         s0, v0, i0 = xs[0] if xs else (None, None, {})
         for s1, v1, i1 in xs[1:]:
             # the overlay content is recorded on every schema; other keys only where both snapshots record them
+            # keys recorded whenever SET on every schema (overlay content, NVTE_* backends, env: knobs from v5):
+            # presence vs absence is a real difference even across snapshot versions (review 2026-10-26)
+            always = lambda k: (k == "GEAK_OVERLAY_SHA" or k.startswith("NVTE_")  # noqa: E731
+                                or (k.startswith("env:") and min(v0, v1) >= 5))
             dk = sorted(k for k in set(i0) | set(i1)
-                        if (k == "GEAK_OVERLAY_SHA" and i0.get(k) != i1.get(k)) or
+                        if (always(k) and i0.get(k) != i1.get(k)) or
                         (k in i0 and k in i1 and i0[k] != i1[k]) or (v0 == v1 and (k in i0) != (k in i1)))
             if dk:
                 probs.append(f"arm {arm}: seed {s1} runs another implementation than seed {s0} ({', '.join(dk[:4])})")
@@ -271,6 +332,7 @@ def main():
     if len(seeds) != 5:
         print(f"NOTE: {len(seeds)} seeds, not the pre-registered 5 -- t critical = {tc} (df {len(seeds) - 1})")
     rows, d, sev, sev_b = [], [], [], []
+    judged, base_nan = [], []   # seeds with a d, aligned with d / sev / sev_b; seeds whose BASE leg NaN-exited
     for s in seeds:
         P = where[s]
         r, c = f"{P}_{a.base}_seed{s}", f"{P}_{a.cand}_seed{s}"
@@ -279,6 +341,12 @@ def main():
         # Complete = both legs ran the same number of steps, enough to cover the episode window after
         # step AFTER (358 on the Megatron protocol, 296 on HF's one-epoch protocol), and both evaluated.
         if len(sr) != len(sc) or len(sr) < AFTER + WIN + 1 or hr is None or hc is None:
+            if len(sr) < len(sc) and hr is None and diverged(r, sr):
+                # the BASE leg diverged / NaN-exited: that seed has no valid reference (review 2026-10-26: it
+                # used to end the whole test INCOMPLETE). Treated as base-arm catastrophic, judged on the rest.
+                print(f"NOTE: seed {s} {a.base} DIVERGED at step {len(sr)}: base-arm catastrophic, seed dropped")
+                base_nan.append(s)
+                continue
             if len(sc) < len(sr) and hc is None and diverged(c, sc):
                 emit(f"INCONCLUSIVE-quality: seed {s} {a.cand} did not finish",
                      f"FAIL-stability: seed {s} {a.cand} DIVERGED at step {len(sc)} (non-finite loss / NaN exit)",
@@ -295,28 +363,38 @@ def main():
         d.append(hc - hr)
         sev.append(m10)
         sev_b.append(m10b)
+        judged.append(s)
         print(f"seed {s}: held-out {a.base} {hr:.6f} {a.cand} {hc:.6f} d {hc - hr:+.5f} | max10 {m10:.3f} "
               f"(base arm {m10b:.3f})")
     probs = leg_consistency(where, seeds, a.base, a.cand,
-                            {k.strip() for k in (a.allow_workload or "").split(",") if k.strip()})
+                            {k.strip() for k in (a.allow_workload or "").split(",") if k.strip()}, ctrl=a.ctrl)
     if probs and not a.allow_inconsistent:
         emit(f"REFUSED-quality: the legs are not one experiment: {'; '.join(probs[:3])}",
              "REFUSED-stability: not judged", seeds=seeds, consistency=probs)
         return
+    # Base-arm catastrophes are found BEFORE the control, on criteria that do not need the in-run yardstick (base
+    # max10, held-out against the fixed yardstick, a NaN exit): a diverged base leg used to wreck the positive
+    # control (control d computed against it) and end the test 'control not detected' (review 2026-10-26).
+    base_cat0 = sorted(set(base_nan) | {s for s, x, dd in zip(judged, sev_b, d)
+                                        if x > CATASTROPHIC or -dd > HELDOUT_CATASTROPHIC_Y * YARDSTICK})
     yard, ctrl_note = YARDSTICK, "fixed (P0-4d)"
     if a.ctrl:
         cd = []
-        for s in seeds:
+        for s in [x for x in seeds if x not in base_cat0]:
             hb, hk = heldout(f"{where[s]}_{a.base}_seed{s}"), heldout(f"{where[s]}_{a.ctrl}_seed{s}")
             if hk is None:
                 emit(f"INCOMPLETE-quality: control seed {s} has no held-out loss", "INCOMPLETE-stability: not judged",
                      seeds=seeds)
                 return
             cd.append(hk - hb)
+        if len(cd) < 3:
+            emit(f"INCONCLUSIVE-quality: only {len(cd)} seed(s) with a valid base leg for the control",
+                 "INCONCLUSIVE-stability: base arm unreliable", seeds=seeds, base_arm_catastrophic=base_cat0)
+            return
         cm, csd = statistics.fmean(cd), statistics.stdev(cd)
         ct = cm / (csd / math.sqrt(len(cd))) if csd > 0 else math.copysign(math.inf, cm)
         print(f"control {a.ctrl} - {a.base}: d {[round(x, 5) for x in cd]} mean {cm:+.5f} t {ct:.2f}")
-        if not (cm > 0 and ct >= tc):
+        if not (cm > 0 and ct >= t_crit(len(cd))):
             emit("INCONCLUSIVE-quality: the positive control was not detected", "NOT-JUDGED-stability: the "
                  "control failed first", seeds=seeds, ctrl_d=[round(x, 6) for x in cd])
             return
@@ -324,8 +402,9 @@ def main():
     margin = 0.25 * yard
     # A seed whose BASE leg is catastrophic has no valid reference: its d says nothing about the cand and is
     # dropped from the quality statistic (reported). Cand-arm catastrophes stay in d -- they count against it.
-    base_cat = [s for s, x, dd in zip(seeds, sev_b, d) if x > CATASTROPHIC or -dd > HELDOUT_CATASTROPHIC_Y * yard]
-    dq = [dd for s, dd in zip(seeds, d) if s not in base_cat]
+    base_cat = sorted(set(base_cat0) | {s for s, x, dd in zip(judged, sev_b, d)
+                                        if x > CATASTROPHIC or -dd > HELDOUT_CATASTROPHIC_Y * yard})
+    dq = [dd for s, dd in zip(judged, d) if s not in base_cat]
     if len(dq) < 3:
         emit(f"INCONCLUSIVE-quality: only {len(dq)} seed(s) with a valid base leg (base-arm catastrophic: {base_cat})",
              "INCONCLUSIVE-stability: base arm unreliable", seeds=seeds, base_arm_catastrophic=base_cat)
@@ -337,14 +416,15 @@ def main():
     t = m / (sd / math.sqrt(len(dq))) if sd > 0 else math.copysign(math.inf, m)
     t_up = t_quantile_upper(alpha, len(dq) - 1)
     upper = m + t_up * sd / math.sqrt(len(dq))
+    tq = t_crit(len(dq))   # the seeds the quality statistic actually uses (base-arm seeds dropped; review 2026-10-26)
     def _point():
-        if m > margin and t >= tc:
+        if m > margin and t >= tq:
             return f"FAIL-quality: mean {m:+.5f} > margin {margin:.5f}, t {t:.2f}"
-        if abs(m) <= margin and not (m > 0 and t >= tc):
+        if abs(m) <= margin and not (m > 0 and t >= tq):
             return f"PASS-quality: |mean {m:+.5f}| <= {margin:.5f} (0.25 x yardstick {yard:.5f}, {ctrl_note}), t {t:.2f}"
         return f"INCONCLUSIVE-quality: mean {m:+.5f}, t {t:.2f}, margin {margin:.5f} ({ctrl_note})"
     def _noninf():
-        if m > margin and t >= tc:
+        if m > margin and t >= tq:
             return f"FAIL-quality: mean {m:+.5f} > margin {margin:.5f}, t {t:.2f}"
         if upper <= margin:
             return (f"PASS-quality: upper {100 * (1 - alpha):.2f}% bound {upper:+.5f} <= margin {margin:.5f} "

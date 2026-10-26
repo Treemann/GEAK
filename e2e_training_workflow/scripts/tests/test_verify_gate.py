@@ -158,6 +158,21 @@ try:
 finally:
     shutil.rmtree(root, ignore_errors=True)
 
+# Review 2026-10-26: binding -- the legs must carry the digests the orchestrator expects.
+root = tempfile.mkdtemp(prefix="vgtest_")
+try:
+    ref = leg(root, "ref", 1.0)
+    cand = leg(root, "cand", 0.97, overlay="attn")
+    r0 = run(ref, cand)
+    good = run(ref, cand, ("--floor", "0.25", "--expect-ref-impl", r0["ref"]["impl_digest"],
+                           "--expect-cand-impl", r0["cand"]["impl_digest"]))
+    ok(good["binding"]["ok"] is True, "binding: the expected digests match")
+    bad = run(ref, cand, ("--floor", "0.25", "--expect-ref-impl", "not_the_baseline"))
+    ok(bad["binding"]["ok"] is False and "ref impl" in bad["binding"]["why"][0], "binding: another ref leg is reported")
+    ok("binding" not in r0, "no --expect-* -> no binding field")
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+
 # Audit 2026-10-25 ID-1, end to end: the full capture flows through probe_summarize into the workflow's own
 # comparable(). An unclassified env knob differing between the legs makes the pair incomparable.
 root = tempfile.mkdtemp(prefix="vgtest_")

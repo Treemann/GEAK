@@ -516,7 +516,11 @@ function verifyDecision(ver, refLegOrDir, candLegOrDir, needEngagement, opts) {
       return { ok: false, table, why: `the verifier skipped ${miss.length} of ${want.length} requested pairing(s) ` +
         `(${miss.map(([r, c]) => `${r}->${c}`).join(', ')}): a skipped pairing can hide a regression` };
     }
-    const bad = pairs.filter((p) => p !== prim && (p.error || !p.verdict || p.verdict.error));
+    // A non-primary pairing that could not be MEASURED (a hung / diverged / contaminated / incomparable leg) is
+    // as disqualifying as one that errored: it has no delta, so it would also silently drop out of the median.
+    const UNJUDGED = /^(blocked|unusable_ref|unusable_cand|incomparable|stale_summary)$/;
+    const bad = pairs.filter((p) => p !== prim && (p.error || !p.verdict || p.verdict.error ||
+                                                    UNJUDGED.test(String(p.verdict.klass || ''))));
     if (bad.length) {
       return { ok: false, table, why: `${bad.length} requested pairing(s) could not be judged ` +
         `(${bad.map((p) => `${legBase(p.ref_dir)}->${legBase(p.cand_dir)}`).join(', ')}): a pairing that was ` +
@@ -1152,6 +1156,8 @@ const AUDIT_SCHEMA = obj({ l0: L0_VERDICT, l1: VERDICT, main_grad_contract: MGC,
 const FINALIZE_SCHEMA = obj({ overlay: { type: 'string' }, patch: { type: 'string' },
   launch: { type: 'string' }, engagement_recheck: PROOF_OR_NULL }, ['engagement_recheck']);
 const CONFIG_SCHEMA = obj({ lever: { type: 'string' }, flags_added: { type: 'array' },
+  // every ref / cand leg dir measured for this lever (re-runs included); the verifier crosses them all
+  legs_measured: obj({ refs: { type: 'array', items: { type: 'string' } }, cands: { type: 'array', items: { type: 'string' } } }),
   // env knobs the lever sets besides its flags, NAME -> value (audit 2026-10-25 item 13: a flag+env lever
   // such as --no-check-for-nan-in-loss-and-grad + GEAK_NAN_FROM_GRAD_NORM=1 could not be accepted or carried)
   env_added: { type: ['object', 'null'] },
@@ -1628,8 +1634,12 @@ if (want('config')) {
         // L1 is recomputed too (G-3). A config lever has no L0, so never --l0-strictly-better; its kind is
         // the Tuner's declared one (config_tuner.md 4b), recorded in the verifier's output.
         const s1 = ((sweep.l1 || {}).checks || {}).step1_loss_rel_pct || {};
-        const cRefs = [sweep.ref.dir || sweep.ref.probe_dir].filter(Boolean);
-        const cCands = [sweep.cand.dir || sweep.cand.probe_dir].filter(Boolean);
+        // EVERY leg the Tuner measured for this lever, not only the pair it reports (MS-6 for levers too).
+        const clm = sweep.legs_measured || {};
+        const uniq = (xs) => { const seen = new Set(); return xs.filter(Boolean).filter((d) => {
+          const k = legBase(d); if (seen.has(k)) return false; seen.add(k); return true; }); };
+        const cRefs = uniq([sweep.ref.dir || sweep.ref.probe_dir, ...(clm.refs || [])]);
+        const cCands = uniq([sweep.cand.dir || sweep.cand.probe_dir, ...(clm.cands || [])]);
         const ver = await safeAgentStub('gate_verifier', 'verify',
           { REF_DIRS: cRefs, CAND_DIRS: cCands,
             KIND: 'config', LEVER_FLAGS: flagsString(sweep.flags_added), FLOOR: runFloor, NPROC,
@@ -1838,6 +1848,11 @@ while (headQueue.length && tasksUsed < BUDGET && gatesUsed < MAX_GATES && !(awai
     l0r = p0 && p0.l0_recomputed && typeof p0.l0_recomputed === 'object' ? p0.l0_recomputed : null;
     v.l0_recomputed = l0r;
     const tdn = (x) => String(x || '').replace(/\/+$/, '').split('/').pop();
+    // ...and it must be THIS overlay's result (a stale file from an earlier candidate of the same head said correct)
+    if (l0r && tdn(l0r.overlay) !== tdn(integ.overlay_path)) {
+      l0r = Object.assign({}, l0r, { correct: null, error: `l0_verify result is for overlay ${tdn(l0r.overlay)}, not ${tdn(integ.overlay_path)}` });
+      v.l0_recomputed = l0r;
+    }
     if (!l0r || l0r.correct !== true || tdn((l0r.oracle || {}).task_dir || l0r.task) !== tdn(optimized.ext.task_dir)) {
       Object.assign(v, { accepted: false, klass: l0r && l0r.correct === false ? 'numerics' : 'no_correctness_gate',
         reason: !l0r ? 'no independent L0 (the verifier did not re-run the oracle): a kernel may not be accepted on ' +
@@ -2070,15 +2085,33 @@ if (val && val.ref_dir && val.final_dir && (wfReturn.accepted.length || accCfgAl
     const accA = accCfgAll.filter((r) => !String(r.class || 'A').startsWith('B'));
     const swap = wfReturn.accepted.length > 0 ||
       accA.some((r) => ((r.verdict.verifier || {}).l1 || {}).recomputed && r.verdict.verifier.l1.recomputed.kind === 'kernel_swap');
+    // The stack inherits the strictly-better floor only if EVERY accepted change earned it: every accepted kernel
+    // was gated on it and no config lever moved the forward (review 2026-10-26: a kernel accepted at a 0.8%
+    // step-1 shift on the 2.0% floor could never confirm under 0.25%).
+    const kStrict = wfReturn.accepted.length > 0 && wfReturn.accepted.every((x) => {
+      const rc = (((x.verdict || {}).verifier || {}).l1 || {}).recomputed || {};
+      return rc.kind === 'kernel_swap' && rc.l0_strictly_better === true;
+    });
+    const strictAll = kStrict && accA.length === 0;
     const ver = await safeAgentStub('gate_verifier', 'verify',
       { REF_DIRS: vRefs, CAND_DIRS: vCands, KIND: 'stack',
         LEVER_FLAGS: flagsString(accA.reduce((f, r) => mergeFlags(f, r.flags_added), [])), FLOOR: runFloor, NPROC,
         LEVER_ENV: [...new Set(accA.flatMap((r) => Object.keys(r.env_added || {})))].join(',') || null,
         L1_KIND: swap ? 'kernel_swap' : 'overlay', L1_BAND: wfReturn.bands.trajectory_band_path || null,
-        L1_L0_STRICTLY_BETTER: false, GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts` },
+        L1_L0_STRICTLY_BETTER: strictAll, GEAK_SCRIPTS: `${WORKFLOW_DIR}/scripts`,
+        // which legs these MUST be (review 2026-10-26): ref = the run's baseline, final = the carried accepted stack
+        EXPECT_REF_CONFIG: baseline.config_digest || null, EXPECT_REF_IMPL: baseline.impl_digest || null,
+        EXPECT_CAND_CONFIG: refLeg.config_digest || null, EXPECT_CAND_IMPL: refLeg.impl_digest || null },
       'Run verify_gate.py on EVERY ref x cand pairing and return its output verbatim. You are a script runner.');
-    const vd = verifyDecision(ver, val.ref_dir, val.final_dir, false,
-                              { expected: { refs: vRefs, cands: vCands }, needL1: true });
+    let vd = verifyDecision(ver, val.ref_dir, val.final_dir, false,
+                            { expected: { refs: vRefs, cands: vCands }, needL1: true });
+    const vp0 = ver && Array.isArray(ver.pairs) ? ver.pairs.find((p) => legBase(p.ref_dir) === legBase(val.ref_dir) &&
+                                                                    legBase(p.cand_dir) === legBase(val.final_dir)) : null;
+    if (vd.ok && !(vp0 && vp0.binding && vp0.binding.ok === true)) {
+      vd = { ...vd, ok: false, why: vp0 && vp0.binding
+        ? `Validate's headline legs are not the run's baseline and accepted stack: ${(vp0.binding.why || []).join('; ')}`
+        : 'the verifier output for the headline pair lacks the binding check (expected digests)' };
+    }
     valRe = { ok: vd.ok, kind: 'stack', delta_pct: vd.delta_pct != null ? vd.delta_pct : null,
               band_pct: vd.band_pct != null ? vd.band_pct : null, l1: vd.l1 || null, why: vd.ok ? null : vd.why,
               table: vd.table || null };
@@ -2215,7 +2248,10 @@ if (QUALITY_GATE && stackChanged) {
   // Extend only when the verdict is INCONCLUSIVE because the sample is too small -- NOT when the positive
   // control itself was not detected (more seeds of an undetected control prove nothing; review QEXT) and
   // NOT when the reused legs were not proven (above).
-  if (q && reuseOk && /^INCONCLUSIVE-quality/.test(String(q.quality || '')) &&
+  // INCONCLUSIVE on either axis is extendable (DECISIONS 4.86: one catastrophic leg is INCONCLUSIVE-stability,
+  // "extendable"); a FAIL on either axis, or an undetected control, is final.
+  if (q && reuseOk && (/^INCONCLUSIVE-quality/.test(String(q.quality || '')) || /^INCONCLUSIVE-stability/.test(String(q.stability || ''))) &&
+      !/^FAIL/.test(String(q.quality || '')) &&
       !/positive control was not detected/.test(String(q.quality || '')) && !/^FAIL/.test(String(q.stability || '')) &&
       QUALITY_EXTEND_SEEDS !== 'none' && q.legs_prefix) {
     log0(`quality gate INCONCLUSIVE (${q.quality}) -- running the ONE pre-registered extension: seeds ${QUALITY_EXTEND_SEEDS}`);

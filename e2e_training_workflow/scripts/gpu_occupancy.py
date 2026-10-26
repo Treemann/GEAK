@@ -94,10 +94,12 @@ def compare(before: dict, after: dict, own_pids=(), mid=(), nproc=0):
     verdict = "clean"
     # A mid-leg sample taken while rocm-smi was unavailable observed nothing; it is not evidence of a clean leg
     # (audit OPS-8: such samples counted as clean).
-    if not before.get("available") or not after.get("available") or any(not s.get("available", True) for s in mid):
-        verdict = "unknown"
-    elif b or a or m:
+    # Positive evidence of a neighbour wins: a contaminated leg must be RE-MEASURED, and one transient rocm-smi
+    # timeout in a mid sample must not turn it into a non-retried 'unknown' (review 2026-10-26).
+    if b or a or m:
         verdict = "contaminated"
+    elif not before.get("available") or not after.get("available") or any(not s.get("available", True) for s in mid):
+        verdict = "unknown"
     return {
         "verdict": verdict,
         "foreign_pids_before": sorted(b),

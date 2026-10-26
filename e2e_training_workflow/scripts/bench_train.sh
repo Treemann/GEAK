@@ -82,6 +82,7 @@ if [ ! -d "${MLM_DIR:-/workspace/Primus/third_party/Megatron-LM}" ] && [ -z "${G
     ${TRITON_CACHE_DIR:+-e TRITON_CACHE_DIR="$(case "$TRITON_CACHE_DIR" in "$WORK"/*) echo "/work${TRITON_CACHE_DIR#$WORK}";; *) echo "$TRITON_CACHE_DIR";; esac)"} \
     ${ATTENTION_BACKEND:+-e ATTENTION_BACKEND="$ATTENTION_BACKEND"} \
     ${RETRY_CONTAMINATED:+-e RETRY_CONTAMINATED="$RETRY_CONTAMINATED"} \
+    ${GEAK_MIN_FREE_GB:+-e GEAK_MIN_FREE_GB="$GEAK_MIN_FREE_GB"} \
     --entrypoint bash "$IMAGE" \
     /repo/e2e_training_workflow/scripts/bench_train.sh "${_ARGS[@]}"
 fi
@@ -171,6 +172,15 @@ echo ">>> bench_train: stack=$STACK workload=$WORKLOAD_NAME nproc=$NPROC iters=$
 echo ">>> out=$OUT_DIR"
 
 # ---- one attempt: occupancy sample -> job -> occupancy sample -> verdict -------------------
+# Stale torch-extension build locks (audit OPS-5), removed HERE, inside the container: the build dirs are created
+# by root in the container, so the host-side cleanup in stack_overlay_env.sh cannot unlink them. A real build holds
+# its `lock` for minutes; one older than 30 min was left by a leg killed mid-compile and would block forever.
+for _d in $(printf '%s\n' $EXTRA_ENV | sed -n 's/^TORCH_EXTENSIONS_DIR=//p; s/^GEAK_OVERLAY=//p' | tr ',' '\n' | xargs -r -n1 dirname 2>/dev/null | sort -u); do
+  [ -d "$_d" ] || continue
+  find "$_d" -name lock -type f -mmin +30 \( -path '*/build/*' -o -path '*/.torch_ext/*' -o -path '*/l0v_ext/*' \) -delete -print 2>/dev/null \
+    | sed 's/^/>>> removed stale build lock: /'
+done
+
 run_attempt() {
   local n="$1"
   python3 "$GEAK_SCRIPTS/gpu_occupancy.py" before > "$OUT_DIR/occupancy_before.json" 2>/dev/null
@@ -233,6 +243,8 @@ while :; do
   echo ">>> leg contaminated (a foreign process held a GPU); re-measuring (attempt $((ATTEMPTS + 1)))" \
     | tee -a "$OUT_DIR/train.log"
   mv "$OUT_DIR/probe" "$OUT_DIR/probe.contaminated.$ATTEMPTS" 2>/dev/null || true
+  # the attempt's hang record belongs to that attempt: left in place it marked a clean retry `hang_detected`
+  [ -e "$OUT_DIR/hang.json" ] && mv "$OUT_DIR/hang.json" "$OUT_DIR/hang.json.contaminated.$ATTEMPTS"
   # Keep the whole attempt, not only its probe (audit OPS-6): train.log and the occupancy record are the
   # evidence of WHY it was contaminated.
   for _f in train.log occupancy_before.json occupancy_after.json occupancy_mid.jsonl occupancy_verdict.json; do

@@ -144,6 +144,8 @@ Return JSON:
  // just implementation) is refused as `recipe_change`. A lever whose flag or env knob is UNCLASSIFIED
  // (absent from train_probe's identity lists / _KNOBS, so it shows up in `unmapped`) is refused as
  // incomparable (audit ID-1, DECISIONS 4.78): say so in `notes` -- it must be classified before it can be gated.
+ "legs_measured": {"refs": ["<every ref leg dir you ran for this lever>"], "cands": ["<every cand leg dir>"]},
+   // re-runs included: the verifier crosses ALL of them and the median over pairings must clear the band
  "comparison": {"...compare_legs.py stdout verbatim, MUST contain a numeric delta_pct..."},
  "config_digest_delta": {"key": "overlap-grad-reduce", "ref": null, "cand": "true"},
  "peak_reserved_mb": {"ref": 80578, "cand": 80578},

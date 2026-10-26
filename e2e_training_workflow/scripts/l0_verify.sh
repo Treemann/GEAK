@@ -36,6 +36,7 @@ host() { case "$1" in /work/*) echo "$WORK${1#/work}";; *) echo "$1";; esac; }
 T_C="$(ctr "$TASK")" || exit 2
 I_C="$(ctr "$IMPL")" || exit 2
 mkdir -p "$(dirname "$(host "$OUT")")"
+rm -f "$(host "$OUT")"   # never report an earlier run's result as this one's (review 2026-10-26)
 O_C="$(ctr "$(host "$OUT")")" || exit 2
 EXT_C="$(dirname "$O_C")/l0v_ext"
 docker run --rm --init --name "geak_l0v_$(basename "$I_C")_$$" --label geak=1 \

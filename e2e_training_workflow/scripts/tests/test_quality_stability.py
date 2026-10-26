@@ -9,15 +9,18 @@ fails = 0
 def ok(c, m):
     global fails
     print(("  ok: " if c else "  FAIL: ") + m); fails += 0 if c else 1
-def leg(root, name, held, bump=0.0, cfg=None):
+def leg(root, name, held, bump=0.0, cfg=None, content=None, nsteps=358, nan_exit=False):
     d = os.path.join(root, name); os.makedirs(os.path.join(d, "probe"))
     seed = name.rsplit("seed", 1)[-1]
     with open(os.path.join(d, "probe", "probe_rank0.jsonl"), "w") as f:
         f.write(json.dumps({"record": "header", "config": {"snapshot_keys": "v6", "seed": seed, "lr": "1.0e-5",
-                                                           **(cfg or {})}}) + "\n")
-        for i in range(358):
+                                                           **(cfg or {})}, **({"content": content} if content else {})}) + "\n")
+        for i in range(nsteps):
             f.write(json.dumps({"record": "step", "step": i + 1, "loss": 1.5 + (bump if i > 300 else 0.0)}) + "\n")
-    open(os.path.join(d, "train.log"), "w").write(f" validation loss at iteration 358 | lm loss value: {held:.6E} |\n")
+    if nan_exit:
+        open(os.path.join(d, "train.log"), "w").write(" iteration 200 | lm loss: nan |\n")
+    else:
+        open(os.path.join(d, "train.log"), "w").write(f" validation loss at iteration 358 | lm loss value: {held:.6E} |\n")
 def verdict(root, held_c, bump=0.0):
     for i, (s, hc) in enumerate(zip((11, 22, 33, 44, 55), held_c)):
         leg(root, f"q_ref_seed{s}", 1.30 + 0.001 * i)
@@ -80,6 +83,68 @@ try:
                                   capture_output=True, text=True).stdout.strip().splitlines()[-1])
     ok(v["quality"].startswith("REFUSED") and any("another implementation" in p for p in v["consistency"]),
        "a cand arm that runs another overlay stack on one seed is refused")
+finally:
+    shutil.rmtree(root)
+
+# Review 2026-10-26 fixes.
+def judge(root, *extra):
+    out = subprocess.run([sys.executable, QF, os.path.join(root, "q"), "--base", "ref", "--cand", "cand", *extra],
+                         capture_output=True, text=True).stdout
+    return json.loads(out.strip().splitlines()[-1])
+SEEDS = (11, 22, 33, 44, 55)
+root = tempfile.mkdtemp(prefix="qstab_")
+try:   # a BASE leg that NaN-exits: seed dropped as base-arm catastrophic, the test judged on the rest
+    for i, s_ in enumerate(SEEDS):
+        leg(root, f"q_ref_seed{s_}", 1.30 + 0.001 * i, nsteps=200 if s_ == 33 else 358, nan_exit=(s_ == 33))
+        leg(root, f"q_cand_seed{s_}", 1.30 + 0.001 * i)
+    v = judge(root)
+    ok(not v["quality"].startswith("INCOMPLETE") and 33 in v.get("base_arm_catastrophic", []),
+       f"a base leg that NaN-exits is base-arm catastrophic, not INCOMPLETE ({v['quality'][:40]})")
+finally:
+    shutil.rmtree(root)
+root = tempfile.mkdtemp(prefix="qstab_")
+try:   # with --ctrl: a diverged base leg no longer wrecks the positive control
+    for i, s_ in enumerate(SEEDS):
+        leg(root, f"q_ref_seed{s_}", 1.30 + 0.001 * i + (0.3 if s_ == 33 else 0.0))
+        leg(root, f"q_cand_seed{s_}", 1.30 + 0.001 * i)
+        leg(root, f"q_ctrl70_seed{s_}", 1.30 + 0.001 * i + 0.0065 + 0.0002 * (i % 2), cfg={"lr": "7.0e-6"})
+    v = judge(root, "--ctrl", "ctrl70")
+    ok("positive control was not detected" not in v["quality"] and 33 in v.get("base_arm_catastrophic", []),
+       f"--ctrl: the control is measured without the diverged base seed ({v['quality'][:50]})")
+finally:
+    shutil.rmtree(root)
+root = tempfile.mkdtemp(prefix="qstab_")
+try:   # the control arm must be the base recipe with ONLY the LR scaled
+    for i, s_ in enumerate(SEEDS):
+        leg(root, f"q_ref_seed{s_}", 1.30 + 0.001 * i)
+        leg(root, f"q_cand_seed{s_}", 1.30 + 0.001 * i)
+        leg(root, f"q_ctrl70_seed{s_}", 1.30 + 0.001 * i + 0.0065 + 0.0002 * (i % 2),
+            cfg={"lr": "7.0e-6", "weight-decay": "0.0" if s_ == 22 else "0.1"})
+    v = judge(root, "--ctrl", "ctrl70")
+    ok(v["quality"].startswith("REFUSED") and any("ctrl70 differs" in p for p in v["consistency"]),
+       "a control leg that moved more than the LR is refused")
+finally:
+    shutil.rmtree(root)
+root = tempfile.mkdtemp(prefix="qstab_")
+try:   # presence of an env knob on one seed's cand only, across snapshot versions, is another implementation
+    for i, s_ in enumerate(SEEDS):
+        leg(root, f"q_ref_seed{s_}", 1.30 + 0.001 * i)
+        leg(root, f"q_cand_seed{s_}", 1.30 + 0.001 * i,
+            cfg={"snapshot_keys": "v5"} if s_ != 44 else {"snapshot_keys": "v6", "env:FC1_BWD_MODE": "serial"})
+    v = judge(root)
+    ok(v["quality"].startswith("REFUSED") and any("FC1_BWD_MODE" in p for p in v["consistency"]),
+       "an env knob present on one cand seed only (v5 vs v6) is caught")
+finally:
+    shutil.rmtree(root)
+root = tempfile.mkdtemp(prefix="qstab_")
+try:   # content: the arms read different input bytes under the same path
+    for i, s_ in enumerate(SEEDS):
+        leg(root, f"q_ref_seed{s_}", 1.30 + 0.001 * i, content={"v": 1, "inputs": {"train-data-path": "100:aa"}})
+        leg(root, f"q_cand_seed{s_}", 1.30 + 0.001 * i,
+            content={"v": 1, "inputs": {"train-data-path": "100:bb" if s_ == 55 else "100:aa"}})
+    v = judge(root)
+    ok(v["quality"].startswith("REFUSED") and any("input contents" in p for p in v["consistency"]),
+       "arms that read different input contents are refused")
 finally:
     shutil.rmtree(root)
 

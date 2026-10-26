@@ -143,7 +143,7 @@ _ENUM = re.compile(r"^[A-Za-z_]+\.([A-Za-z_0-9]+)$")
 #   num_query_groups ........ 4[geak-probe] installed (rank 4/8) -> /work/runs/...
 # which read as "captured 4, realized 4[geak-probe]..." -- a FALSE mismatch, and legUsable would have
 # refused a clean leg. Tags this repo prints all look like `[geak-...]` / `[rocm-compat]` / `[rank..]`.
-_SPLICE = re.compile(r"\[(geak-[a-z]+|rocm-compat|rank\d*)\].*$")
+_SPLICE = re.compile(r"\[(geak-[a-z0-9-]+|rocm-compat|rank\d*)\].*$")   # multi-hyphen tags too ([geak-attnck-overlay])
 
 
 def _norm(x):
@@ -196,7 +196,7 @@ def identity_vs_realized(probe_dir, cfg):
             checked += 1
             # store_true flags were skipped (audit HFC-6): a captured "true" must realize as True
             if v == "true":
-                if str(real[rk]).strip().lower() != "true":
+                if str(_norm(real[rk])).strip().lower() != "true":   # spliced log tags stripped first
                     bad.append({"key": k, "captured": v, "realized": real[rk].strip()})
             elif _norm(v) != _norm(real[rk]):
                 bad.append({"key": k, "captured": v, "realized": real[rk].strip()})
@@ -305,6 +305,7 @@ COVERAGE_IGNORE_ARGV_PREFIXES = ("log-", "wandb-", "tensorboard-")
 COVERAGE_IGNORE_ENV = {"HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL",
                        "GEAK_IMAGE", "GEAK_IMAGE_ID",   # compared via the harness record
                        "GEAK_IN_CONTAINER", "GEAK_HOST_WORK", "GEAK_SCRIPTS", "GEAK_KERNEL_WF", "NCCL_DEBUG",
+                       "GEAK_BT_RUNCOPY", "GEAK_BT_SCRIPTS",   # bench_train's private-copy re-exec (OPS-2)
                        "NCCL_DEBUG_SUBSYS", "NCCL_DEBUG_FILE", "TORCH_CPP_LOG_LEVEL", "TORCH_SHOW_CPP_STACKTRACES",
                        "TORCH_DISTRIBUTED_DEBUG", "TRANSFORMERS_VERBOSITY", "HF_HUB_OFFLINE", "TOKENIZERS_PARALLELISM"}
 COVERAGE_IGNORE_ENV_SUFFIXES = ("_DIR", "_PATH", "_HOME", "_ROOT", "_FILE", "_CACHE", "_WORK")

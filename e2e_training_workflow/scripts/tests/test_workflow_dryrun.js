@@ -62,6 +62,7 @@ const refExpected = (prompt) => {
   }
   return null;
 };
+let BINDING_OVERRIDE;                       // the verifier's `binding` for EXPECT_* calls; undefined = ok
 let L0R_OVERRIDE;                          // the verifier's l0_verify result; undefined = correct, no evidence
 let VDELTA_OVERRIDE;
 let INTEG_CMP_SEQ = null;                  // queued `comparison` objects, one per integrate call                        // (refDir, candDir) -> the verifier's delta_pct for that pairing
@@ -159,8 +160,8 @@ function stubFor(prompt) {
     if (VERIFY_OVERRIDE === null) return null;
     if (prompt.includes('"KIND": "l0"')) {             // l0_verify.sh (DECISIONS 4.99)
       const task = (/"L0_TASK": "([^"]*)"/.exec(prompt) || [])[1] || '/work/tasks/t';
-      return { pairs: [{ ref_dir: task, cand_dir: '/work/ovl', l0_recomputed: L0R_OVERRIDE !== undefined ? L0R_OVERRIDE
-        : { correct: true, out_bit_identical: null, per_output: null, oracle: { kind: 'template', task_dir: task } } }] };
+      return { pairs: [{ ref_dir: task, cand_dir: '/work/ovl', l0_recomputed: L0R_OVERRIDE !== undefined ? (L0R_OVERRIDE && { overlay: '/work/ovl', ...L0R_OVERRIDE })
+        : { correct: true, out_bit_identical: null, per_output: null, overlay: '/work/ovl', oracle: { kind: 'template', task_dir: task } } }] };
     }
     if (prompt.includes('"KIND": "quality"')) {        // quality_ab_final recomputed (audit ORCH-A8)
       const m = /"QUALITY_ARGS": (\[[^\]]*\])/.exec(prompt);
@@ -188,8 +189,10 @@ function stubFor(prompt) {
                                                          band_pct: 0.5, reason: 'stub' },
                    engagement: { forward: true, backward: true }, comparison: {},
                    carried: CARRIED_OVERRIDE !== undefined ? CARRIED_OVERRIDE : { ok: true, lost: [], slots: {} },
+                   ...(prompt.includes('"EXPECT_REF_IMPL"') ? { binding: BINDING_OVERRIDE !== undefined ? BINDING_OVERRIDE
+                     : { ok: true, why: [] } } : {}),
                    ...(l1k ? { l1: L1V_OVERRIDE !== undefined ? L1V_OVERRIDE(r, c, prompt)
-                     : { pass: true, failures: [], recomputed: { kind: l1k } } } : {}),
+                     : { pass: true, failures: [], recomputed: { kind: l1k, l0_strictly_better: prompt.includes('"L1_L0_STRICTLY_BETTER": true') } } } : {}),
                    error: null });
     }
     return { pairs, ...(prompt.includes('"MGC_TASK"') ? { mgc_applicability: MGCA_OVERRIDE !== undefined ? MGCA_OVERRIDE
@@ -914,6 +917,43 @@ async function dryRun(args) {
     ok(false, `re-gate cases threw: ${e && e.stack}`);
   }
   INTEG_CMP_SEQ = null;
+
+  // ---- review 2026-10-26 fixes ----------------------------------------------------------------------
+  try {
+    BINDING_OVERRIDE = { ok: false, why: ['ref impl 1b948d != expected 5e2144'] };
+    const { result: r0 } = await dryRun(base);
+    BINDING_OVERRIDE = undefined;
+    ok(r0.status === 'unconfirmed' && /baseline and accepted stack/.test(r0.status_reason || ''),
+      `#0 Validate legs that are not the baseline / accepted stack cannot make the run ok (${r0.status})`);
+    const { calls: c1 } = await dryRun(base);
+    const sp = c1.prompts.find((p) => p.includes('"KIND": "stack"')) || '';
+    ok(sp.includes('"EXPECT_REF_IMPL"') && sp.includes('"EXPECT_CAND_IMPL"'), '#0 Validate passes the expected digests');
+    L0R_OVERRIDE = { correct: true, oracle: { task_dir: '/work/tasks/t' }, out_bit_identical: false,
+                     per_output: { out: { cand_err: 1, base_err: 2 }, dgrad: { cand_err: 1, base_err: 2 } } };
+    const { calls: c2 } = await dryRun(base);
+    L0R_OVERRIDE = undefined;
+    const sp2 = c2.prompts.find((p) => p.includes('"KIND": "stack"')) || '';
+    ok(sp2.includes('"L1_L0_STRICTLY_BETTER": true'), '#1 a stack whose every accepted kernel earned strictly-better keeps that floor in Validate');
+    QUALITY_SEQ = [{ cleared: false, quality: 'PASS-quality: ok', stability: 'INCONCLUSIVE-stability: 0 severe, 1 catastrophic -- extend',
+                     legs_prefix: '/work/runs/qA' },
+                   { cleared: true, quality: 'PASS-quality: n=10', stability: 'PASS-stability: 1 severe', legs_prefix: '/work/runs/qB' }];
+    const { result: r3, calls: c3 } = await dryRun({ ...base, quality_gate: 'true' });
+    QUALITY_SEQ = null;
+    ok(c3.prompts.filter((p) => p.includes('PHASE=quality')).length === 2 && r3.quality_gate.extended === true,
+      '#2 PASS-quality + INCONCLUSIVE-stability (one catastrophic leg) runs the pre-registered extension');
+    VERIFY_OVERRIDE = (r) => (r.includes('gref2_') ? 'unusable_cand' : 'win');
+    const { result: r4 } = await dryRun(base);
+    VERIFY_OVERRIDE = undefined;
+    ok(r4.accepted.length === 0, '#3 a measured pairing that is unusable (hung / diverged leg) refuses the accept');
+    CONFIG_OVERRIDE = { legs_measured: { refs: ['/work/runs/cfgref_a', '/work/runs/cfgref_b'], cands: ['/work/runs/cfgcand_a'] } };
+    const { calls: c5 } = await dryRun({ ...base, deep_mode: 'true', budget: 0 });
+    CONFIG_OVERRIDE = null;
+    const cv5 = c5.prompts.find((p) => p.includes('"KIND": "config"')) || '';
+    ok(cv5.includes('cfgref_b') && cv5.includes('cfgcand_a'), '#4 the config verifier crosses every leg the Tuner measured');
+  } catch (e) {
+    ok(false, `review-fix cases threw: ${e && e.stack}`);
+  }
+  BINDING_OVERRIDE = undefined; L0R_OVERRIDE = undefined; QUALITY_SEQ = null; VERIFY_OVERRIDE = undefined; CONFIG_OVERRIDE = null;
 
   // An opts.phase that is not a meta.phases title opens an ad-hoc group in /workflows and leaves the
   // declared phase reading "not started" though its agent ran (run wf_becee9a0-c6f, 2026-10-20).

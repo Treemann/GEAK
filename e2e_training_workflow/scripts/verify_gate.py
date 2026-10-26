@@ -20,6 +20,8 @@ produced the verdict. This script is the independent half: given ref and cand le
                  [--lever-flags "--flag value ..."] [--lever-env KNOB1,KNOB2]
   verify_gate.py <ref> <cand> --kind packing --pack-gate-result <pack_gate --out json>   (Class-B packing)
   verify_gate.py <ref> <cand> --kind stack --lever-flags ... [--lever-env ...]   (Validate: overlays + levers)
+  any kind: [--expect-ref-config D] [--expect-ref-impl D] [--expect-cand-config D] [--expect-cand-impl D]
+      -> `binding`: the re-summarised legs carry exactly these digests (which legs they must be)
   any kind but packing: [--l1-kind overlay|kernel_swap [--l1-band band.json] [--l1-l0-strictly-better]]
       also recomputes L1 (trajectory_gate.verdict) on the pair with the kind / band the ORCHESTRATOR
       derived (audit 2026-10-25 G-3: the Auditor / Tuner chose --kind, --band and the 8x looser
@@ -261,6 +263,20 @@ def main():
     if kind == "kernel":
         out["engagement"] = _engagement(ref_dir, cand_dir, nproc)
     out["carried"] = _carried(ref_dir, cand_dir, nproc)
+    # BINDING (review 2026-10-26): the orchestrator says which legs these must be -- e.g. Validate's headline ref
+    # is the run's baseline and its final is the carried accepted stack. Checked here from the re-summarised
+    # probes, not from what an agent says the legs are.
+    exp = {k: opt(f"--expect-{k}", None) for k in ("ref-config", "ref-impl", "cand-config", "cand-impl")}
+    if any(exp.values()):
+        why = []
+        for k, v in exp.items():
+            if v is None:
+                continue
+            leg = ref if k.startswith("ref") else cand
+            got = leg.get("config_digest" if k.endswith("config") else "impl_digest")
+            if got != v:
+                why.append(f"{k.replace('-', ' ')} {got} != expected {v}")
+        out["binding"] = {"ok": not why, "why": why, "expected": {k: v for k, v in exp.items() if v}}
     l1_kind = opt("--l1-kind", None)
     if l1_kind:
         out["l1"] = _l1(ref["probe_dir"], cand["probe_dir"], l1_kind, opt("--l1-band", None),
