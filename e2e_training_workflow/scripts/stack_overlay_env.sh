@@ -172,6 +172,10 @@ if [ -z "$OVL_HOST" ]; then
 fi
 OVL_CTR="/work${OVL_HOST#$WORK_HOST}"
 mkdir -p "$OVL_HOST/build"
+# A reused install may hold a torch-extension build `lock` left by a leg killed mid-compile; the next build then
+# waits on it forever (audit OPS-5). A real build holds it for minutes, so a lock older than 30 min is stale.
+find "$OVL_HOST" -name lock -type f -mmin +30 \( -path '*/build/*' -o -path '*/.torch_ext/*' \) -print -delete 2>/dev/null \
+  | sed 's/^/>>> removed stale build lock: /' >&2 || true
 
 # Install what is missing, then verify EVERYTHING (new or reused) against the gated bytes.
 python3 - "$OVL_HOST" "$N" "${OVERLAYS[@]}" <<'PY' >&2

@@ -135,19 +135,30 @@ class _Probe:
         try:
             lm = batch.get("loss_mask") if isinstance(batch, dict) else None
             labels = batch.get("labels") if isinstance(batch, dict) else None
+            # The useful count stays ON THE DEVICE until the step boundary: `.item()` here forced a GPU sync on
+            # every micro-batch (audit HFC-7). _flush_tokens() does the one sync per step.
             if lm is not None:
-                useful = int(lm.sum().item())
+                useful = lm.sum()
                 total = int(lm.numel())
             elif labels is not None:
-                useful = int((labels != -100).sum().item())
+                useful = (labels != -100).sum()
                 total = int(labels.numel())
             else:
                 return
-            self.pending["useful_tokens"] += useful
+            self.pending["useful_tokens"] = self.pending["useful_tokens"] + useful
             self.pending["total_tokens"] += total
             self.pending["micro_batches"] += 1
         except Exception as e:  # measurement must never break the run
             self.pending.setdefault("errors", []).append(repr(e))
+
+    def _flush_tokens(self):
+        """The step's useful-token total as an int (one device sync per step, not per micro-batch)."""
+        u = self.pending["useful_tokens"]
+        try:
+            return int(u.item()) if hasattr(u, "item") else int(u)
+        except Exception as e:  # measurement must never break the run
+            self.pending.setdefault("errors", []).append(repr(e))
+            return 0
 
     # ---- profiler window ---------------------------------------------------------------
     # A step-ranged window, driven from the step boundary the probe already owns. record_shapes is ON
@@ -206,7 +217,7 @@ class _Probe:
         self.step += 1
         rec = {
             "record": "step", "step": self.step, "dur_ms": round(dur_ms, 3),
-            "useful_tokens": self.pending["useful_tokens"],
+            "useful_tokens": self._flush_tokens(),
             "total_tokens": self.pending["total_tokens"],
             "micro_batches": self.pending["micro_batches"],
             "t_wall": time.time(),
