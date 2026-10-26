@@ -45,6 +45,21 @@ primarily this workflow rather than the kernel layer underneath it.
 
 ---
 
+## Update 2026-10-26: audit, trust model, re-verified deliverables
+
+The priority table below is from 2026-10-14; every row in it is done. Since then (DECISIONS 4.41-4.85):
+* **Deliverables**: Megatron `finalize_bundle_1024_s8a22` (s8 + 1022 attention, `fast`; 3,562 vs bare 2,884 useful
+  tok/s/GPU on 2026-10-25), HF `finalize_bundle_1020_hf6_flat_rope` (`bal`). Both pin harness + image. The 1022
+  kernel's stability doubt (4.82) was settled by the pre-registered rate study P0-4q (4.85): no excess.
+* **Audit 2026-10-25 fixed** (4.73-4.79): agents no longer decide anything -- the verifier recomputes gates (all
+  pairings), L1 (kind from L0 evidence), main_grad applicability, packing, Validate's headline, quality_reuse and the
+  outcome verdict; status / cleared are computed; identity refuses any unclassified setting (full argv/env capture);
+  ConfigSweep carries flag+env levers. Each path ran in a real agent-driven workflow (4.81-4.84).
+* **Next, in order**: (1) gate statistics -- a sum / wall veto beside the per-step median (audit #6) and alpha
+  spending for the outcome test's seed extension (#7); (2) identity by content -- overlay hash over all sources and
+  GEMM tables (#9), data / checkpoint / tokenizer by content (#10); (3) invariants that live only in prompts (#11);
+  (4) the low-severity table in RESUME.md; (5) breadth (MoE / TP > 1), deferred by the owner.
+
 ## Near-term priorities (2026-10-14)
 
 Ordered by what goes wrong if each is left undone. The ordering is: whether the result can be

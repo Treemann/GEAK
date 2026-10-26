@@ -40,9 +40,12 @@ on pre-registered one-epoch, multi-seed outcome tests: held-out loss −0.0023 v
 episodes (DECISIONS 4.24), and again with `--ddp-average-in-collective` (4.25). It is NOT cleared for
 constant-LR, no-warmup training (4.22). **Deliverable bundle (from 2026-10-24): `finalize_bundle_1024_s8a22`** =
 s8 with the 1022 attention kernel, default mode `fast` (+ synchronized GC + the NaN check moved to the grad norm):
-3,567 useful tok/s/GPU vs bare 2,892 on the re-run; cleared by outcome tests P0-4o (`fast`, 4.70) and P0-4p (the 1022
-kernel, 4.72). `finalize_bundle_1021_s8_cosine_avg` (the same with the 1013 kernel) stays pinned for reproducing
-earlier results.
+3,567 useful tok/s/GPU vs bare 2,892 on the re-run (3,562 / 2,884 on 2026-10-25); cleared by outcome tests P0-4o
+(`fast`, 4.70) and P0-4p (the 1022 kernel, 4.72). A chaotic late divergence on one seed (4.82) briefly contested
+the 1022 kernel; the pre-registered rate study P0-4q (10 seeds x {1013, 1022} in `fast`) found no excess
+(PASS/PASS, drift events 2 vs 1; 4.85), so it stays the default. `finalize_bundle_1021_s8_cosine_avg` (the same with
+the 1013 kernel) stays pinned for reproducing earlier results. Both deliverables (Megatron and HF) pin their
+harness file by file and the image by digest (4.80, 4.83).
 `finalize_bundle_1015_s8` runs the constant-LR `packed.env` and is NOT the deliverable.
 The recipe keeps Megatron's RMSNorm eps 1e-5 although the model was pretrained with 1e-6: the
 model-matched 1e-6 was outcome-tested and lost (held-out +0.0067, 5/5 seeds; P0-4l, DECISIONS 4.55).
@@ -170,14 +173,23 @@ validation, and bundle delivery.
 The HF TRL adapter runs the same workflow and gates unchanged: eight overlays accepted and the final
 configuration cleared for training (DECISIONS 4.27-4.40).
 
-Open, in priority order (2026-10-23; full list with rationale in `RESUME.md`, "OPEN AFTER THE 2026-10-23 REVIEW"):
-* correctness coverage: the GEMM overlays' fp32 main_grad wgrad path in L0 (G5); mid-depth oracle
-  captures (all are layer 0); HF L1 backward check;
-* identity: rocm_compat / harness version outside the digest (OVL-6);
-* throughput: HF token-balanced rank assignment; the 1022 attention and the NaN-check / zero_ passes on s8;
+Trust model (audit 2026-10-25, DECISIONS 4.73-4.79): nothing an agent reports decides a run. The gate verifier
+recomputes every gate pairing (all of them, coverage enforced), L1 with a kind derived from the L0 evidence, the
+main_grad-contract applicability, the packing gate, Validate's headline pair (`verify_gate --kind stack`), the
+outcome-test verdict and any quality_reuse proof; `status` and `cleared` are derived by code. Identity carries a
+full argv/env capture and refuses a pair that differs in any unclassified setting -- so legs measured before
+2026-10-25 must be re-measured to serve as a reference. Every one of these paths has run in a real agent-driven
+workflow (4.81-4.84).
+
+Open, in priority order (2026-10-26; full list in `RESUME.md`, top section):
+* gate statistics: the throughput gate decides on the per-step-ratio median only (no sum / wall veto); the
+  outcome test's seed extension is a second look without alpha spending (audit #6, #7);
+* identity by content: the overlay hash covers impl.py only; data / checkpoint / tokenizer enter by path (#9, #10);
+* invariants that live only in prompts (#11), and a table of low-severity items (RESUME.md);
 * MoE / TP > 1 (P3, deferred by the owner).
-Done since the last version of this list: ConfigSweep merges and carries accepted levers (P1-C); the
-QualityGate runs inside a workflow (wf_b4b35fd3, 2026-10-22), including its seed extension.
+Done since the last version of this list: main_grad contract in L0 (4.56), mid-depth oracles (4.58), harness in
+comparability (4.59), HF token-balanced ranks (4.61), the 1022 attention and the NaN move on s8 (4.62, 4.72, 4.85),
+and the whole 2026-10-25 audit fix list above.
 
 ## Launching a full `fast` run from Claude Code
 

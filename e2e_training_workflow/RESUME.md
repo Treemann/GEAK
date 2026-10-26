@@ -1,4 +1,44 @@
-# Resume notes — updated 2026-10-23
+# Resume notes — updated 2026-10-26
+
+## 2026-10-25 / 26: AUDIT -> FIXES -> VERIFIED IN REAL RUNS (DECISIONS 4.73-4.85)
+
+**Deliverables (unchanged, now re-confirmed):** Megatron `runs/finalize_bundle_1024_s8a22` (s8 + 1022 attention,
+default `fast`), HF `runs/finalize_bundle_1020_hf6_flat_rope` (default `bal`). Both now pin harness + image
+(Megatron re-pinned 4.80; HF pin added 4.83). The 1022 attention's clearance was contested by 4.82 and is
+RESOLVED by the pre-registered rate study P0-4q (4.85): 10 fresh seeds x {s8, s8a22} in `fast`, PASS/PASS,
+late-drift events 1013: 2 vs 1022: 1 -> keep s8a22. Late grad-norm drift is a property of the recipe (also on bare legs).
+
+**Audit 2026-10-25** (report: `/home/treemann/geak_train/scratch/audit_1025_report.md`, 13 numbered findings + a
+low-severity table). FIXED, each verified in an agent-driven workflow run:
+* 4.73 (#1) an unproven quality_reuse can no longer be laundered by the seed extension.
+* 4.74 (#3) the packing lever is accepted only on the verifier's recomputation (legUsable, equal-token delta, pack_gate file).
+* 4.75 (#2) quality_reuse compares realized table + overlay hash + env + harness (+ ctrl arm); run by the
+  verifier with orchestrator-built allowances. Later fixes: stacked baseline declares the overlay; `--no-X` -> realized X.
+* 4.76 (#5) main_grad contract applicability fails closed on composite sites; recomputed by the verifier (mgc_applicability.py).
+* 4.77 (#12) status, L1 (kind / strictly-better floor derived from L0 evidence) and the outcome verdict are
+  recomputed by code; verifier must cover every requested pairing; quality_ab_final always ends in JSON,
+  a diverged cand is FAIL-stability; HF verdict without ctrl refused.
+* 4.78 (#4) full argv/env capture in the probe header; unclassified settings that differ make a pair
+  incomparable (no digest change). CONSEQUENCE: legs measured before 2026-10-25 cannot be a reference
+  against fresh legs (re-measure); Setup reuses only legs with the capture.
+* 4.79 (#13) ConfigSweep accepts and carries flag+env levers (`env_added`); the deliverable's `fast` is reachable
+  by the automatic path.
+Verification runs: wf_7300e31a-c76 (ConfigSweep env carry + Validate recompute, 4.81), wf_3e85bddf-a53
+(QualityGate recompute, NOT CLEARED on a chaotic seed, 4.82), wf_e0ebcf87-87f (quality_reuse valid, 4.83),
+wf_e849d951-2cc (kernel path: L0 evidence -> L1 plan, mgc applicability, 4.84); real 30-step legs on both
+stacks (4.80); divergence detector on 1,003 legs (0 false positives).
+
+**OPEN (audit, not yet fixed), by priority:**
+1. #6 the throughput gate decides on the per-step-ratio median only (no sum / wall veto).
+2. #7 the seed extension is a second look without alpha spending (type-I ~8.4%, not ~5%).
+3. #9 GEAK_OVERLAY_SHA hashes impl.py only (kernel sources / GEMM tables outside it); #10 data / checkpoint /
+   tokenizer enter identity by PATH; pack_sft overwrites silently.
+4. #11 orchestration invariants that live only in prompts (kernel gate not bound to workload / carried config).
+5. Low table: G-2 (band-scaled step-1 limit), G-6 (quality_ab_final pairs by dir name), OPS-1 (watchdog kills
+   bench_train), MS-5/6/7, ID-6 (hf_sft allow_abbrev), ORCH-A7/A10, G-8/9/10, HFC-7/8 (base-arm severity), OPS-*.
+Residuals of the fixes: L0 evidence fields are still transcribed by the Auditor (GPU-bound); a config lever's
+L1 kind is the Tuner's declared one.
+
 
 ## OPEN AFTER THE 2026-10-23 REVIEW (owner: do all, in this order; status kept current)
 

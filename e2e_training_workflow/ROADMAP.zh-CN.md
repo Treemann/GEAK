@@ -35,6 +35,21 @@ Megatron + `--sft` 路径；暂无多机；精力主要投在本层而非其下�
 
 ---
 
+## 2026-10-26 更新：审计、信任模型、交付物复核
+
+下面的优先级表是 2026-10-14 的版本，表中各项均已完成。此后的进展（DECISIONS 4.41–4.85）：
+* **交付物**：Megatron 为 `finalize_bundle_1024_s8a22`（s8 + 1022 attention，`fast` 模式；2026-10-25 实测 3,562，
+  bare 为 2,884 useful tok/s/GPU）；HF 为 `finalize_bundle_1020_hf6_flat_rope`（`bal`）。两者都固定了 harness 和镜像。
+  1022 kernel 的稳定性疑问（4.82）已由预注册的发散率研究 P0-4q 解决（4.85）：没有发现更高的发散率。
+* **2026-10-25 审计已修复**（4.73–4.79）：agent 自报的内容不再决定结果。verifier 重算全部 gate pair、L1（档位由 L0
+  证据决定）、main_grad 适用性、packing、Validate 的 headline、quality_reuse 以及 outcome 判定；status 和 cleared 由代码
+  推出；身份上任何未分类的设置不同都会拒绝（完整采集 argv/env）；ConfigSweep 能携带"flag + env"杠杆。每条路径都已在
+  真实的 agent 驱动运行中走通（4.81–4.84）。
+* **下一步，按顺序**：(1) gate 统计——在 per-step 中位数之外增加 sum / wall 否决（审计 #6），outcome test 的种子扩展做
+  alpha spending（#7）；(2) 按内容确定身份——overlay 哈希覆盖全部源码和 GEMM 表（#9），数据 / checkpoint / tokenizer
+  按内容识别（#10）；(3) 只写在 prompt 里的不变量（#11）；(4) RESUME.md 中的低优先级表；(5) 广度（MoE / TP > 1），
+  按负责人要求暂缓。
+
 ## 近期优先级（2026-10-14）
 
 按"不做会出什么问题"排序：先保证结果可信，再保证能交付，然后才是剩余的吞吐空间和覆盖面。

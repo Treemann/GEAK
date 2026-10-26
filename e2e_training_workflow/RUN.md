@@ -1,5 +1,24 @@
 # Launching a run
 
+## Read this first if you ran this workflow before 2026-10-25
+
+The 2026-10-25 audit fixes (DECISIONS 4.73-4.79) change what a run trusts and what it refuses:
+* **Old legs are not references any more.** The probe now records every flag and kernel / collective env
+  var; a pair in which only one leg carries that capture is refused as stale. Do not pass `baseline_dirs`
+  or `quality_reuse` legs measured before 2026-10-25 -- Setup re-measures them anyway.
+* **Agents decide nothing.** The gate verifier recomputes every gate pairing, L1, the main_grad applicability,
+  Validate's headline pair and the outcome-test verdict; `status` / `cleared` are computed. A run that ends
+  `unconfirmed` reports why in `status_reason`.
+* **Flag+env levers work**: the Config Tuner returns `env_added`, e.g. `nan_from_grad_norm`
+  (`--no-check-for-nan-in-loss-and-grad` + `GEAK_NAN_FROM_GRAD_NORM=1`, now in the Tier-0 pack).
+* `quality_reuse: {prefix, ref_arm[, ctrl_arm][, allow][, allow_impl][, accept_unknown_harness]}` -- the
+  check is built from what the run accepted; `allow` / `allow_impl` pre-declare anything else, and legs
+  without the harness / env capture need `accept_unknown_harness: true` (recorded). A reused ctrl arm must be
+  the same base stack (4.75).
+* `quality_ab.sh` gained `--all-train-args` / `--all-env` (settings of every arm, e.g. `fast` on both arms of
+  a kernel A/B) and the `s8a22` arm.
+Verified in agent-driven runs wf_7300e31a-c76, wf_3e85bddf-a53, wf_e0ebcf87-87f, wf_e849d951-2cc (4.81-4.84).
+
 ## Read this first if you ran this workflow before 2026-09-23
 
 Two changes alter what a run costs and what it will accept. Neither is optional.
@@ -145,7 +164,10 @@ re-verifies it on every call, so the CK attention build is paid once.
 **Before calling a stack safe to train with, run the outcome gate** (DECISIONS 4.22/4.23).
 * Pass `quality_gate: "true"`. Optional: `quality_seeds`, and `quality_workload` (default
   `qwen2_5_math_7b_packed_cosine_avg.env` since 2026-10-20).
-* It adds about 3.3 h: REF and the final stack, 5 seeds × one epoch.
+* It adds about 3.3 h: REF and the final stack, 5 seeds × one epoch (measured 2026-10-25: ~3.3 h for 10 legs).
+* An INCONCLUSIVE first verdict runs ONE pre-registered seed extension; a FAIL-stability (one chaotic seed is
+  enough, 4.82) is final and is NOT extended. Do not re-run a NOT CLEARED test until it passes: decide a
+  doubt with a fresh pre-registered study (P0-4q, 4.85).
 * Outside the workflow: `scripts/quality_ab.sh --workload ... --arms ref,cand --cand-cmd "<cmd>"`,
   then `scripts/quality_ab_final.py <prefix> --cand cand`.
 
