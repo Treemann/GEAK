@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 
@@ -47,6 +48,8 @@ def main():
     ap.add_argument("--seq", type=int, required=True)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--verify", type=int, default=500)
+    ap.add_argument("--force", action="store_true",
+                    help="overwrite an existing dst (default: refuse -- legs identify data by PATH)")
     a = ap.parse_args()
 
     from transformers import AutoTokenizer
@@ -90,9 +93,16 @@ def main():
         else:
             bins.append([idx]); room.append(a.seq - n)
 
-    with open(a.dst, "w") as f:
+    # A pack is identified downstream by its PATH (train-data-path); rewriting a path that legs already
+    # trained on silently changes their data (audit 2026-10-25 #10: same-size re-packs and a *_WRONG_system
+    # pack sit in the data dir). Write to a temp file and refuse to replace an existing dst without --force.
+    if os.path.exists(a.dst) and not a.force:
+        sys.exit(f"{a.dst} exists; refusing to overwrite a pack legs may have trained on (use a new name, or --force)")
+    tmp = a.dst + ".tmp"
+    with open(tmp, "w") as f:
         for b in bins:
             f.write(json.dumps({"messages": [m for i in b for m in convs[i]]}) + "\n")
+    os.replace(tmp, a.dst)
 
     tot = sum(min(n, a.seq) for n in lens)
     print(json.dumps({
