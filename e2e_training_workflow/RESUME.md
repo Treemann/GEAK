@@ -40,6 +40,7 @@ num_items_in_batch (4.100), the v2 attention oracle holdouts (4.101). No audit i
 Then an adversarial review of all these fixes (wf_4c1372e4-a16) confirmed 18 defects -- all fixed (4.102); its
 stricter control-arm check refused P0-4m, and the fresh pre-registered P0-4r re-cleared the HF `bal` default (4.103).
 2026-10-27: end-to-end agent-driven run wf_56de8505-e42 exercised every new path but the re-gate (4.104); status ok.
+The re-gate fired for real in wf_ff7a8374-7a1 (4.105): 30-step median +0.606 / trimmed +0.106 -> 60-step +0.648 / +0.671, accepted.
 Consequence for users: legs measured before 2026-10-26 (no `content` record) cannot be references for fresh legs.
 
 ## OPEN AFTER THE 2026-10-23 REVIEW (owner: do all, in this order; status kept current)

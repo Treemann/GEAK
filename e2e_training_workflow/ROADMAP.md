@@ -61,7 +61,7 @@ The priority table below is from 2026-10-14; every row in it is done. Since then
   trees, input fingerprints); ops hardening; the verifier's own L0; the HF token cross-check; the attention oracle
   v2 with holdouts; an adversarial review of all of it (18 defects fixed); P0-4r re-cleared the HF `bal` default.
 * **Next, in order**: (1) one agent-driven end-to-end run exercising every new path (verifier L0, re-gates,
-  Validate binding, legs_measured, content identity) -- DONE 2026-10-27 (4.104; the re-gate did not trigger); (2) heterogeneous slow-step injection in
+  Validate binding, legs_measured, content identity) -- DONE 2026-10-27 (4.104; the re-gate fired for real in 4.105); (2) heterogeneous slow-step injection in
   calibrate_band (the gate's power against minority-step slowdowns is guarded by the re-gate, not yet measured);
   (3) re-estimate the outcome test's background catastrophe rate (2/80 today) as legs accrue; (4) breadth (MoE /
   TP > 1 / multi-node / fp8), deferred by the owner.
