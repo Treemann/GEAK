@@ -35,7 +35,7 @@ Megatron + `--sft` 路径；暂无多机；精力主要投在本层而非其下�
 
 ---
 
-## 2026-10-26 更新：审计、信任模型、交付物复核
+## 2026-10-27 更新：审计、信任模型、交付物复核
 
 下面的优先级表是 2026-10-14 的版本，表中各项均已完成。此后的进展（DECISIONS 4.41–4.85）：
 * **交付物**：Megatron 为 `finalize_bundle_1024_s8a22`（s8 + 1022 attention，`fast` 模式；2026-10-25 实测 3,562，
@@ -45,10 +45,22 @@ Megatron + `--sft` 路径；暂无多机；精力主要投在本层而非其下�
   证据决定）、main_grad 适用性、packing、Validate 的 headline、quality_reuse 以及 outcome 判定；status 和 cleared 由代码
   推出；身份上任何未分类的设置不同都会拒绝（完整采集 argv/env）；ConfigSweep 能携带"flag + env"杠杆。每条路径都已在
   真实的 agent 驱动运行中走通（4.81–4.84）。
-* **下一步，按顺序**：(1) gate 统计——在 per-step 中位数之外增加 sum / wall 否决（审计 #6），outcome test 的种子扩展做
-  alpha spending（#7）；(2) 按内容确定身份——overlay 哈希覆盖全部源码和 GEMM 表（#9），数据 / checkpoint / tokenizer
-  按内容识别（#10）；(3) 只写在 prompt 里的不变量（#11）；(4) RESUME.md 中的低优先级表；(5) 广度（MoE / TP > 1），
-  按负责人要求暂缓。
+* **2026-10-26 / 27 已完成（4.86–4.103）**：10-26 列出的"下一步"已全部完成：
+  - outcome test 改为两次检验并使用 Pocock 边界，两个臂都检查；
+  - gate 的参照腿绑定到当前的 stack；
+  - 中位数与截尾均值结论不一致时，用更长的腿重测；s8 的 7 个增量在中位数、截尾均值、wall 三种口径下复测都为正；
+  - 按内容确定身份（overlay 目录树、输入指纹）；
+  - 运维加固；
+  - verifier 自己跑 L0；
+  - HF token 交叉校验；
+  - attention oracle v2 及其 holdout；
+  - 对以上全部改动做了一次对抗式复审，修复 18 个缺陷；
+  - P0-4r 重新放行了 HF 的 `bal` 默认模式。
+* **下一步，按顺序**：
+  1. 用一次 agent 驱动的端到端运行覆盖所有新路径（verifier 跑 L0、长腿重测、Validate 绑定、legs_measured、内容身份），2026-10-27 运行中；
+  2. 在 calibrate_band 中加入"只有部分步变慢"的注入；gate 对这类变慢的检出能力目前靠长腿重测兜底，尚未测量；
+  3. 随着腿数增加，重估 outcome test 的背景灾难率（目前 2/80）；
+  4. 广度（MoE / TP > 1 / 多节点 / fp8），按负责人要求暂缓。
 
 ## 近期优先级（2026-10-14）
 

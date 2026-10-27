@@ -45,7 +45,7 @@ primarily this workflow rather than the kernel layer underneath it.
 
 ---
 
-## Update 2026-10-26: audit, trust model, re-verified deliverables
+## Update 2026-10-27: audit, trust model, re-verified deliverables
 
 The priority table below is from 2026-10-14; every row in it is done. Since then (DECISIONS 4.41-4.85):
 * **Deliverables**: Megatron `finalize_bundle_1024_s8a22` (s8 + 1022 attention, `fast`; 3,562 vs bare 2,884 useful
@@ -55,10 +55,16 @@ The priority table below is from 2026-10-14; every row in it is done. Since then
   pairings), L1 (kind from L0 evidence), main_grad applicability, packing, Validate's headline, quality_reuse and the
   outcome verdict; status / cleared are computed; identity refuses any unclassified setting (full argv/env capture);
   ConfigSweep carries flag+env levers. Each path ran in a real agent-driven workflow (4.81-4.84).
-* **Next, in order**: (1) gate statistics -- a sum / wall veto beside the per-step median (audit #6) and alpha
-  spending for the outcome test's seed extension (#7); (2) identity by content -- overlay hash over all sources and
-  GEMM tables (#9), data / checkpoint / tokenizer by content (#10); (3) invariants that live only in prompts (#11);
-  (4) the low-severity table in RESUME.md; (5) breadth (MoE / TP > 1), deferred by the owner.
+* **Done 2026-10-26 / 27 (4.86-4.103)**: the whole "next" list of 10-26 -- Pocock two-look outcome test with both
+  arms checked; gate references bound to the carried stack; median-vs-trimmed-mean disagreement re-gates on longer
+  legs (all seven s8 increments re-measured positive on median / trimmed mean / wall); content identity (overlay
+  trees, input fingerprints); ops hardening; the verifier's own L0; the HF token cross-check; the attention oracle
+  v2 with holdouts; an adversarial review of all of it (18 defects fixed); P0-4r re-cleared the HF `bal` default.
+* **Next, in order**: (1) one agent-driven end-to-end run exercising every new path (verifier L0, re-gates,
+  Validate binding, legs_measured, content identity) -- running 2026-10-27; (2) heterogeneous slow-step injection in
+  calibrate_band (the gate's power against minority-step slowdowns is guarded by the re-gate, not yet measured);
+  (3) re-estimate the outcome test's background catastrophe rate (2/80 today) as legs accrue; (4) breadth (MoE /
+  TP > 1 / multi-node / fp8), deferred by the owner.
 
 ## Near-term priorities (2026-10-14)
 

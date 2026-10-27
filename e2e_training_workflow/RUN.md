@@ -1,5 +1,27 @@
 # Launching a run
 
+## Read this first if you ran this workflow before 2026-10-26 (DECISIONS 4.86-4.103)
+
+* **Outcome tests** use two looks (Pocock 0.0294 at each; `quality_ab_final.py --looks 1` only for a pre-registered
+  single-look study). Both arms are checked; FAIL-stability needs >= 2 catastrophic cand legs; one catastrophic leg,
+  or INCONCLUSIVE quality, runs the pre-registered extension. A base leg that NaN-exits drops its seed. The legs a
+  verdict pairs by name must be one experiment (workload, seed, implementation, input contents; the control arm =
+  base recipe with only lr / min-lr moved) -- a recipe test declares its key with `--allow-workload`.
+* **quality_ab.sh** `--ctrl-base <cond>` runs the positive control ON a stack (e.g. `hf8`); `hf1..hf8` are arms.
+* **Gates**: when the per-step median and the 10%-trimmed mean disagree (`estimators_disagree`) the orchestrator
+  re-gates ONCE at >= 60 iterations (kernel: the Integrator, config: the Tuner). Every gate ref must carry the
+  carried stack's config / impl digests; the Tuner returns `legs_measured` (all crossed by the verifier).
+* **Kernel L0** is re-run by the gate verifier (`scripts/l0_verify.sh <task> <overlay> <out> --gpu N`, one GPU);
+  its `correct` and evidence decide. The packed-attention head uses `tasks_v2/attn_fmha_ck_varlen_1022` (oracle v2).
+* **Identity** also covers content (overlay directory trees, data / tokenizer / checkpoint fingerprints): legs
+  measured before 2026-10-26 have no `content` record and must be re-measured to be references.
+* **HF legs** cross-check the probe's token count against the trainer's num_items_in_batch every step; a leg
+  that disagrees is unusable. HF headlines are POOLED tokens / time (rank-median kept as a field).
+* **Bundles**: check_leg fails a leg whose recorded harness (rocm_compat / overlay_train / train_probe / hf_sft)
+  or image differs from the pin; HF `bal` legs must show token balancing. Re-validate and re-pin after a harness change.
+* **Ops**: bench_train runs from a private copy (editing it mid-leg is safe), refuses a leg below
+  `GEAK_MIN_FREE_GB` (20) free disk, and the job runs in its own process group.
+
 ## Read this first if you ran this workflow before 2026-10-25
 
 The 2026-10-25 audit fixes (DECISIONS 4.73-4.79) change what a run trusts and what it refuses:
