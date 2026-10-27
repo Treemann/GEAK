@@ -181,7 +181,10 @@ main_grad-contract applicability, the packing gate, Validate's headline pair (`v
 outcome-test verdict and any quality_reuse proof; `status` and `cleared` are derived by code. Identity carries a
 full argv/env capture and refuses a pair that differs in any unclassified setting -- so legs measured before
 2026-10-25 must be re-measured to serve as a reference. Every one of these paths has run in a real agent-driven
-workflow (4.81-4.84).
+workflow (4.81-4.84). Since 2026-10-26 (4.86-4.103) the verifier also re-runs L0 itself (the frozen oracle on the
+shipped overlay), a win needs the per-step median AND the trimmed mean to agree (else one re-gate on longer legs),
+identity covers content (overlay files, input bytes), HF legs cross-check the probe's token count against the
+trainer's own, and HF headlines are pooled. All 18 defects an adversarial review found in these fixes are fixed.
 
 Open, in priority order (2026-10-26; full list in `RESUME.md`, top section):
 * gate statistics: the throughput gate decides on the per-step-ratio median only (no sum / wall veto); the
